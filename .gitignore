@@ -54,6 +54,9 @@ third_party/
 song_service/.venv/
 song_service/models/
 song_service/logs/
+# The voice service keeps the sung clauses it produced next to its logs; the
+# launcher writes the logs. Neither is source.
+voice_service/logs/
 
 # Freebuff desktop metadata
 .freebuff/

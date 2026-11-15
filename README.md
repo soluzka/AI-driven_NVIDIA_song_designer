@@ -577,6 +577,35 @@ uses faster-whisper, falling back to the Windows speech recogniser; on the
 Worker it uses Workers AI. Silence below a confidence threshold is ignored
 rather than turned into a query.
 
+## Voice fit
+
+Press **Fit voice** next to Search, record one phrase, and the same phrase comes
+back in the key and tone of the song the page has open. A card's **Remix** panel
+makes that card the target; with nothing open it fits to a neutral A minor at
+110 BPM.
+
+All of it runs in the tab — no model, no upload, and the words are never read:
+only the sound is moved and shaped.
+
+1. **Pitch.** The median fundamental of the phrase is measured, then moved to the
+   nearest octave of the song's root, so a voice never has to jump an octave to
+   land in the key. Shifting is resample plus a correlate-and-overlap time
+   stretch, so the phrase keeps its length.
+2. **Tone.** Per-genre filters, drive, room and a half-beat echo: `dub` and
+   `ambient` are mostly space, `trap` and `riddim` almost none, `lo-fi` is a 4.2
+   kHz ceiling, `trance` and `house` keep the top end. The profile table is
+   `FIT_PROFILES` in `public/index.html`.
+3. **Output.** Play it, or save 16-bit mono WAV. The result is trimmed under full
+   scale because dry, room and echo add up on a loud phrase.
+
+The microphone needs a secure page: the deployed https address or the app on this
+PC. A plain `http://192.168.x.x:5001` on the phone will be refused by the browser
+— that is the browser's rule, not a setting here.
+
+Measured in the browser: a 220 Hz tone moved to 174.0 Hz at −4 semitones and
+261.0 Hz at +3, with the phrase length unchanged; a two-second phrase renders in
+about 60 ms.
+
 ## API
 
 **Socket.IO events** (desktop app): `search_query` → `search_results`,

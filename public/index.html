@@ -186,6 +186,48 @@
             0%, 100% { box-shadow: 0 0 0 0 rgba(108, 92, 231, 0.4); }
             50% { box-shadow: 0 0 0 12px rgba(108, 92, 231, 0); }
         }
+        /* Voice fit: record a phrase, then tune and shape it to the open song. */
+        .fit-panel {
+            position: fixed;
+            left: 12px;
+            right: 12px;
+            bottom: 12px;
+            max-width: 560px;
+            margin: 0 auto;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 16px;
+            z-index: 60;
+            box-shadow: var(--glow);
+        }
+        .fit-panel[hidden] { display: none; }
+        .fit-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+        .fit-title { font-size: 15px; font-weight: 600; }
+        .fit-close {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-dim);
+            border-radius: 8px;
+            padding: 4px 10px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .fit-target { font-size: 12px; color: var(--text-dim); margin: 8px 0 12px; line-height: 1.55; }
+        .fit-row { display: flex; flex-wrap: wrap; gap: 8px; }
+        .fit-act {
+            background: rgba(118, 185, 0, 0.12);
+            border: 1px solid rgba(118, 185, 0, 0.35);
+            color: var(--text);
+            border-radius: 10px;
+            padding: 10px 14px;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .fit-act:disabled { opacity: 0.4; cursor: default; }
+        .fit-act.rec { background: rgba(255, 91, 74, 0.14); border-color: rgba(255, 91, 74, 0.45); }
+        .fit-act.rec.live { animation: pulse 1.2s infinite; }
+        .fit-status { font-size: 12px; color: var(--text-dim); margin-top: 10px; min-height: 16px; line-height: 1.55; }
         .top-btn {
             background: rgba(0, 206, 201, 0.12);
             border: 1px solid rgba(0, 206, 201, 0.45);
@@ -846,6 +888,8 @@
             </button>
             <input type="text" id="searchInput" placeholder="Search for videos..." autocomplete="off" onkeypress="if(event.key==='Enter') doSearch()">
             <button class="search-btn" id="searchBtn" onclick="doSearch()">Search</button>
+            <button class="top-btn" id="fitBtn" onclick="openFitPanel()"
+                    title="Record your voice and fit its tone and key to the song on screen">Fit voice</button>
             <button class="top-btn" id="topBtn" onclick="showTop()"
                     title="The most-watched videos for these words, or the contents of a playlist link">Top 100</button>
             <button class="top-btn" id="syncBtn" onclick="showSync()"
@@ -855,6 +899,21 @@
         </div>
         <div class="ai-status" id="aiStatus"></div>
         <div class="voice-transcript" id="voiceTranscript"></div>
+    </div>
+
+    <!-- Voice fit: one phrase in, the same phrase in the key and tone of the song -->
+    <div class="fit-panel" id="fitPanel" hidden>
+        <div class="fit-head">
+            <div class="fit-title">Voice fit</div>
+            <button class="fit-close" onclick="closeFitPanel()">Close</button>
+        </div>
+        <div class="fit-target" id="fitTarget">No song open yet.</div>
+        <div class="fit-row">
+            <button class="fit-act rec" id="fitRec" onclick="toggleFitRecord()">Record</button>
+            <button class="fit-act" id="fitPlay" onclick="fitPlayback()" disabled>Play</button>
+            <button class="fit-act" id="fitSave" onclick="fitDownload()" disabled>Save WAV</button>
+        </div>
+        <div class="fit-status" id="fitStatus">Say or sing one phrase. The words are not read or searched for; only the sound is reshaped.</div>
     </div>
 
     <!-- Results -->
@@ -1943,6 +2002,8 @@
             event.stopPropagation();
             const card = document.getElementById(cardId);
             if (!card) return;
+            // This card is now the song on screen, so Voice fit follows it.
+            rememberFitSong((window._remixDocs || {})[cardId]);
             const panel = card.querySelector('.remix-panel');
             if (!panel) return;
             const opening = panel.hidden;
@@ -2214,6 +2275,7 @@
         }
 
         function startRemixAudio(doc, withCapture) {
+            rememberFitSong(doc);
             stopRemixAudio();
             const AudioCtor = window.AudioContext || window.webkitAudioContext;
             if (!AudioCtor) return null;
@@ -5641,6 +5703,424 @@
                 watchGpu();
             }, settling ? 5000 : 30000);
         })();
+
+        // --- Voice fit ---
+        // One phrase in, the same phrase out in the key and tone of the song the
+        // page has open. Recording, pitch analysis, pitch shifting and the effects
+        // all run in this tab: nothing is uploaded, no model is needed, and the
+        // words are never read - only the sound is moved and shaped.
+        let fitSong = null;
+
+        // Tone per genre. The numbers come from what each style is built on: dub and
+        // ambient are mostly space, trap and riddim have almost none, lo-fi is a
+        // filter down at 4 kHz, trance and house want the top end left alone.
+        const FIT_PROFILES = {
+            dubstep: { hp: 90, lp: 9000, drive: 0.45, wet: 0.22, echo: 0.10, decay: 1.1, presence: 2 },
+            riddim: { hp: 110, lp: 8000, drive: 0.55, wet: 0.14, echo: 0.16, decay: 0.8, presence: 1 },
+            techno: { hp: 120, lp: 12000, drive: 0.28, wet: 0.20, echo: 0.14, decay: 1.4, presence: 3 },
+            house: { hp: 100, lp: 14000, drive: 0.22, wet: 0.18, echo: 0.08, decay: 1.2, presence: 4 },
+            'drum and bass': { hp: 120, lp: 13000, drive: 0.32, wet: 0.16, echo: 0.20, decay: 1.0, presence: 3 },
+            jungle: { hp: 120, lp: 11000, drive: 0.34, wet: 0.18, echo: 0.22, decay: 1.0, presence: 2 },
+            reggae: { hp: 80, lp: 7000, drive: 0.20, wet: 0.30, echo: 0.28, decay: 2.0, presence: 0 },
+            dub: { hp: 70, lp: 5200, drive: 0.18, wet: 0.42, echo: 0.40, decay: 2.4, presence: -2 },
+            'hip hop': { hp: 85, lp: 10000, drive: 0.30, wet: 0.12, echo: 0.06, decay: 1.0, presence: 2 },
+            trap: { hp: 70, lp: 9500, drive: 0.26, wet: 0.14, echo: 0.10, decay: 1.2, presence: 1 },
+            ambient: { hp: 60, lp: 6000, drive: 0.10, wet: 0.55, echo: 0.30, decay: 3.2, presence: -3 },
+            trance: { hp: 110, lp: 15000, drive: 0.20, wet: 0.32, echo: 0.24, decay: 2.2, presence: 4 },
+            garage: { hp: 100, lp: 12000, drive: 0.24, wet: 0.24, echo: 0.22, decay: 1.6, presence: 2 },
+            'lo-fi': { hp: 90, lp: 4200, drive: 0.20, wet: 0.26, echo: 0.12, decay: 1.6, presence: -1 }
+        };
+        const FIT_NEUTRAL = { hp: 90, lp: 11000, drive: 0.18, wet: 0.20, echo: 0.10, decay: 1.4, presence: 1 };
+
+        // Called as songs open, so the panel fits to whatever is on screen now.
+        function rememberFitSong(doc) {
+            if (!doc || !doc.remix) return;
+            fitSong = {
+                title: doc.remix.title || doc.title || 'Untitled',
+                genre: String(doc.genre || ''),
+                key: doc.remix.key || 'A minor',
+                tempo: doc.remix.tempo || '110 BPM',
+                root: remixRoot(doc),
+                bpm: remixTempo(doc)
+            };
+            const target = document.getElementById('fitTarget');
+            if (target) target.textContent = fitTargetLine();
+        }
+
+        function fitTargetLine() {
+            if (!fitSong) {
+                return 'No song open: fitting to a neutral A minor, 110 BPM. Open a card\u2019s Remix panel first for a closer fit.';
+            }
+            return 'Fitting to ' + fitSong.title + ' \u00b7 ' + (fitSong.genre || 'unclassified') +
+                ' \u00b7 ' + fitSong.key + ' \u00b7 ' + fitSong.tempo;
+        }
+
+        function fitProfileFor(name) {
+            const key = String(name || '').toLowerCase().trim();
+            if (!key) return FIT_NEUTRAL;
+            if (FIT_PROFILES[key]) return FIT_PROFILES[key];
+            for (const genre of Object.keys(FIT_PROFILES)) {
+                if (key.includes(genre)) return FIT_PROFILES[genre];
+            }
+            return FIT_NEUTRAL;
+        }
+
+        // Octaves are the same note, so the voice is moved to the nearest octave of
+        // the song's root rather than being dragged to one exact frequency.
+        function fitSemitones(from, to) {
+            if (!from || !to) return 0;
+            let best = 0;
+            let bestErr = Infinity;
+            for (let step = -7; step <= 7; step++) {
+                const steps = Math.log2((from * Math.pow(2, step / 12)) / to);
+                const err = Math.abs(steps - Math.round(steps));
+                if (err < bestErr - 1e-9) {
+                    bestErr = err;
+                    best = step;
+                }
+            }
+            return best;
+        }
+
+        // Median fundamental of the loudest frames: enough to place a phrase in a
+        // key. Twenty frames spread across the clip keeps this fast on a phone.
+        function fitDetectPitch(samples, rate) {
+            const frame = 1024;
+            const minLag = Math.floor(rate / 500);
+            const maxLag = Math.floor(rate / 70);
+            const frames = [];
+            const stride = Math.max(frame, Math.floor(samples.length / 20));
+            for (let start = 0; start + frame <= samples.length; start += stride) {
+                let energy = 0;
+                for (let i = 0; i < frame; i++) energy += samples[start + i] * samples[start + i];
+                if (energy / frame < 1e-4) continue;
+                let best = 0;
+                let bestLag = 0;
+                for (let lag = minLag; lag <= maxLag; lag += 2) {
+                    let sum = 0;
+                    for (let i = 0; i < frame - lag; i += 2) sum += samples[start + i] * samples[start + i + lag];
+                    if (sum > best) {
+                        best = sum;
+                        bestLag = lag;
+                    }
+                }
+                if (bestLag) frames.push(rate / bestLag);
+            }
+            if (!frames.length) return 0;
+            frames.sort((a, b) => a - b);
+            return frames[Math.floor(frames.length / 2)];
+        }
+
+        function fitResample(samples, ratio) {
+            const length = Math.max(1, Math.floor(samples.length / ratio));
+            const out = new Float32Array(length);
+            for (let i = 0; i < length; i++) {
+                const at = i * ratio;
+                const left = at | 0;
+                const right = left + 1 < samples.length ? left + 1 : left;
+                out[i] = samples[left] + (samples[right] - samples[left]) * (at - left);
+            }
+            return out;
+        }
+
+        // Overlap-add that walks the source faster or slower than the output, with
+        // each grain placed where it best continues the one before. Without that
+        // search the grains fight each other and the original pitch survives.
+        function fitStretch(samples, factor, targetLength) {
+            const grain = 2048;
+            const hop = grain >> 1;
+            const search = 512;
+            const out = new Float32Array(targetLength);
+            const win = new Float32Array(grain);
+            for (let i = 0; i < grain; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / grain);
+            let previous = -1;
+            for (let pos = 0; pos + grain <= targetLength; pos += hop) {
+                const ideal = Math.round(pos / factor);
+                let chosen = ideal;
+                if (previous >= 0) {
+                    let bestScore = -Infinity;
+                    const from = Math.max(0, ideal - search);
+                    const to = Math.min(samples.length - grain - 1, ideal + search);
+                    for (let candidate = from; candidate <= to; candidate += 4) {
+                        let score = 0;
+                        for (let i = 0; i < hop; i += 4) score += samples[candidate + i] * samples[previous + hop + i];
+                        if (score > bestScore) {
+                            bestScore = score;
+                            chosen = candidate;
+                        }
+                    }
+                }
+                for (let i = 0; i < grain; i++) {
+                    const at = chosen + i;
+                    if (at >= 0 && at < samples.length) out[pos + i] += samples[at] * win[i];
+                }
+                previous = chosen;
+            }
+            return out;
+        }
+
+        // Pitch shift with the length kept: resampling does the pitch and the
+        // stretch puts the phrase back to its original duration.
+        function fitShift(samples, semitones) {
+            if (!semitones) return samples.slice();
+            const ratio = Math.pow(2, semitones / 12);
+            const resampled = fitResample(samples, ratio);
+            return fitStretch(resampled, samples.length / resampled.length, samples.length);
+        }
+
+        // A short noise tail shaped by a curve: a room without needing an impulse
+        // response file.
+        function fitImpulse(ctx, seconds) {
+            const length = Math.max(1, Math.floor(ctx.sampleRate * Math.max(0.4, seconds)));
+            const ir = ctx.createBuffer(1, length, ctx.sampleRate);
+            const data = ir.getChannelData(0);
+            for (let i = 0; i < length; i++) {
+                const t = i / length;
+                data[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 2.6) * Math.min(1, i / 40);
+            }
+            return ir;
+        }
+
+        async function fitRender(raw, profile, semitones) {
+            const rate = raw.sampleRate;
+            const mono = new Float32Array(raw.length);
+            for (let c = 0; c < raw.numberOfChannels; c++) {
+                const data = raw.getChannelData(c);
+                for (let i = 0; i < data.length; i++) mono[i] += data[i] / raw.numberOfChannels;
+            }
+            const shifted = fitShift(mono, semitones);
+            let peak = 0;
+            for (let i = 0; i < shifted.length; i++) peak = Math.max(peak, Math.abs(shifted[i]));
+            if (peak > 0) {
+                for (let i = 0; i < shifted.length; i++) shifted[i] = (shifted[i] / peak) * 0.9;
+            }
+
+            const Ctor = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+            if (!Ctor) throw new Error('This browser cannot render audio offline.');
+            const ctx = new Ctor(1, shifted.length, rate);
+            const source = ctx.createBufferSource();
+            const buffer = ctx.createBuffer(1, shifted.length, rate);
+            buffer.copyToChannel(shifted, 0);
+            source.buffer = buffer;
+
+            const high = ctx.createBiquadFilter();
+            high.type = 'highpass';
+            high.frequency.value = profile.hp;
+            const low = ctx.createBiquadFilter();
+            low.type = 'lowpass';
+            low.frequency.value = profile.lp;
+            const presence = ctx.createBiquadFilter();
+            presence.type = 'peaking';
+            presence.frequency.value = 2600;
+            presence.Q.value = 1.1;
+            presence.gain.value = profile.presence;
+
+            const shaper = ctx.createWaveShaper();
+            const curve = new Float32Array(1024);
+            const amount = 1 + profile.drive * 6;
+            for (let i = 0; i < curve.length; i++) {
+                const x = (i / (curve.length - 1)) * 2 - 1;
+                curve[i] = profile.drive > 0 ? Math.tanh(amount * x) / Math.tanh(amount) : x;
+            }
+            shaper.curve = curve;
+
+            const comp = ctx.createDynamicsCompressor();
+            comp.threshold.value = -20;
+            comp.ratio.value = 3;
+
+            const dry = ctx.createGain();
+            dry.gain.value = Math.max(0.35, 1 - profile.wet * 0.6);
+            const wet = ctx.createGain();
+            wet.gain.value = profile.wet;
+            const room = ctx.createConvolver();
+            room.buffer = fitImpulse(ctx, profile.decay);
+
+            // The echo is half a beat of the song, so it lands with the music rather
+            // than beside it.
+            const echo = ctx.createDelay(1);
+            echo.delayTime.value = Math.min(0.5, 30 / (fitSong ? fitSong.bpm : 110));
+            const feedback = ctx.createGain();
+            feedback.gain.value = 0.28;
+            const echoWet = ctx.createGain();
+            echoWet.gain.value = profile.echo;
+
+            source.connect(high).connect(low).connect(presence).connect(shaper).connect(comp);
+            comp.connect(dry).connect(ctx.destination);
+            comp.connect(room).connect(wet).connect(ctx.destination);
+            comp.connect(echo);
+            echo.connect(feedback).connect(echo);
+            echo.connect(echoWet).connect(ctx.destination);
+            source.start(0);
+            const rendered = await ctx.startRendering();
+            // Dry, room and echo add up past full scale on a loud phrase, which
+            // clips. Bring the result under it instead of leaving it to distort.
+            const data = rendered.getChannelData(0);
+            let loudest = 0;
+            for (let i = 0; i < data.length; i++) loudest = Math.max(loudest, Math.abs(data[i]));
+            if (loudest > 0.95) {
+                const trim = 0.95 / loudest;
+                for (let i = 0; i < data.length; i++) data[i] *= trim;
+            }
+            return rendered;
+        }
+
+        const fit = { stream: null, recorder: null, chunks: [], result: null, url: null, busy: false, timer: 0 };
+
+        function fitSay(text) {
+            const status = document.getElementById('fitStatus');
+            if (status) status.textContent = text;
+        }
+
+        function openFitPanel() {
+            const panel = document.getElementById('fitPanel');
+            const target = document.getElementById('fitTarget');
+            if (target) target.textContent = fitTargetLine();
+            if (panel) panel.hidden = false;
+            fitSay('Say or sing one phrase. The words are not read or searched for; only the sound is reshaped.');
+        }
+
+        function closeFitPanel() {
+            if (fit.recorder && fit.recorder.state === 'recording') fit.recorder.stop();
+            if (fit.stream) fit.stream.getTracks().forEach(track => track.stop());
+            fit.stream = null;
+            if (fit.url) URL.revokeObjectURL(fit.url);
+            fit.url = null;
+            const panel = document.getElementById('fitPanel');
+            if (panel) panel.hidden = true;
+        }
+
+        async function toggleFitRecord() {
+            const button = document.getElementById('fitRec');
+            if (fit.recorder && fit.recorder.state === 'recording') {
+                fit.recorder.stop();
+                return;
+            }
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                fitSay('This browser cannot open the microphone. Use the deployed https address, or the app on this PC.');
+                return;
+            }
+            try {
+                fit.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+            } catch (err) {
+                fitSay('The microphone was refused: ' + (err && err.name ? err.name : 'no access') +
+                    '. Allow it in the browser, and note that a plain http address on the LAN blocks it.');
+                return;
+            }
+            const types = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
+            const mimeType = types.find(type => window.MediaRecorder && MediaRecorder.isTypeSupported(type));
+            fit.chunks = [];
+            fit.recorder = new MediaRecorder(fit.stream, mimeType ? { mimeType: mimeType } : undefined);
+            fit.recorder.ondataavailable = event => { if (event.data && event.data.size) fit.chunks.push(event.data); };
+            fit.recorder.onstop = async () => {
+                clearTimeout(fit.timer);
+                if (button) {
+                    button.textContent = 'Record';
+                    button.classList.remove('live');
+                }
+                if (fit.stream) fit.stream.getTracks().forEach(track => track.stop());
+                fit.stream = null;
+                const blob = new Blob(fit.chunks, { type: mimeType || 'audio/webm' });
+                if (!blob.size) {
+                    fitSay('Nothing was recorded.');
+                    return;
+                }
+                await fitProcess(blob);
+            };
+            fit.recorder.start();
+            if (button) {
+                button.textContent = 'Stop';
+                button.classList.add('live');
+            }
+            fitSay('Recording. Stop when you finish the phrase; it stops itself after twelve seconds.');
+            fit.timer = setTimeout(() => {
+                if (fit.recorder && fit.recorder.state === 'recording') fit.recorder.stop();
+            }, 12000);
+        }
+
+        async function fitProcess(blob) {
+            if (fit.busy) return;
+            fit.busy = true;
+            fitSay('Listening for the pitch of your voice\u2026');
+            try {
+                const bytes = await blob.arrayBuffer();
+                const Ctor = window.AudioContext || window.webkitAudioContext;
+                const ctx = new Ctor();
+                const raw = await new Promise((resolve, reject) => {
+                    const done = ctx.decodeAudioData(bytes, resolve, reject);
+                    if (done && done.then) done.then(resolve, reject);
+                });
+                ctx.close && ctx.close();
+
+                const profile = fitProfileFor(fitSong ? fitSong.genre : '');
+                const mono = raw.getChannelData(0);
+                const heard = fitDetectPitch(mono, raw.sampleRate);
+                const semitones = fitSong && heard ? fitSemitones(heard, fitSong.root) : 0;
+                fitSay('Shaping ' + (heard ? Math.round(heard) + ' Hz' : 'the phrase') + ' into ' +
+                    (fitSong ? fitSong.key : 'A minor') + ' with the ' +
+                    ((fitSong && fitSong.genre) || 'neutral') + ' tone\u2026');
+
+                const rendered = await fitRender(raw, profile, semitones);
+                if (fit.url) URL.revokeObjectURL(fit.url);
+                fit.result = rendered;
+                fit.url = URL.createObjectURL(fitWav(rendered));
+                const play = document.getElementById('fitPlay');
+                const save = document.getElementById('fitSave');
+                if (play) play.disabled = false;
+                if (save) save.disabled = false;
+                fitSay('Done: ' + (semitones === 0 ? 'kept at its own pitch' : (semitones > 0 ? '+' : '') + semitones + ' semitones') +
+                    ', ' + Math.round(profile.lp) + ' Hz ceiling, ' + Math.round(profile.wet * 100) + '% room. Press Play, or Save WAV.');
+                fitPlayback();
+            } catch (err) {
+                fitSay('Could not process that recording: ' + (err && err.message ? err.message : 'unknown error') + '.');
+            } finally {
+                fit.busy = false;
+            }
+        }
+
+        function fitPlayback() {
+            if (!fit.url) return;
+            const audio = new Audio(fit.url);
+            audio.play().catch(() => fitSay('The browser blocked playback. Press Play once more.'));
+        }
+
+        function fitDownload() {
+            if (!fit.url) return;
+            const link = document.createElement('a');
+            link.href = fit.url;
+            link.download = 'voice fit - ' + ((fitSong && fitSong.genre) || 'neutral') + '.wav';
+            document.body.appendChild(link);
+            link.click();
+            setTimeout(() => link.remove(), 30000);
+        }
+
+        // 16-bit mono WAV, so the result plays anywhere and can be dropped into a
+        // track without a decoder in the way.
+        function fitWav(buffer) {
+            const data = buffer.getChannelData(0);
+            const view = new DataView(new ArrayBuffer(44 + data.length * 2));
+            const text = (offset, value) => {
+                for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
+            };
+            text(0, 'RIFF');
+            view.setUint32(4, 36 + data.length * 2, true);
+            text(8, 'WAVE');
+            text(12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, 1, true);
+            view.setUint32(24, buffer.sampleRate, true);
+            view.setUint32(28, buffer.sampleRate * 2, true);
+            view.setUint16(32, 2, true);
+            view.setUint16(34, 16, true);
+            text(36, 'data');
+            view.setUint32(40, data.length * 2, true);
+            let at = 44;
+            for (let i = 0; i < data.length; i++, at += 2) {
+                const sample = Math.max(-1, Math.min(1, data[i]));
+                view.setInt16(at, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+            }
+            return new Blob([view.buffer], { type: 'audio/wav' });
+        }
     </script>
 </body>
 </html>

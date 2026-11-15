@@ -223,6 +223,30 @@ if (Answers $SongPort) {
     Say "song service starting on 127.0.0.1:$SongPort, warming CUDA (log: song_service\logs\service_out.log)"
 }
 
+# --- the voice service, on the same card ---------------------------------
+# The cloning model that sings the AI's lyrics in the recorded voice. Started here
+# so "Sing the lyrics" works without a second terminal; without it the song service
+# still renders backing tracks, it just has no singer to lay over them.
+$voicePort = 8095
+if (Answers $voicePort) {
+    Say "voice service already on 127.0.0.1:$voicePort"
+} elseif (Starting '*--role voice*') {
+    Say 'voice service is still starting, leaving it alone'
+} else {
+    $voice = Join-Path $root 'voice_service'
+    $voicePython = Join-Path $voice '.venv\Scripts\python.exe'
+    if (Test-Path $voicePython) {
+        $env:VOICE_PORT = "$voicePort"
+        Start-Process -FilePath $voicePython -ArgumentList 'app.py', '--role', 'voice' -WorkingDirectory $voice `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput (Join-Path $voice 'logs\service_out.log') `
+            -RedirectStandardError (Join-Path $voice 'logs\service_err.log') | Out-Null
+        Say "voice service starting on 127.0.0.1:$voicePort (log: voice_service\logs\service_err.log)"
+    } else {
+        Say 'voice service not installed yet (voice_service\.venv missing)'
+    }
+}
+
 # --- the site -------------------------------------------------------------
 # app.py is the page itself, and it is the one process whose absence is noticed
 # first, so it is started here with the two AI services rather than by hand.

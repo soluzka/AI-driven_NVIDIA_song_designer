@@ -87,7 +87,7 @@ is how this project deploys without a global install.
 
 ## Run it locally
 
-```bash
+```
 uv venv .venv --python 3.11 --seed
 .venv\Scripts\python -m pip install -r requirements.txt
 .venv\Scripts\python app.py
@@ -116,13 +116,13 @@ global interpreter makes PyInstaller freeze an empty package, which is what
 produces `cannot import name 'emit' from 'flask_socketio'` in the frozen app.
 Check the socket stack before building:
 
-```bash
+```
 .venv\Scripts\python -c "from flask_socketio import emit, SocketIO"
 ```
 
 Optional desktop build:
 
-```bash
+```
 .venv\Scripts\python -m PyInstaller --clean --noconfirm ai_engine.spec
 ```
 
@@ -175,7 +175,7 @@ browser, so the site works with no backend at all.
 
 Deploy after refreshing the index:
 
-```bash
+```
 .venv\Scripts\python tools\export_index.py   # DB snapshot + videos.json (+ genres)
 npx wrangler deploy                          # or let Workers Builds deploy on push
 ```
@@ -450,12 +450,12 @@ will not start, while the PC itself is fine.
 
 To publish by hand, with the key from the Worker's secrets:
 
-```bash
-printf '{"url":"https://name.trycloudflare.com"}' > endpoint.json
-curl -X POST https://<your worker>/api/song/endpoint \
-  -H 'Content-Type: application/json' \
-  -H "x-song-key: $SONG_ENDPOINT_KEY" \
-  --data-binary @endpoint.json
+```
+Set-Content -Path endpoint.json -NoNewline -Value '{"url":"https://name.trycloudflare.com"}'
+curl.exe -X POST https://<your worker>/api/song/endpoint `
+  -H "Content-Type: application/json" `
+  -H "x-song-key: $env:SONG_ENDPOINT_KEY" `
+  --data-binary "@endpoint.json"
 ```
 
 Use `--data-binary @file` rather than inline JSON: on PowerShell, quoting inline
@@ -500,7 +500,7 @@ which takes the tunnel and the model off the network until it wakes.
 One Workers AI binding and no secrets. `wrangler.jsonc` declares
 `"ai": {"binding": "AI"}`, which voice search uses on the free allowance:
 
-```bash
+```
 npx wrangler deploy
 ```
 
@@ -606,6 +606,26 @@ Measured in the browser: a 220 Hz tone moved to 174.0 Hz at −4 semitones and
 261.0 Hz at +3, with the phrase length unchanged; a two-second phrase renders in
 about 60 ms.
 
+### Singing the lyrics in your own voice
+
+**Sing the lyrics** in the Fit voice panel uses the recording as a description of
+a voice, not as audio to be pasted into a track: the words are written by the
+language model, sung in your timbre by the voice service, and laid over an
+instrumental backing that ACE-Step renders for them. Nothing you actually said
+into the microphone survives into the song.
+
+Every press makes a new song — new lyrics, new backing — the same way Generate
+does, except the singer is your voice instead of the model's.
+
+It is a speech-cloning model, so expect a spoken-word delivery rather than a
+sung melody. True sung pitch would need singing-voice conversion and stem
+separation, neither of which is installed here.
+
+Install and run it with `voice_service/README.md`; the launcher starts it on
+`127.0.0.1:8095` on its own. Only **8090** is ever published — the song service
+calls the voice service locally, so the tunnel and the deployed page need no
+second address.
+
 ## API
 
 **Socket.IO events** (desktop app): `search_query` → `search_results`,
@@ -615,6 +635,14 @@ about 60 ms.
 
 **HTTP**: `POST /api/search`, `GET /api/stats`, `POST /api/download`,
 `GET /download_file/<token>`, `POST /api/transcribe`.
+
+**Song service**: `POST /api/song`, `POST /api/song/mix`, `POST /api/song/voice`
+(recording in the body, lyrics written by the model), `GET /api/song/<token>`,
+`GET /api/song/latest`, `GET /song_file/<token>`, `POST /api/lyrics`.
+
+**Voice service** (loopback only, reached by the song service): `POST
+/api/voice/sing?text=…` with the reference WAV in the body, `GET
+/voice_file/<token>`, `GET /health`.
 
 ## Configuration
 
@@ -730,7 +758,34 @@ song_service\.venv\Scripts\python gpu_check.py           # torch sees the card
 when only one half is missing. The weights land in `song_service/models/`, which
 is gitignored.
 
-### 4. Everything at once
+`song_service\requirements.txt` is the same package list in readable form — torch
+and torchaudio from the CUDA index, the transformers/hub pins, ACE-Step from git,
+and the helpers — for when you want to see the pins without opening `models.json`.
+It is not the installer: only `install.py` downloads the weights.
+
+### 4. The voice service — `voice_service\.venv`
+
+Optional, and separate from the song environment on purpose: it installs the
+cloning model and its own torch, and folding that into `song_service\.venv` would
+risk the 3.5B music model that already works. Without it the page still writes
+songs; it just has no singer to put the lyrics in your voice.
+
+```
+uv venv voice_service/.venv --python 3.11 --seed
+uv pip install --python voice_service/.venv/Scripts/python.exe -r voice_service/requirements.txt
+uv pip install --python voice_service/.venv/Scripts/python.exe --reinstall torch==2.6.0+cu126 torchaudio==2.6.0+cu126 --index-url https://download.pytorch.org/whl/cu126
+```
+
+The second line is not optional: `chatterbox-tts` pins `torch==2.6.0`, and PyPI's
+wheel for that version is the CPU build, so it replaces CUDA torch with one that
+falls back to the processor. The `+cu126` wheels keep the pin and the card.
+
+Weights download on the first request rather than at install time. The launcher
+tests for `voice_service\.venv` and skips the service when it is missing, so an
+uninstalled voice model never stops the rest of the stack from starting. Full
+detail, including the limits of the model, is in `voice_service/README.md`.
+
+### 5. Everything at once
 
 ```
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\start_services.ps1

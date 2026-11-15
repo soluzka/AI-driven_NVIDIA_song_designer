@@ -51,6 +51,13 @@ and no manual cloning or pip archaeology. The file holds two lists:
 | `Qwen/Qwen2.5-1.5B-Instruct` — writes the lyrics | ≈3.1 GB | Apache-2.0 |
 
 The commands below assume `song_service\.venv` exists; create it first, because
+`requirements.txt` in this folder lists the packages and their pins — torch and
+torchaudio from the CUDA index, `transformers==4.57.6`, `huggingface-hub==0.36.2`,
+ACE-Step from git, and the small helpers. It is the readable copy: `install.py` is
+what actually installs, because it also fetches the ~10 GB of weights, which no
+requirements file can do. Read the list when you want to know what is installed;
+run the installer when you want it installed.
+
 `install.py` installs into whatever interpreter runs it and does not build its own.
 `uv` rather than `python -m venv` is deliberate: on Windows `python` is often the
 Microsoft Store stub, and `uv venv` needs `--seed` to put `pip` inside the
@@ -165,6 +172,30 @@ entry, `songsvc://` and `start.cmd` all run. It starts the process at
 `AboveNormal` priority on purpose — the minute after a boot is a race between
 torch importing, these weights paging in and the site fitting its own models over
 12 000 videos, and the warm loses that race at normal priority.
+
+### Singing the lyrics in a recorded voice
+
+`POST /api/song/voice` is the route the page's **Sing the lyrics** button uses. A
+recording of a voice is the request body, and the query string carries the prompt
+and length. The job then runs in four stages, each reported as a status the page
+polls:
+
+| Status | What is happening |
+| --- | --- |
+| `writing` | the lyric model writes the words |
+| `singing` | the voice service on `127.0.0.1:8095` sings them in the recorded timbre |
+| `loading`, `generating` | ACE-Step renders an instrumental backing |
+| `mixing` | the sung vocal is laid over the backing, which is ducked under it |
+
+The recording is never used as audio in the track and its words are never read:
+it describes a voice, and the only vocals in the result are the lyrics sung in
+that voice. The backing is requested with `[inst]`, so the model adds no singer of
+its own to compete with it.
+
+That voice model is a separate environment and a separate process, because it
+needs a different torch than this one does. `voice_service/README.md` has its
+install and its limits — chief among them that it speaks rather than sings, so
+the delivery is spoken-word over the beat, not a melodic line.
 
 ### Reaching this from the deployed page
 

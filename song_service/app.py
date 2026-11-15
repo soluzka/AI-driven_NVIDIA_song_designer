@@ -17,6 +17,8 @@ sits in ACE_CHECKPOINT and the weights were fetched once during setup.
 
 import atexit
 import gc
+import io
+import json
 import os
 import re
 import shutil
@@ -25,6 +27,8 @@ import tempfile
 import threading
 import time
 import traceback
+import urllib.parse
+import urllib.request
 import uuid
 
 from flask import Flask, jsonify, request, send_file, stream_with_context
@@ -196,6 +200,119 @@ def _load_pipeline():
             cpu_offload=CPU_OFFLOAD,
         )
         return _pipeline
+
+
+VOICE_SERVICE = os.environ.get('VOICE_SERVICE', 'http://127.0.0.1:8095')
+
+
+def _sing_in_voice(reference_bytes, lyrics, token):
+    """Have the voice service speak the lyrics in the recorded timbre.
+
+    The recording is a description of a voice, not a source of words: the service
+    reads the lyrics the language model wrote and keeps nothing of what was said
+    into the microphone.
+    """
+    query = urllib.parse.urlencode({'text': lyrics})
+    request_ = urllib.request.Request(
+        VOICE_SERVICE + '/api/voice/sing?' + query, data=reference_bytes, method='POST',
+        headers={'Content-Type': 'audio/wav'})
+    _set(token, status='singing', progress=0.15)
+    with urllib.request.urlopen(request_, timeout=3600) as response:
+        info = json.loads(response.read().decode('utf-8'))
+    if not info.get('token'):
+        raise RuntimeError(info.get('error') or 'the voice service refused the lyrics')
+    _set(token, status='singing', progress=0.3)
+    with urllib.request.urlopen(VOICE_SERVICE + info['url'], timeout=300) as response:
+        return response.read(), info
+
+
+def _layout_vocal(song_path, vocal_bytes, out_path, bpm):
+    """Lay the sung lyrics over the instrumental and keep them the lead."""
+    import numpy as np
+    import soundfile as sf
+
+    song, rate = sf.read(song_path, always_2d=True)
+    vocal, vocal_rate = sf.read(io.BytesIO(vocal_bytes), always_2d=True)
+    mono = vocal.mean(axis=1).astype('float32')
+    if vocal_rate != rate and len(mono):
+        mono = np.interp(np.linspace(0, len(mono) - 1, int(len(mono) * rate / vocal_rate)),
+                         np.arange(len(mono)), mono).astype('float32')
+    if not len(mono):
+        raise RuntimeError('the voice service returned an empty vocal')
+
+    channels = song.shape[1]
+    out = song.copy()
+    start = int(len(out) * 0.04)
+    room = max(0, int(len(out) * 0.94) - start)
+    if len(mono) > room:
+        mono = mono[:room]
+        # A hard stop mid-word is audible; fade the tail instead.
+        fade = min(len(mono), int(rate * 0.4))
+        mono[-fade:] *= np.linspace(1, 0, fade).astype('float32')
+
+    placed = mono
+    # The track steps back under the words so the singing is what is heard, and
+    # comes back up wherever the phrase has a gap.
+    envelope = np.ones(len(placed), dtype='float32')
+    win = max(1, int(rate * 0.05))
+    hit = np.convolve(np.abs(placed), np.ones(win) / win, mode='same')
+    gate = np.clip(hit / (float(hit.max()) * 0.12 + 1e-9), 0.0, 1.0)
+    envelope = 1.0 - 0.45 * gate
+    out[start:start + len(placed)] *= envelope[:, None]
+    out[start:start + len(placed)] += (placed * 0.95)[:, None].repeat(channels, axis=1)
+
+    peak = float(np.max(np.abs(out)) or 0.0)
+    if peak > 0.98:
+        out *= 0.98 / peak
+    sf.write(out_path, out, rate)
+    return {'seconds': round(len(out) / float(rate), 2),
+            'vocal_seconds': round(len(placed) / float(rate), 2),
+            'starts_at': round(100.0 * start / max(1, len(out)), 1)}
+
+
+def _run_voice_job(token, reference_path, prompt, lyrics, seconds, steps, seed):
+    """Words from the lyric model, sung in the recorded voice, over a new backing."""
+    started = time.time()
+    try:
+        with open(reference_path, 'rb') as handle:
+            reference = handle.read()
+        if not lyrics:
+            _set(token, status='writing', progress=0.05)
+            from lyrics import lyrics_model_id, load_manifest
+
+            song = _lyricist().write_song(prompt or 'electronic music', '', seed)
+            lyrics = '\n'.join(song.get('lines') or [])
+            _set(token, prompt=prompt, lyrics=lyrics)
+        if not lyrics.strip():
+            raise RuntimeError('the lyric model wrote nothing to sing')
+
+        vocal_bytes, info = _sing_in_voice(reference, lyrics, token)
+        print('voice service sang %s phrases in %s' % (info.get('phrases'), info.get('seconds')),
+              flush=True)
+
+        # The backing is instrumental: the only voice in the track is the recorded one.
+        instrumentation = (prompt + ', instrumental, backing track, no lead vocal').strip(', ')
+        _run_job(token, instrumentation, '[inst]', seconds, steps, seed)
+        with _jobs_lock:
+            job = dict(_jobs.get(token) or {})
+        if job.get('status') != 'complete':
+            raise RuntimeError(job.get('error') or 'the backing did not render')
+
+        _set(token, status='mixing', progress=0.92)
+        mixed_path = os.path.join(job['tmp_dir'], 'song_with_voice.wav')
+        bpm = 120.0
+        layout = _layout_vocal(job['path'], vocal_bytes, mixed_path, bpm)
+        _set(token, status='complete', progress=1.0, path=mixed_path,
+             lyrics=lyrics, voice=layout, elapsed=round(time.time() - started, 1))
+        print('song with the recorded voice as the singer: %s' % (layout,), flush=True)
+    except Exception as exc:  # noqa: BLE001 - the page shows the reason
+        traceback.print_exc()
+        _set(token, status='error', error=str(exc), elapsed=round(time.time() - started, 1))
+    finally:
+        try:
+            os.remove(reference_path)
+        except OSError:
+            pass
 
 
 def _prune_jobs():
@@ -659,6 +776,64 @@ def api_song():
                     'seconds': seconds, 'steps': steps}), 202
 
 
+@app.route('/api/song/voice', methods=['POST', 'OPTIONS'])
+def api_song_voice():
+    """A song whose lyrics the AI writes and the recorded voice sings.
+
+    The request body is the voice recording - a description of the timbre, not a
+    source of words. Everything else rides in the query string, so a phone can
+    send the audio without building a multipart form.
+    """
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    raw = request.get_data()
+    if len(raw) < 2000:
+        return jsonify({'error': 'Send the voice recording as the request body.'}), 400
+
+    prompt = (request.args.get('prompt') or '').strip()
+    lyrics = (request.args.get('lyrics') or '').strip()
+    try:
+        seconds = float(request.args.get('seconds') or 60)
+    except (TypeError, ValueError):
+        seconds = 60
+    seconds = max(20.0, min(MAX_SECONDS, seconds))
+    try:
+        steps = int(request.args.get('steps') or DEFAULT_STEPS)
+    except (TypeError, ValueError):
+        steps = DEFAULT_STEPS
+    steps = max(8, min(80, steps))
+
+    global _latest_token
+    token = uuid.uuid4().hex
+    seed = int(request.args.get('seed') or (uuid.uuid4().int % 1000000))
+    with _jobs_lock:
+        for running_token, job in _jobs.items():
+            if job['status'] in ('queued', 'loading', 'generating', 'writing',
+                                 'singing', 'mixing'):
+                return jsonify({'token': running_token, 'status': job['status'],
+                                'reused': True}), 202
+
+    _prune_jobs()
+    logs = os.path.join(HERE, 'logs')
+    os.makedirs(logs, exist_ok=True)
+    reference_path = os.path.join(logs, 'voice_reference_%s.wav' % token)
+    with open(reference_path, 'wb') as handle:
+        handle.write(raw)
+    with _jobs_lock:
+        _jobs[token] = {
+            'status': 'writing', 'progress': 0.02, 'error': '',
+            'path': None, 'tmp_dir': None, 'elapsed': 0,
+            'prompt': prompt, 'seconds': seconds, 'lyrics': lyrics,
+            'voice': None, 'created': time.time(),
+        }
+        _latest_token = token
+
+    threading.Thread(target=_run_voice_job,
+                     args=(token, reference_path, prompt, lyrics, seconds, steps, seed),
+                     daemon=True).start()
+    return jsonify({'token': token, 'status': 'writing', 'seconds': seconds}), 202
+
+
 @app.route('/api/song/latest')
 def api_song_latest():
     """The newest job, so a reloaded or restarted page can join the song.
@@ -806,78 +981,6 @@ def api_song_mix():
         pans = [0.5, 0.5, 0.5, 0.5] if lead else [0.35, 0.75, 0.6, 0.3]
         duck = 0.4 if lead else 0.55
 
-        # "chop" turns the phrase into the vocal line itself: the recording is cut
-        # into short syllables and those are played on eighth notes through the
-        # track, following the song's key. Looping the whole phrase four times reads
-        # as a sample pasted over the music; syllables on the grid read as a vocal.
-        if str(request.args.get('mode') or '') == 'chop':
-            beat = 60.0 / bpm
-            eighth = beat / 2.0
-            step = int(eighth * rate)
-            if step < 64:
-                return jsonify({'error': 'The tempo is too fast to place the voice.'}), 400
-
-            # Cut at the quietest points near even gaps, so slices land on syllables
-            # rather than mid-word.
-            target = max(1024, int(rate * 0.14))
-            slices = []
-            at = 0
-            while at + target < len(mono):
-                window = mono[at:at + target]
-                quiet = int(np.argmin(np.convolve(np.abs(window), np.ones(96) / 96, mode='same')))
-                cut = at + max(int(target * 0.5), min(quiet, int(target * 0.95)))
-                slices.append(mono[at:cut])
-                at = cut
-            if len(slices) < 2:
-                slices = [mono[i:i + target] for i in range(0, len(mono) - target, target)]
-
-            # Pitch steps from the root's minor scale, so the slices form a melody
-            # instead of a drone.
-            steps = [0, 0, 3, 5, 3, 7, 5, 0, 3, 0, 7, 10]
-            out2 = song.copy()
-            start = int(len(out2) * 0.12)
-            placed = []
-            index = 0
-            at_pos = start
-            while at_pos + step < len(out2):
-                piece = slices[index % len(slices)]
-                semis = steps[index % len(steps)]
-                ratio = float(2.0 ** (semis / 12.0))
-                want = max(64, int(len(piece) / ratio))
-                src = np.interp(np.linspace(0, len(piece) - 1, want), np.arange(len(piece)), piece).astype('float32')
-                if want > step:
-                    src = src[:step]
-                n = len(src)
-                env = np.ones(n, dtype='float32')
-                fade_n = max(1, int(rate * 0.006))
-                env[:min(fade_n, n)] = np.linspace(0, 1, min(fade_n, n))
-                env[-min(fade_n, n):] = np.linspace(1, 0, min(fade_n, n))
-                level = 0.85 if index % 4 != 3 else 0.55
-                seg = (src * env * level)[:, None]
-                out2[at_pos:at_pos + n] *= 0.55
-                out2[at_pos:at_pos + n] += seg.repeat(channels, axis=1)
-                placed.append(round(100 * at_pos / max(1, len(out2))))
-                index += 1
-                at_pos += step
-            loudest = float(np.max(np.abs(out2)) or 0.0)
-            if loudest > 0.98:
-                out2 = out2 * (0.98 / loudest)
-            mixed_path = os.path.join(os.path.dirname(song_path), 'song_with_voice.wav')
-            sf.write(mixed_path, out2, rate)
-            token = secrets.token_hex(8)
-            with _jobs_lock:
-                _jobs[token] = {
-                    'status': 'complete', 'progress': 1.0, 'error': '',
-                    'path': mixed_path, 'tmp_dir': None, 'elapsed': 0,
-                    'prompt': prompt + ' with chopped voice',
-                    'seconds': round(len(out2) / float(rate), 2),
-                    'created': time.time(),
-                }
-                _latest_token = token
-            print('chopped the voice into %d syllables on the grid at %s bpm' % (index, bpm), flush=True)
-            return jsonify({'token': token, 'seconds': round(len(out2) / float(rate), 2),
-                            'placed_at': len(placed), 'bpm': bpm, 'bars': len(placed),
-                            'lead': True, 'mode': 'chop', 'syllables': index})
         placed = []
         for step, (level, pan) in enumerate(zip(levels, pans)):
             start = int((first_bar + step) * bar * rate)

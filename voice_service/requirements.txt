@@ -1,0 +1,26 @@
+# Voice-cloning environment: sings the AI's lyrics in a recorded voice.
+#
+# Install into voice_service/.venv, and keep the order:
+#
+#   uv pip install --python voice_service/.venv/Scripts/python.exe -r voice_service/requirements.txt
+#   uv pip install --python voice_service/.venv/Scripts/python.exe --reinstall \
+#       torch==2.6.0+cu126 torchaudio==2.6.0+cu126 \
+#       --index-url https://download.pytorch.org/whl/cu126
+#
+# The second command is not optional. chatterbox-tts pins torch==2.6.0, and PyPI's
+# wheel for that version is the CPU build, so a plain install replaces a working
+# CUDA torch with one that reports cuda False - the service then runs on the CPU
+# and takes minutes per phrase instead of seconds. Reinstalling the +cu126 wheels
+# of the same version afterwards keeps chatterbox's pin satisfied and the card in
+# use. Check it with:
+#
+#   voice_service/.venv/Scripts/python.exe -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+#
+# which must print 2.6.0+cu126 True.
+
+chatterbox-tts==0.1.7
+# chatterbox's own pin is numpy<2; 2.x breaks its audio helpers at import.
+numpy==1.26.4
+soundfile>=0.12
+flask>=3.0
+flask-cors>=4.0

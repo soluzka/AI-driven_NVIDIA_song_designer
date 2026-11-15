@@ -914,7 +914,7 @@
             <button class="fit-act" id="fitPlay" onclick="fitPlayback()" disabled>Play</button>
             <button class="fit-act" id="fitSave" onclick="fitDownload()" disabled>Save WAV</button>
             <button class="fit-act" id="fitMix" onclick="fitMixInto()" disabled
-                    title="Put this phrase into the song the PC last rendered, on its bar lines">Mix into song</button>
+                    title="Write lyrics with the AI and sing them in this voice">Sing the lyrics</button>
 
             <button class="fit-act" id="fitSearchClip" onclick="fitUseSearchClip()" disabled
                     title="Reuse the clip you just spoke into the voice search">Use voice search clip</button>
@@ -3935,7 +3935,7 @@
                             const blob = fitWav(fit.result);
                             for (const base of await modelBases(false)) {
                                 const answer = await fetchBounded(
-                                    base + '/api/song/mix?bpm=' + encodeURIComponent(bpm || 120) + '&lead=1&mode=chop',
+                                    base + '/api/song/mix?bpm=' + encodeURIComponent(bpm || 120) + '&lead=1',
                                     { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: blob },
                                     180000);
                                 if (!answer.ok) continue;
@@ -6287,46 +6287,71 @@
                 fitSay('Record a phrase first, then mix it in.');
                 return;
             }
-            fitSay('Mixing your phrase into the song on this PC\u2026');
+            // The recording is a voice, not a sample: the PC writes the lyrics with
+            // the language model, sings them in this voice, and renders a backing to
+            // carry them. Nothing said into the microphone is used as words.
+            fitSay('Writing lyrics and singing them in your voice on this PC. The first run also loads the voice model, which takes a while\u2026');
             const blob = fitWav(fit.result);
             let bases = [];
             try { bases = await modelBases(false); } catch (err) {}
             let reason = 'no address answered';
             for (const base of bases) {
                 try {
-                    const bpm = fitSong ? fitSong.bpm : 120;
-                    const response = await fetchBounded(base + '/api/song/mix?bpm=' + encodeURIComponent(bpm) + '&lead=1&mode=chop', {
+                    const prompt = (fitSong && fitSong.genre) ? fitSong.genre : 'electronic';
+                    const seconds = (fitSong && fitSong.seconds) || 60;
+                    const ask = base + '/api/song/voice?' + new URLSearchParams({ prompt: prompt, seconds: String(seconds) }).toString();
+                    const start = await fetchBounded(ask, {
                         method: 'POST',
                         headers: { 'Content-Type': 'audio/wav' },
                         body: blob
-                    }, 180000);
-                    if (!response.ok) {
-                        const said = await response.json().catch(() => ({}));
-                        reason = said.error || ('answer ' + response.status);
+                    }, 90000);
+                    if (!start.ok) {
+                        const said = await start.json().catch(() => ({}));
+                        reason = said.error || ('answer ' + start.status);
                         continue;
                     }
-                    const info = await response.json();
-                    if (!info.token) {
-                        reason = 'no song came back';
+                    const job = await start.json();
+                    if (!job.token) {
+                        reason = 'no job came back';
                         continue;
                     }
-                    const url = base + '/song_file/' + info.token;
-                    fit.mixUrl = url;
-                    const playBtn = document.getElementById('fitPlay');
-                    const saveBtn = document.getElementById('fitSave');
-                    if (playBtn) playBtn.textContent = 'Play song';
-                    if (saveBtn) saveBtn.textContent = 'Save song';
-                    const audio = new Audio(url);
-                    audio.play().catch(() => {});
-                    const bars = info.bars || (info.placed_at || []).length;
-                    fitSay('Your voice is the lead on ' + bars + ' bar lines at ' + Math.round(info.bpm || 120) +
-                        ' BPM, with the track ducked under it. Play and Save WAV now use the song with your voice singing it.');
-                    return;
+                    // A whole song takes minutes on one card; say which part it is on.
+                    const stages = {
+                        writing: 'writing the lyrics',
+                        singing: 'singing them in your voice',
+                        loading: 'loading the song model',
+                        generating: 'rendering the backing',
+                        mixing: 'laying the voice over the backing'
+                    };
+                    for (let tick = 0; tick < 120; tick++) {
+                        await new Promise(resolve => setTimeout(resolve, 5000));
+                        const state = await fetchBounded(base + '/api/song/' + job.token, {}, 20000)
+                            .then(r => r.json()).catch(() => ({}));
+                        if (state.status === 'error') {
+                            reason = state.error || 'the song failed';
+                            break;
+                        }
+                        if (state.status === 'complete') {
+                            const songUrl = base + '/song_file/' + job.token;
+                            fit.mixUrl = songUrl;
+                            const playBtn = document.getElementById('fitPlay');
+                            const saveBtn = document.getElementById('fitSave');
+                            if (playBtn) playBtn.textContent = 'Play song';
+                            if (saveBtn) saveBtn.textContent = 'Save song';
+                            new Audio(songUrl).play().catch(() => {});
+                            fitSay('The lyrics are sung in your voice over a new backing. Play and Save WAV use that song.');
+                            return;
+                        }
+                        if (stages[state.status]) {
+                            fitSay('Working: ' + stages[state.status] + '\u2026 (' +
+                                Math.round((state.progress || 0) * 100) + '%)');
+                        }
+                    }
                 } catch (err) {
                     reason = (err && err.message) || 'request failed';
                 }
             }
-            fitSay('Could not mix it in: ' + reason + '. The song is rendered on this PC, so its service has to be running.');
+            fitSay('Could not make the song: ' + reason + '. The models run on this PC, so its services have to be running.');
         }
 
         function fitUseSearchClip() {

@@ -1,9 +1,12 @@
 # Double-click entry point (start.cmd runs this).
 #
 # tools\start_services.ps1 is the one launcher: it starts the downloader on 8080,
-# the song service on 8090 and the site on 5001, starts cloudflared, publishes the
-# tunnel's new address to the site so a phone can find it, and registers
-# songsvc://. The logon entry and the watchdog run that same file.
+# the song service on 8090, the voice service on 8095 and the site on 5001, starts
+# cloudflared, publishes the tunnel's new address to the site so a phone can find
+# it, and registers songsvc://. The logon entry and the watchdog run that same
+# file, which is why the voice model comes up on every one of those paths - and why
+# a missing voice_service\.venv is reported and skipped instead of failing the
+# whole start.
 #
 # This file used to be a second, older copy of all that. It started a tunnel but
 # never told the site about it, so a phone kept the last address it had been given

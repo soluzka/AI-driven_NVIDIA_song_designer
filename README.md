@@ -771,14 +771,18 @@ risk the 3.5B music model that already works. Without it the page still writes
 songs; it just has no singer to put the lyrics in your voice.
 
 ```
-uv venv voice_service/.venv --python 3.11 --seed
-uv pip install --python voice_service/.venv/Scripts/python.exe -r voice_service/requirements.txt
-uv pip install --python voice_service/.venv/Scripts/python.exe --reinstall torch==2.6.0+cu126 torchaudio==2.6.0+cu126 --index-url https://download.pytorch.org/whl/cu126
+uv venv voice_service\.venv --python 3.11 --seed
+voice_service\.venv\Scripts\python.exe voice_service\install.py --check    # report, change nothing
+voice_service\.venv\Scripts\python.exe voice_service\install.py            # install everything
 ```
 
-The second line is not optional: `chatterbox-tts` pins `torch==2.6.0`, and PyPI's
-wheel for that version is the CPU build, so it replaces CUDA torch with one that
-falls back to the processor. The `+cu126` wheels keep the pin and the card.
+`install.py` is the whole install, and it is written to not leave the machine on
+CPU torch: `chatterbox-tts` pins `torch==2.6.0`, and PyPI's wheel for that version
+is the CPU build, so a plain `pip install -r requirements.txt` replaces CUDA torch
+with one that falls back to the processor — silently. The script installs the
+packages and then restores the `+cu126` wheels of the same version. `--check`
+reports the torch build and whether a card is visible; on this machine it prints
+`torch 2.6.0+cu126` and `cuda True (NVIDIA GeForce RTX 4060 Ti)`.
 
 Weights download on the first request rather than at install time. The launcher
 tests for `voice_service\.venv` and skips the service when it is missing, so an

@@ -34,25 +34,32 @@ disk for the wheels plus the weights. Run from the project root:
 
 ```
 uv venv voice_service\.venv --python 3.11 --seed
-uv pip install --python voice_service\.venv\Scripts\python.exe -r voice_service\requirements.txt
-uv pip install --python voice_service\.venv\Scripts\python.exe --reinstall torch==2.6.0+cu126 torchaudio==2.6.0+cu126 --index-url https://download.pytorch.org/whl/cu126
+voice_service\.venv\Scripts\python.exe voice_service\install.py --check    # report, change nothing
+voice_service\.venv\Scripts\python.exe voice_service\install.py            # install everything
 ```
 
-The second command is the one that is easy to miss. `chatterbox-tts` pins
-`torch==2.6.0`, and PyPI's 2.6.0 wheel is the **CPU** build — so installing the
-requirements alone silently replaces a working CUDA torch with one where
-`torch.cuda.is_available()` is `False`, and the service falls back to the CPU and
-takes minutes per phrase. Reinstalling the `+cu126` wheels of the same version
-afterwards keeps chatterbox's pin satisfied and the card in use. `requirements.txt`
-carries the same note, so the ordering travels with the file.
+**`install.py` is the whole install, and it deliberately does not leave you on CPU
+torch.** `chatterbox-tts` pins `torch==2.6.0`, and PyPI's 2.6.0 wheel is the **CPU**
+build — a plain `pip install -r requirements.txt` therefore replaces a working CUDA
+torch with one where `torch.cuda.is_available()` is `False`, silently, with no
+error, and the service then takes minutes per phrase on the processor. The script
+installs the packages and then puts the `+cu126` wheels of that same version back,
+so one command leaves the machine in the state it needs. Running it again is safe:
+it repairs that state if anything else has broken it since.
 
-Check it with:
+`--check` prints what is present, the torch build and whether a card is visible,
+without installing anything. On this machine it reports:
 
 ```
-voice_service\.venv\Scripts\python.exe -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+  torch 2.6.0+cu126
+  cuda  True  (NVIDIA GeForce RTX 4060 Ti)
 ```
 
-which must print `2.6.0+cu126 True`.
+`requirements.txt` holds the same package list for reading, with the same warning
+at the top. Installing the small packages on their own later (for example
+`uv pip install --python voice_service\.venv\Scripts\python.exe soundfile`) is safe
+and does not touch torch — it is only `chatterbox-tts` that drags a torch wheel
+with it.
 
 The model weights are downloaded from Hugging Face on the **first** request, not
 at install time, and they land in the usual Hugging Face cache

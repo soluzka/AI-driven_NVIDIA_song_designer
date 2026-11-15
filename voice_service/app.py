@@ -20,7 +20,6 @@ import time
 
 import numpy as np
 import soundfile as sf
-import torch
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 
@@ -40,10 +39,28 @@ PHRASE_CHARS = 180
 GAP_SECONDS = 0.18
 
 
+def _torch_status():
+    """Whether a card is visible, without paying for torch at startup.
+
+    torch takes tens of seconds to import on Windows. Importing it at module level
+    meant the process existed but Flask had not bound the port yet, so the launcher
+    saw a running process and the page saw a refused connection - the two together
+    read as "the voice service is up but broken". The import now happens on first
+    use, and health answers `unknown` until then instead of blocking.
+    """
+    try:
+        import torch
+
+        return {'cuda': bool(torch.cuda.is_available()), 'torch': torch.__version__}
+    except Exception as err:  # noqa: BLE001
+        return {'cuda': None, 'torch': 'unavailable: %s' % (err,)}
+
+
 def _load_model():
     global _model
     with _model_lock:
         if _model is None:
+            import torch
             from chatterbox.tts import ChatterboxTTS
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
             _model = ChatterboxTTS.from_pretrained(device=device)
@@ -71,8 +88,11 @@ def _phrases(text):
 
 @app.get('/health')
 def health():
+    # Only touch torch once something has asked for the model; until then this must
+    # answer in milliseconds so the launcher can tell up from loading.
+    status = _torch_status() if _model is not None else {'cuda': None, 'torch': 'not loaded'}
     return jsonify({'ok': True, 'model_loaded': _model is not None,
-                    'cuda': torch.cuda.is_available()})
+                    'cuda': status.get('cuda'), 'torch': status.get('torch')})
 
 
 @app.post('/api/voice/sing')

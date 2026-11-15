@@ -26,10 +26,16 @@
 chatterbox-tts==0.1.7
 # chatterbox's own pin is numpy<2; 2.x breaks its audio helpers at import.
 numpy==1.26.4
-# perth (chatterbox's watermarker) imports pkg_resources, which setuptools 81+
-# removed. Without this the watermarker is None and from_pretrained dies with
-# "TypeError: 'NoneType' object is not callable".
+# perth is the watermarker chatterbox instantiates at load time, and it imports
+# pkg_resources, which setuptools 81 removed. On setuptools 84 the watermarker
+# resolves to None and the first request dies with:
+#
+#   TypeError: 'NoneType' object is not callable   (chatterbox/tts.py, from_pretrained)
+#
+# Pinning below 81 keeps pkg_resources present and the watermarker a real class.
 setuptools<81
-soundfile>=0.12
+# Without flask the service exits before binding the port, and the page reports
+# "WinError 10061 ... actively refused it" while the launcher still says starting.
 flask>=3.0
 flask-cors>=4.0
+soundfile>=0.12

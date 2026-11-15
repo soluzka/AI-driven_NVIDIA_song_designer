@@ -14,6 +14,19 @@ installs the requirements and then puts the `+cu126` wheels of the same version
 back, so one command leaves the machine in the state it needs. Re-running it is
 safe: it repairs that state if something else has broken it since.
 
+The other pins here each repair a failure that is hard to read from the message:
+
+- `setuptools<81` - `perth`, the watermarker chatterbox instantiates, imports
+  `pkg_resources`, which setuptools 81 removed. With a newer setuptools
+  `perth.PerthImplicitWatermarker` is `None` and `from_pretrained` dies with
+  "'NoneType' object is not callable".
+- `numpy==1.26.4` - chatterbox's helpers are written for numpy 1.x, and an
+  interrupted install can also leave numpy's dist-info without `__init__.py`,
+  which reads as "module 'numpy' has no attribute 'ndarray'".
+- `flask`, `flask-cors`, `soundfile` - without flask the service starts and exits
+  before binding, and the page reports `WinError 10061` while the launcher still
+  says "still starting".
+
 The voice weights are not downloaded here; the model fetches them from Hugging
 Face on the first request, into the usual cache.
 """
@@ -72,6 +85,17 @@ def check():
         print('\nThis is the CPU build: renders will take minutes instead of seconds.')
         print(f'Fix it with the same script (no --check), which installs {CUDA_INDEX}.')
         return 1
+
+    # The watermarker chatterbox builds at load time: None here means the model
+    # fails with "'NoneType' object is not callable" on the first request.
+    import perth
+
+    if perth.PerthImplicitWatermarker is None:
+        print('\n  watermarker MISSING (perth could not import pkg_resources)')
+        print("  from_pretrained would fail with 'NoneType' object is not callable.")
+        print('  Fix it with the same script (no --check): it pins setuptools<81.')
+        return 1
+    print('  watermarker ok (perth)')
     print('\nReady. The launcher starts it on 127.0.0.1:8095; the weights download on'
           '\nthe first "Sing the lyrics".')
     return 0

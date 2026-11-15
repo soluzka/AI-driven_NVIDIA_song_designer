@@ -6357,8 +6357,14 @@
                         new Audio(songUrl).play().catch(() => {});
                         fitSay('The lyrics are sung in your voice over a new backing. Play and Save WAV use that song.');
                     };
+                    // No minute-count deadline here either: the loop ends when the
+                    // job finishes, fails, is forgotten, or stops reporting for
+                    // fifteen minutes. A fixed hour would cut a slow render that is
+                    // still moving, which is the same mistake as the ten-minute cap.
                     let reached = 0;
-                    for (let tick = 0; tick < 720; tick++) {
+                    let lastSeen = '';
+                    let lastMoved = Date.now();
+                    for (;;) {
                         await new Promise(resolve => setTimeout(resolve, 5000));
                         let response = null;
                         let state = {};
@@ -6385,8 +6391,15 @@
                             finishSong(base + '/song_file/' + job.token);
                             return;
                         }
+                        if (state.status !== lastSeen || (state.progress || 0) !== reached) {
+                            lastSeen = state.status;
+                            reached = state.progress || 0;
+                            lastMoved = Date.now();
+                        } else if (Date.now() - lastMoved > 15 * 60 * 1000) {
+                            reason = 'the voice service stopped reporting progress';
+                            break;
+                        }
                         if (stages[state.status]) {
-                            if (state.progress) reached = state.progress;
                             // The clock is the point: a stage can hold its figure for
                             // minutes while the model works, and the page should show
                             // that time is passing rather than look dead.
@@ -6398,8 +6411,6 @@
                                 Math.round((state.progress || 0) * 100) + '%, ' + clock + ')');
                         }
                     }
-                    reason = 'it was still working after an hour (last seen at ' +
-                        Math.round(reached * 100) + '%)';
                 } catch (err) {
                     reason = (err && err.message) || 'request failed';
                 }

@@ -147,6 +147,7 @@
         }
         .search-bar {
             display: flex;
+            flex-wrap: wrap;
             gap: 8px;
             align-items: center;
             background: var(--surface);
@@ -191,7 +192,7 @@
             position: fixed;
             left: 12px;
             right: 12px;
-            bottom: 12px;
+            bottom: calc(12px + env(safe-area-inset-bottom, 0px));
             max-width: 560px;
             margin: 0 auto;
             background: var(--surface);
@@ -4790,9 +4791,10 @@
             // to the same address is allowed. So the bytes come in by fetch and
             // the player is handed a blob URL.
             const playStream = async (stream) => {
-                if (poster) poster.style.display = 'none';
-                video.innerHTML = '<video controls autoplay playsinline style="width:100%;height:100%;background:#000"></video>';
-                const player = video.querySelector('video');
+                // The picture stays until there are bytes to show. Blanking the stage
+                // first is what left the phone on a black screen: the whole file comes
+                // down the tunnel before it can play, and an empty black frame with
+                // nothing on it looks like the page has died.
                 const back = document.createElement('button');
                 back.type = 'button';
                 back.className = 'player-embed-back';
@@ -4800,19 +4802,50 @@
                 back.addEventListener('click', () => openPlayer(url, title, desc, thumbnail));
                 video.appendChild(back);
 
-                // This machine has to fetch the file before the browser can play
-                // it, so say that instead of leaving a black frame that looks stuck.
-                if (!video.querySelector('.player-preparing')) {
-                    const note = document.createElement('div');
+                let note = video.querySelector('.player-preparing');
+                if (!note) {
+                    note = document.createElement('div');
                     note.className = 'player-preparing';
                     note.textContent = 'Preparing the video… a long one takes a minute';
                     video.appendChild(note);
                 }
 
-                player.addEventListener('error', () => {
-                    openPlayer(url, title, desc, thumbnail);
-                    showToast('error', 'The video would not play here', 'It is on the source site - use "Open" on the card.');
-                });
+                // Count the wait out loud, so a slow file looks like a slow file.
+                let waited = 0;
+                const clock = setInterval(() => {
+                    waited += 10;
+                    if (note.isConnected) {
+                        note.textContent = 'Still preparing after ' + waited + 's \u2014 the whole file comes down before it plays.';
+                    }
+                }, 10000);
+
+                const showVideo = (blob) => {
+                    clearInterval(clock);
+                    if (note.isConnected) note.remove();
+                    if (poster) poster.style.display = 'none';
+                    const player = document.createElement('video');
+                    player.controls = true;
+                    player.autoplay = true;
+                    player.playsInline = true;
+                    player.style.cssText = 'width:100%;height:100%;background:#000';
+                    player.addEventListener('error', () => {
+                        openPlayer(url, title, desc, thumbnail);
+                        showToast('error', 'The video would not play here', 'It is on the source site - use "Open" on the card.');
+                    });
+                    video.insertBefore(player, back);
+                    player.src = URL.createObjectURL(blob);
+                    // A file the browser cannot decode shows a black frame forever and
+                    // fires no error, so give it eight seconds and then put the picture
+                    // back with the way out. A black screen is never the answer.
+                    const guard = setTimeout(() => {
+                        if (player.readyState >= 2 || generation !== playerGeneration) return;
+                        openPlayer(url, title, desc, thumbnail);
+                        showToast('error', 'This one will not play here',
+                            'The site opened it but the browser cannot decode it. Use "Open" on the card.');
+                    }, 8000);
+                    player.addEventListener('loadeddata', () => clearTimeout(guard));
+                    player.addEventListener('playing', () => clearTimeout(guard));
+                };
 
                 try {
                     // On a phone, 127.0.0.1 is the phone: the card's own stream has to
@@ -4835,11 +4868,13 @@
                     const blob = await response.blob();
                     // A player that was replaced while this was downloading is not
                     // the one on screen any more.
-                    if (generation !== playerGeneration) return;
-                    player.src = URL.createObjectURL(blob);
-                    const note = video.querySelector('.player-preparing');
-                    if (note) note.remove();
+                    if (generation !== playerGeneration) {
+                        clearInterval(clock);
+                        return;
+                    }
+                    showVideo(blob);
                 } catch (err) {
+                    clearInterval(clock);
                     if (generation !== playerGeneration) return;
                     openPlayer(url, title, desc, thumbnail);
                     showToast('error', 'The video would not play here',
@@ -5766,20 +5801,32 @@
         }
 
         // Octaves are the same note, so the voice is moved to the nearest octave of
-        // the song's root rather than being dragged to one exact frequency.
+        // the song's root rather than dragged to one exact frequency. A step up
+        // carries the formants with it, and that is what makes a voice come out
+        // sounding like a child, so an upward step is charged two semitones and has
+        // to be clearly smaller than the downward one to win. Equal candidates go
+        // to the lower one.
         function fitSemitones(from, to) {
             if (!from || !to) return 0;
-            let best = 0;
-            let bestErr = Infinity;
-            for (let step = -7; step <= 7; step++) {
-                const steps = Math.log2((from * Math.pow(2, step / 12)) / to);
-                const err = Math.abs(steps - Math.round(steps));
-                if (err < bestErr - 1e-9) {
-                    bestErr = err;
-                    best = step;
+            // A shift only counts if it actually lands on the note. Among those, the
+            // smallest move wins, and an upward one is charged two extra semitones so
+            // the downward answer takes a tie.
+            for (const tolerance of [0.06, 0.2, 1]) {
+                let best = null;
+                let bestScore = Infinity;
+                for (let step = -7; step <= 7; step++) {
+                    const steps = Math.log2((from * Math.pow(2, step / 12)) / to);
+                    const err = Math.abs(steps - Math.round(steps));
+                    if (err > tolerance) continue;
+                    const score = Math.abs(step) + (step > 0 ? 2 : 0);
+                    if (score < bestScore) {
+                        bestScore = score;
+                        best = step;
+                    }
                 }
+                if (best !== null) return best;
             }
-            return best;
+            return 0;
         }
 
         // Median fundamental of the loudest frames: enough to place a phrase in a
@@ -5928,6 +5975,18 @@
             comp.threshold.value = -20;
             comp.ratio.value = 3;
 
+            // Pitch and formants move together when a phrase is resampled, which is
+            // the other half of why a lifted voice sounds high. Put the body back:
+            // more low end and less presence for a lift, the reverse for a drop.
+            const body = ctx.createBiquadFilter();
+            body.type = 'lowshelf';
+            body.frequency.value = 240;
+            body.gain.value = Math.max(-6, Math.min(6, semitones * 1.1));
+            const presenceTrim = ctx.createBiquadFilter();
+            presenceTrim.type = 'highshelf';
+            presenceTrim.frequency.value = 3200;
+            presenceTrim.gain.value = Math.max(-5, Math.min(5, -semitones * 0.9));
+
             const dry = ctx.createGain();
             dry.gain.value = Math.max(0.35, 1 - profile.wet * 0.6);
             const wet = ctx.createGain();
@@ -5945,9 +6004,10 @@
             echoWet.gain.value = profile.echo;
 
             source.connect(high).connect(low).connect(presence).connect(shaper).connect(comp);
-            comp.connect(dry).connect(ctx.destination);
-            comp.connect(room).connect(wet).connect(ctx.destination);
-            comp.connect(echo);
+            comp.connect(body).connect(presenceTrim);
+            presenceTrim.connect(dry).connect(ctx.destination);
+            presenceTrim.connect(room).connect(wet).connect(ctx.destination);
+            presenceTrim.connect(echo);
             echo.connect(feedback).connect(echo);
             echo.connect(echoWet).connect(ctx.destination);
             source.start(0);
@@ -5975,9 +6035,25 @@
             const panel = document.getElementById('fitPanel');
             const target = document.getElementById('fitTarget');
             if (target) target.textContent = fitTargetLine();
-            if (panel) panel.hidden = false;
+            if (panel) {
+                panel.hidden = false;
+                panel.scrollIntoView({ block: 'nearest' });
+            }
             fitSay('Say or sing one phrase. The words are not read or searched for; only the sound is reshaped.');
         }
+
+        // Escape closes whatever is on top: the player first, then the voice panel.
+        // A full-screen black frame with no obvious way out is the worst state this
+        // page can be in, so one key always gets back.
+        document.addEventListener('keydown', event => {
+            if (event.key !== 'Escape') return;
+            const overlay = document.getElementById('playerOverlay');
+            if (overlay && overlay.classList.contains('active')) {
+                closePlayer();
+                return;
+            }
+            closeFitPanel();
+        });
 
         function closeFitPanel() {
             if (fit.recorder && fit.recorder.state === 'recording') fit.recorder.stop();

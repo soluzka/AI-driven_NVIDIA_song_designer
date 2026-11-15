@@ -4802,6 +4802,29 @@
                 back.addEventListener('click', () => openPlayer(url, title, desc, thumbnail));
                 video.appendChild(back);
 
+                // A streamable address wins outright: the picture is handed to the
+                // browser as the video's own poster, so it stays up until the first
+                // frame arrives and nothing goes black in between.
+                if (stream.direct && stream.direct.length) {
+                    const player = document.createElement('video');
+                    player.controls = true;
+                    player.autoplay = true;
+                    player.playsInline = true;
+                    player.preload = 'auto';
+                    if (thumbnail) player.poster = thumbnail;
+                    player.style.cssText = 'width:100%;height:100%;background:#000';
+                    player.addEventListener('loadeddata', () => {
+                        if (poster) poster.style.display = 'none';
+                    });
+                    player.addEventListener('error', () => {
+                        openPlayer(url, title, desc, thumbnail);
+                        showToast('error', 'The video would not play here', 'It is on the source site - use "Open" on the card.');
+                    });
+                    video.insertBefore(player, back);
+                    player.src = stream.direct[0];
+                    return;
+                }
+
                 let note = video.querySelector('.player-preparing');
                 if (!note) {
                     note = document.createElement('div');
@@ -4913,8 +4936,15 @@
                 // what makes a TikTok or a Dailymotion card play here at all.
                 const button = video.querySelector('.player-poster-play');
                 if (button) button.textContent = '…';
-                const src = 'http://127.0.0.1:8080/api/play?url=' + encodeURIComponent(url);
-                playStream({ src: src });
+                const route = '/api/play?url=' + encodeURIComponent(url);
+                // Addresses the video element itself may point at. The tunnel answers
+                // range requests, so the browser streams it and can seek. Fetching the
+                // bytes instead means waiting for the whole file first, and the first
+                // card tried was 101 MB - which is why it sat on "preparing" forever.
+                const direct = [];
+                if (location.protocol === 'http:') direct.push('http://127.0.0.1:8080' + route);
+                if (window.remoteSongApi) direct.push(window.remoteSongApi + '/pc' + route);
+                playStream({ src: 'http://127.0.0.1:8080' + route, direct: direct });
             };
             const playButton = video.querySelector('.player-poster-play');
             if (playButton) playButton.addEventListener('click', startPlayback);
@@ -6032,11 +6062,20 @@
         }
 
         function openFitPanel() {
+            // On a phone the keyboard is usually up, because the search box had
+            // focus, and a panel pinned to the bottom of the layout sits behind it:
+            // the button then looks like it did nothing at all. Drop the keyboard
+            // first, and clear whatever part of it is still showing.
+            if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
             const panel = document.getElementById('fitPanel');
             const target = document.getElementById('fitTarget');
             if (target) target.textContent = fitTargetLine();
             if (panel) {
                 panel.hidden = false;
+                const view = window.visualViewport;
+                panel.style.bottom = view && view.height < window.innerHeight
+                    ? Math.round(window.innerHeight - view.height - view.offsetTop) + 12 + 'px'
+                    : '';
                 panel.scrollIntoView({ block: 'nearest' });
             }
             fitSay('Say or sing one phrase. The words are not read or searched for; only the sound is reshaped.');
@@ -6056,6 +6095,8 @@
         });
 
         function closeFitPanel() {
+            const panel = document.getElementById('fitPanel');
+            if (panel) panel.style.bottom = '';
             if (fit.recorder && fit.recorder.state === 'recording') fit.recorder.stop();
             if (fit.stream) fit.stream.getTracks().forEach(track => track.stop());
             fit.stream = null;

@@ -607,6 +607,12 @@ def api_song():
     data = request.get_json(silent=True) or {}
     prompt = (data.get('prompt') or '').strip()
     lyrics = (data.get('lyrics') or '').strip()
+    # An instrumental has no words to sing: the recorded voice is the lead. The
+    # marker is what the model understands as "no vocal".
+    instrumental = bool(data.get('instrumental'))
+    if instrumental:
+        lyrics = '[inst]'
+        prompt = (prompt + ', instrumental, no lead vocal, backing track').strip(', ')
     if not lyrics:
         return jsonify({'error': 'No lyrics provided'}), 400
     if not prompt:
@@ -779,16 +785,114 @@ def api_song_mix():
         envelope = np.ones(len(mono), dtype='float32')
         envelope[:fade] = np.linspace(0, 1, fade)
         envelope[-fade:] = np.linspace(1, 0, fade)
+
+        # On the beat, not over the top. The phrase is placed on bar lines of the
+        # song's own tempo, repeated as a hook across four bars, panned side to side
+        # and the track is ducked under it - which is what makes it sit in the song
+        # instead of sounding pasted on.
+        try:
+            bpm = float(request.args.get('bpm') or 0)
+        except (TypeError, ValueError):
+            bpm = 0.0
+        if not (40 <= bpm <= 260):
+            bpm = 120.0
+        beat = 60.0 / bpm
+        bar = 4.0 * beat
+        first_bar = int((len(out) * 0.30) / (bar * rate)) + 1
+        # Lead means the voice carries the song: louder, and the track steps further
+        # back under it. A layer is quieter and leaves the track where it is.
+        lead = str(request.args.get('lead') or '') in ('1', 'true', 'yes')
+        levels = [0.95, 0.8, 0.9, 0.72] if lead else [0.62, 0.45, 0.55, 0.38]
+        pans = [0.5, 0.5, 0.5, 0.5] if lead else [0.35, 0.75, 0.6, 0.3]
+        duck = 0.4 if lead else 0.55
+
+        # "chop" turns the phrase into the vocal line itself: the recording is cut
+        # into short syllables and those are played on eighth notes through the
+        # track, following the song's key. Looping the whole phrase four times reads
+        # as a sample pasted over the music; syllables on the grid read as a vocal.
+        if str(request.args.get('mode') or '') == 'chop':
+            beat = 60.0 / bpm
+            eighth = beat / 2.0
+            step = int(eighth * rate)
+            if step < 64:
+                return jsonify({'error': 'The tempo is too fast to place the voice.'}), 400
+
+            # Cut at the quietest points near even gaps, so slices land on syllables
+            # rather than mid-word.
+            target = max(1024, int(rate * 0.14))
+            slices = []
+            at = 0
+            while at + target < len(mono):
+                window = mono[at:at + target]
+                quiet = int(np.argmin(np.convolve(np.abs(window), np.ones(96) / 96, mode='same')))
+                cut = at + max(int(target * 0.5), min(quiet, int(target * 0.95)))
+                slices.append(mono[at:cut])
+                at = cut
+            if len(slices) < 2:
+                slices = [mono[i:i + target] for i in range(0, len(mono) - target, target)]
+
+            # Pitch steps from the root's minor scale, so the slices form a melody
+            # instead of a drone.
+            steps = [0, 0, 3, 5, 3, 7, 5, 0, 3, 0, 7, 10]
+            out2 = song.copy()
+            start = int(len(out2) * 0.12)
+            placed = []
+            index = 0
+            at_pos = start
+            while at_pos + step < len(out2):
+                piece = slices[index % len(slices)]
+                semis = steps[index % len(steps)]
+                ratio = float(2.0 ** (semis / 12.0))
+                want = max(64, int(len(piece) / ratio))
+                src = np.interp(np.linspace(0, len(piece) - 1, want), np.arange(len(piece)), piece).astype('float32')
+                if want > step:
+                    src = src[:step]
+                n = len(src)
+                env = np.ones(n, dtype='float32')
+                fade_n = max(1, int(rate * 0.006))
+                env[:min(fade_n, n)] = np.linspace(0, 1, min(fade_n, n))
+                env[-min(fade_n, n):] = np.linspace(1, 0, min(fade_n, n))
+                level = 0.85 if index % 4 != 3 else 0.55
+                seg = (src * env * level)[:, None]
+                out2[at_pos:at_pos + n] *= 0.55
+                out2[at_pos:at_pos + n] += seg.repeat(channels, axis=1)
+                placed.append(round(100 * at_pos / max(1, len(out2))))
+                index += 1
+                at_pos += step
+            loudest = float(np.max(np.abs(out2)) or 0.0)
+            if loudest > 0.98:
+                out2 = out2 * (0.98 / loudest)
+            mixed_path = os.path.join(os.path.dirname(song_path), 'song_with_voice.wav')
+            sf.write(mixed_path, out2, rate)
+            token = secrets.token_hex(8)
+            with _jobs_lock:
+                _jobs[token] = {
+                    'status': 'complete', 'progress': 1.0, 'error': '',
+                    'path': mixed_path, 'tmp_dir': None, 'elapsed': 0,
+                    'prompt': prompt + ' with chopped voice',
+                    'seconds': round(len(out2) / float(rate), 2),
+                    'created': time.time(),
+                }
+                _latest_token = token
+            print('chopped the voice into %d syllables on the grid at %s bpm' % (index, bpm), flush=True)
+            return jsonify({'token': token, 'seconds': round(len(out2) / float(rate), 2),
+                            'placed_at': len(placed), 'bpm': bpm, 'bars': len(placed),
+                            'lead': True, 'mode': 'chop', 'syllables': index})
         placed = []
-        for fraction in (0.32, 0.72):
-            start = int(len(out) * fraction)
+        for step, (level, pan) in enumerate(zip(levels, pans)):
+            start = int((first_bar + step) * bar * rate)
             room = len(out) - start
             if room <= fade * 2:
-                continue
+                break
             part = mono[:room]
             env = envelope[:len(part)]
-            out[start:start + len(part)] += (part * env)[:, None].repeat(channels, axis=1) * 0.55
-            placed.append(round(fraction * 100))
+            spread = np.stack([
+                (part * env) * level * (1.0 - pan),
+                (part * env) * level * pan if channels > 1 else (part * env) * level * (1.0 - pan),
+            ][:channels], axis=1)
+            out[start:start + len(part)] *= duck
+            out[start:start + len(part)] += spread
+            placed.append(round(100 * (first_bar + step) * bar * rate / max(1, len(out))))
 
         loudest = float(np.max(np.abs(out)) or 0.0)
         if loudest > 0.98:
@@ -807,8 +911,9 @@ def api_song_mix():
                 'created': time.time(),
             }
             _latest_token = token
-        print('mixed the voice into the song at %s%%' % placed, flush=True)
-        return jsonify({'token': token, 'seconds': round(len(out) / float(rate), 2), 'placed_at': placed})
+        print('mixed the voice onto bar lines at %s%% (%s bpm)' % (placed, bpm), flush=True)
+        return jsonify({'token': token, 'seconds': round(len(out) / float(rate), 2),
+                        'placed_at': placed, 'bpm': bpm, 'bars': len(placed), 'lead': lead})
     except Exception as exc:
         print('mix failed: %r' % exc, flush=True)
         return jsonify({'error': 'Could not mix the voice in: %s' % exc}), 500

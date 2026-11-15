@@ -914,7 +914,8 @@
             <button class="fit-act" id="fitPlay" onclick="fitPlayback()" disabled>Play</button>
             <button class="fit-act" id="fitSave" onclick="fitDownload()" disabled>Save WAV</button>
             <button class="fit-act" id="fitMix" onclick="fitMixInto()" disabled
-                    title="Put this phrase into the song the PC last rendered, on the turn and two thirds in">Mix into song</button>
+                    title="Put this phrase into the song the PC last rendered, on its bar lines">Mix into song</button>
+
             <button class="fit-act" id="fitSearchClip" onclick="fitUseSearchClip()" disabled
                     title="Reuse the clip you just spoke into the voice search">Use voice search clip</button>
         </div>
@@ -938,7 +939,8 @@
             <div class="player-info">
                 <div class="player-head">
                     <div class="player-title" id="playerTitle"></div>
-                    <button class="player-gen-btn" id="playerGenBtn" onclick="generateRemixLink(event)" hidden>Generate</button>
+                    <button class="player-gen-btn" id="playerGenBtn" onclick="startLibrarySong()" hidden
+                            title="Write and render a song with the model on this PC">Generate song</button>
                 </div>
                 <div class="player-desc" id="playerDesc"></div>
                 <div class="player-generate" id="playerGenerate" hidden></div>
@@ -3400,7 +3402,16 @@
             const seconds = 90 + 15 * (Math.abs(seed) % 7);
             // 24 steps rather than 16: the render measures about a second a step
             // here, so the detail is affordable and the layers land more cleanly.
-            const payload = { prompt: modelPrompt(summary, seed), lyrics: lyricText, seconds, steps: 24 };
+            // With a phrase fitted, the model is asked for the backing only: the
+            // recorded voice is the lead, so an AI vocal would fight it.
+            const voiced = !!(fit && fit.result);
+            const payload = {
+                prompt: modelPrompt(summary, seed) + (voiced ? ', instrumental, backing track, no lead vocal' : ''),
+                lyrics: lyricText,
+                seconds,
+                steps: 24,
+                instrumental: voiced
+            };
 
             const bases = await modelBases(false);
 
@@ -3914,17 +3925,40 @@
                 // does, the sung track replaces the audio and the labels say so.
                 modelPromise.then(async swapped => {
                     if (!swapped || !swapped.audio) return;
-                    const source = await localAudioBlob(swapped.audio);
+                    let source = await localAudioBlob(swapped.audio);
+                    // A phrase fitted earlier in this tab becomes part of the song rather
+                    // than a separate file beside it: the model's track and the voice are
+                    // returned as one recording, with the voice on the bar lines.
+                    let withVoice = false;
+                    if (fit.result) {
+                        try {
+                            const blob = fitWav(fit.result);
+                            for (const base of await modelBases(false)) {
+                                const answer = await fetchBounded(
+                                    base + '/api/song/mix?bpm=' + encodeURIComponent(bpm || 120) + '&lead=1&mode=chop',
+                                    { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: blob },
+                                    180000);
+                                if (!answer.ok) continue;
+                                const info = await answer.json();
+                                if (!info.token) continue;
+                                source = base + '/song_file/' + info.token;
+                                fit.mixUrl = source;
+                                withVoice = true;
+                                break;
+                            }
+                        } catch (err) { /* the song without the voice still plays */ }
+                    }
                     audio.src = source;
                     audio.autoplay = true;
-                    head.textContent = head.textContent.replace(' · seed', ' · sung by the model · seed');
+                    head.textContent = head.textContent.replace(' · seed', (withVoice ? ' · with your voice · seed' : ' · sung by the model · seed'));
                     note.textContent = (summary.genres.length
                         ? `Built from ${summary.label}, shaped by what dominates it: ${summary.genres.map(genre => `${genre.name} (${genre.count})`).join(', ')}. `
                         : `Built from ${summary.label}. `)
-                        + `Composed by ${swapped.model || 'the song model'} from the lyrics below, which it sings.`;
-                    saveAudio.textContent = 'Save the song';
+                        + `Composed by ${swapped.model || 'the song model'} from the lyrics below, which it sings.`
+                        + (withVoice ? ' Your recorded phrase is on the bar lines, with the track ducked under it.' : '');
+                    saveAudio.textContent = withVoice ? 'Save the song with your voice' : 'Save the song';
                     saveAudio.href = source;
-                    saveAudio.download = 'library-song.mp3';
+                    saveAudio.download = 'library-song.wav';
                 });
             } catch (err) {
                 panel.innerHTML = '';
@@ -4410,10 +4444,23 @@
             pushSession(payload);
         }
 
+        // The saved-search record lives on the deployed site. A page served by the app
+        // on this PC has no /api/sync of its own - that 404 is why Sync looked broken
+        // on the one machine it should be most reliable on. The site is asked by name
+        // from the browser, not by the app: Cloudflare refuses the app's own request
+        // with error 1010.
+        const SYNC_ORIGIN = /^(127\.|localhost$|\[::1\])/.test(location.hostname)
+            ? String(window.SYNC_API || 'https://browser.bpiersing.workers.dev').replace(/\/+$/, '')
+            : '';
+
+        function syncUrl(code) {
+            return SYNC_ORIGIN + '/api/sync?code=' + encodeURIComponent(code);
+        }
+
         function pushSession(payload) {
             const body = payload || null;
             if (!body) return Promise.resolve(false);
-            return fetchBounded('api/sync?code=' + encodeURIComponent(syncCode()), {
+            return fetchBounded(syncUrl(syncCode()), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ payload: JSON.stringify(body) }),
@@ -4422,13 +4469,17 @@
                 .then(ok => {
                     // A save the server refused is tried again next time instead of
                     // being forgotten.
+                    window.syncError = ok ? '' : 'the site refused the save';
                     try {
                         if (ok) localStorage.removeItem('syncPending');
                         else localStorage.setItem('syncPending', '1');
                     } catch (err) { /* storage blocked: nothing to remember with */ }
                     return ok;
                 })
-                .catch(() => false);
+                .catch(err => {
+                    window.syncError = (err && err.message) || 'the request failed';
+                    return false;
+                });
         }
 
         function localSession() {
@@ -4448,7 +4499,7 @@
             let previous = null;
             try {
                 const response = await fetchBounded(
-                    'api/sync?code=' + encodeURIComponent(code), {}, 8000);
+                    syncUrl(code), {}, 8000);
                 if (response.ok) {
                     const doc = await response.json();
                     if (doc && doc.payload) previous = JSON.parse(doc.payload);
@@ -4483,8 +4534,17 @@
             // Newest wins in both directions: pulling also pushes when this browser
             // is the one holding the newer search, so pressing the code can never
             // replace a newer copy with an older one.
+            window.syncError = '';
             const pulled = await pullSession({ pushIfEmpty: true, notify: true });
             const local = localSession();
+            if (!pulled && window.syncError) {
+                // Say it out loud rather than copying a code and doing nothing.
+                showToast('error', 'Sync did not go through',
+                    'The saved search could not be read or written: ' + window.syncError +
+                    '. The record lives on the site, so this page has to be able to reach it.',
+                    { autoClose: 10000 });
+                return;
+            }
             showToast('info', 'Sync code ' + code, pulled
                 ? 'Copied. The newer search from your other browser is open here.'
                 : (local
@@ -4524,11 +4584,14 @@
             const opts = options || {};
             let doc = null;
             try {
-                const response = await fetchBounded(
-                    'api/sync?code=' + encodeURIComponent(syncCode()), {}, 10000);
-                if (!response.ok) return false;
+                const response = await fetchBounded(syncUrl(syncCode()), {}, 10000);
+                if (!response.ok) {
+                    window.syncError = 'the site answered ' + response.status;
+                    return false;
+                }
                 doc = await response.json();
             } catch (err) {
+                window.syncError = (err && err.message) || 'the request failed';
                 return false;
             }
 
@@ -6207,9 +6270,12 @@
             }
         }
 
+        // Play is the song, not the dry phrase: once your voice is in a song, this
+        // plays that song with your voice singing it.
         function fitPlayback() {
-            if (!fit.url) return;
-            const audio = new Audio(fit.url);
+            const url = fit.mixUrl || fit.url;
+            if (!url) return;
+            const audio = new Audio(url);
             audio.play().catch(() => fitSay('The browser blocked playback. Press Play once more.'));
         }
 
@@ -6228,7 +6294,8 @@
             let reason = 'no address answered';
             for (const base of bases) {
                 try {
-                    const response = await fetchBounded(base + '/api/song/mix', {
+                    const bpm = fitSong ? fitSong.bpm : 120;
+                    const response = await fetchBounded(base + '/api/song/mix?bpm=' + encodeURIComponent(bpm) + '&lead=1&mode=chop', {
                         method: 'POST',
                         headers: { 'Content-Type': 'audio/wav' },
                         body: blob
@@ -6244,10 +6311,16 @@
                         continue;
                     }
                     const url = base + '/song_file/' + info.token;
+                    fit.mixUrl = url;
+                    const playBtn = document.getElementById('fitPlay');
+                    const saveBtn = document.getElementById('fitSave');
+                    if (playBtn) playBtn.textContent = 'Play song';
+                    if (saveBtn) saveBtn.textContent = 'Save song';
                     const audio = new Audio(url);
                     audio.play().catch(() => {});
-                    const where = (info.placed_at || []).join('% and ');
-                    fitSay('Mixed in at ' + where + '% of the song and playing it now. Save WAV keeps the voice on its own.');
+                    const bars = info.bars || (info.placed_at || []).length;
+                    fitSay('Your voice is the lead on ' + bars + ' bar lines at ' + Math.round(info.bpm || 120) +
+                        ' BPM, with the track ducked under it. Play and Save WAV now use the song with your voice singing it.');
                     return;
                 } catch (err) {
                     reason = (err && err.message) || 'request failed';
@@ -6265,11 +6338,16 @@
             fitProcess(window.voiceSearchClip);
         }
 
+        // Save WAV saves what Play plays: the song with your voice in it once it has
+        // been mixed, and the shaped phrase on its own before that.
         function fitDownload() {
-            if (!fit.url) return;
+            const url = fit.mixUrl || fit.url;
+            if (!url) return;
             const link = document.createElement('a');
-            link.href = fit.url;
-            link.download = 'voice fit - ' + ((fitSong && fitSong.genre) || 'neutral') + '.wav';
+            link.href = url;
+            link.download = fit.mixUrl
+                ? 'song-with-your-voice.wav'
+                : 'voice fit - ' + ((fitSong && fitSong.genre) || 'neutral') + '.wav';
             document.body.appendChild(link);
             link.click();
             setTimeout(() => link.remove(), 30000);

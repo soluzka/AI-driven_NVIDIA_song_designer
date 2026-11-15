@@ -107,7 +107,16 @@ export default {
     }
 
     if (SYNC_ROUTE.test(url.pathname)) {
-      return syncSession(env, request, url);
+      const answer = await syncSession(env, request, url);
+      // The copy of the page served by the desktop app on the PC is a different
+      // origin from this site, and without these headers its reads fail as
+      // "Failed to fetch" - which is what Sync looked like: broken. The record is
+      // addressed by a code and carries nothing private, so any origin may ask.
+      const cors = new Response(answer.body, answer);
+      cors.headers.set('Access-Control-Allow-Origin', '*');
+      cors.headers.set('Access-Control-Allow-Headers', 'Content-Type');
+      cors.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      return cors;
     }
 
     if (ENDPOINT_ROUTE.test(url.pathname)) {

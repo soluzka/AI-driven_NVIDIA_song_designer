@@ -6323,7 +6323,12 @@
                         generating: 'rendering the backing',
                         mixing: 'laying the voice over the backing'
                     };
-                    for (let tick = 0; tick < 120; tick++) {
+                    // 720 ticks of 5 s is an hour: a song measured 447 s for 45 s
+                    // of audio and 700 s for 105 s, so the old 10-minute cap ended
+                    // the wait while the model was still working and the page
+                    // never showed the song it had actually made.
+                    let reached = 0;
+                    for (let tick = 0; tick < 720; tick++) {
                         await new Promise(resolve => setTimeout(resolve, 5000));
                         const state = await fetchBounded(base + '/api/song/' + job.token, {}, 20000)
                             .then(r => r.json()).catch(() => ({}));
@@ -6343,10 +6348,20 @@
                             return;
                         }
                         if (stages[state.status]) {
+                            if (state.progress) reached = state.progress;
+                            // The clock is the point: a stage can hold its figure for
+                            // minutes while the model works, and the page should show
+                            // that time is passing rather than look dead.
+                            const spent = Math.round(state.elapsed || 0);
+                            const clock = spent >= 60
+                                ? Math.floor(spent / 60) + ' min ' + (spent % 60) + ' s'
+                                : spent + ' s';
                             fitSay('Working: ' + stages[state.status] + '\u2026 (' +
-                                Math.round((state.progress || 0) * 100) + '%)');
+                                Math.round((state.progress || 0) * 100) + '%, ' + clock + ')');
                         }
                     }
+                    reason = 'it was still working after an hour (last seen at ' +
+                        Math.round(reached * 100) + '%)';
                 } catch (err) {
                     reason = (err && err.message) || 'request failed';
                 }
@@ -6365,17 +6380,34 @@
 
         // Save WAV saves what Play plays: the song with your voice in it once it has
         // been mixed, and the shaped phrase on its own before that.
-        function fitDownload() {
+        async function fitDownload() {
             const url = fit.mixUrl || fit.url;
             if (!url) return;
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = fit.mixUrl
+            const name = fit.mixUrl
                 ? 'song-with-your-voice.wav'
                 : 'voice fit - ' + ((fitSong && fitSong.genre) || 'neutral') + '.wav';
+            // Asked for first: linking straight at the url handed the browser the
+            // server's json error as a .wav when the song was gone, so the page
+            // saved a file that would not open and said nothing.
+            let blob = null;
+            try {
+                const answer = await fetch(url, { cache: 'no-store' });
+                if (!answer.ok) {
+                    const said = await answer.json().catch(() => ({}));
+                    fitSay('Save failed: ' + (said.error || ('answer ' + answer.status)) + '.');
+                    return;
+                }
+                blob = await answer.blob();
+            } catch (err) {
+                fitSay('Save failed: the song did not download.');
+                return;
+            }
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = name;
             document.body.appendChild(link);
             link.click();
-            setTimeout(() => link.remove(), 30000);
+            setTimeout(() => { URL.revokeObjectURL(link.href); link.remove(); }, 30000);
         }
 
         // 16-bit mono WAV, so the result plays anywhere and can be dropped into a

@@ -216,12 +216,12 @@ def _sing_in_voice(reference_bytes, lyrics, token):
     request_ = urllib.request.Request(
         VOICE_SERVICE + '/api/voice/sing?' + query, data=reference_bytes, method='POST',
         headers={'Content-Type': 'audio/wav'})
-    _set(token, status='singing', progress=0.15)
+    _set(token, status='singing', progress=0.32)
     with urllib.request.urlopen(request_, timeout=3600) as response:
         info = json.loads(response.read().decode('utf-8'))
     if not info.get('token'):
         raise RuntimeError(info.get('error') or 'the voice service refused the lyrics')
-    _set(token, status='singing', progress=0.3)
+    _set(token, status='singing', progress=0.55)
     with urllib.request.urlopen(VOICE_SERVICE + info['url'], timeout=300) as response:
         return response.read(), info
 
@@ -277,12 +277,16 @@ def _run_voice_job(token, reference_path, prompt, lyrics, seconds, steps, seed):
         with open(reference_path, 'rb') as handle:
             reference = handle.read()
         if not lyrics:
-            _set(token, status='writing', progress=0.05)
+            _set(token, status='writing', progress=0.02)
             from lyrics import lyrics_model_id, load_manifest
 
-            song = _lyricist().write_song(prompt or 'electronic music', '', seed)
+            # Writing is the first long silence: a cold 3.5B model spends a
+            # minute there, so the page is told the token count as it climbs.
+            song = _lyricist().write_song(
+                prompt or 'electronic music', '', seed,
+                progress=lambda done: _set(token, progress=round(0.02 + 0.28 * done, 3)))
             lyrics = '\n'.join(song.get('lines') or [])
-            _set(token, prompt=prompt, lyrics=lyrics)
+            _set(token, prompt=prompt, lyrics=lyrics, progress=0.3)
         if not lyrics.strip():
             raise RuntimeError('the lyric model wrote nothing to sing')
 
@@ -292,10 +296,11 @@ def _run_voice_job(token, reference_path, prompt, lyrics, seconds, steps, seed):
 
         # The backing is instrumental: the only voice in the track is the recorded one.
         instrumentation = (prompt + ', instrumental, backing track, no lead vocal').strip(', ')
-        _run_job(token, instrumentation, '[inst]', seconds, steps, seed)
+        _run_job(token, instrumentation, '[inst]', seconds, steps, seed,
+                 span=(0.58, 0.9), complete_status='mixing')
         with _jobs_lock:
             job = dict(_jobs.get(token) or {})
-        if job.get('status') != 'complete':
+        if job.get('status') not in ('mixing', 'complete'):
             raise RuntimeError(job.get('error') or 'the backing did not render')
 
         _set(token, status='mixing', progress=0.92)
@@ -304,6 +309,7 @@ def _run_voice_job(token, reference_path, prompt, lyrics, seconds, steps, seed):
         layout = _layout_vocal(job['path'], vocal_bytes, mixed_path, bpm)
         _set(token, status='complete', progress=1.0, path=mixed_path,
              lyrics=lyrics, voice=layout, elapsed=round(time.time() - started, 1))
+        _keep_song(token, mixed_path)
         print('song with the recorded voice as the singer: %s' % (layout,), flush=True)
     except Exception as exc:  # noqa: BLE001 - the page shows the reason
         traceback.print_exc()
@@ -330,6 +336,41 @@ def _prune_jobs():
             job = _jobs.pop(token, None)
             if job:
                 shutil.rmtree(job.get('tmp_dir') or '', ignore_errors=True)
+
+
+KEPT_SONGS = 12
+
+
+def _kept_song(token):
+    """Where a finished song is kept so it outlives the job record."""
+    return os.path.join(HERE, 'logs', f'song_{token}.wav')
+
+
+def _keep_song(token, path):
+    """Copy a finished song somewhere a restart cannot take it away.
+
+    Jobs live in memory, so restarting the service - which the launcher and any
+    code change both do - used to make "Save" answer "not finished" for a song
+    that had played a second earlier. The record can be forgotten; the file on
+    disk is what the page is actually asking for, so it is kept by token and
+    "Save" still works after the restart.
+    """
+    try:
+        kept = _kept_song(token)
+        os.makedirs(os.path.dirname(kept), exist_ok=True)
+        shutil.copyfile(path, kept)
+        old = sorted((entry for entry in os.scandir(os.path.dirname(kept))
+                      if entry.name.startswith('song_') and entry.name.endswith('.wav')),
+                     key=lambda entry: entry.stat().st_mtime, reverse=True)
+        for entry in old[KEPT_SONGS:]:
+            try:
+                os.remove(entry.path)
+            except OSError:
+                pass
+        return kept
+    except OSError as exc:
+        print(f'could not keep a copy of {token}: {exc}', flush=True)
+        return None
 
 
 def _set(token, **fields):
@@ -492,37 +533,84 @@ def _use_soundfile_writes(pipeline):
     return pipeline
 
 
-def _run_job(token, prompt, lyrics, seconds, steps, seed):
+def _count_render_steps(token, span):
+    """Make the page's percentage the model's own step count.
+
+    The pipeline has no progress callback: it goes from 'starting' to a finished
+    wav minutes later, so the page used to sit at 10% for the whole render and
+    read as a freeze. Its diffusion loop does count itself with tqdm, so that
+    counter is replaced here with one that reports each step it finishes. `span`
+    is the slice of the job's progress this render owns, so a job with a vocal
+    staged ahead of it does not appear to go backwards.
+
+    Returns the real tqdm, to be put back when the render ends.
+    """
+    from acestep import pipeline_ace_step as ace
+
+    lo, hi = span
+    original = ace.tqdm
+
+    def counting(iterable, *args, **kwargs):
+        total = kwargs.get('total') or 0
+        for index, item in enumerate(iterable, 1):
+            yield item
+            if total:
+                done = min(1.0, index / float(total))
+                _set(token, progress=round(lo + (hi - lo) * done, 3))
+
+    ace.tqdm = counting
+    return original
+
+
+def _stop_counting(original):
+    from acestep import pipeline_ace_step as ace
+
+    ace.tqdm = original
+
+
+def _run_job(token, prompt, lyrics, seconds, steps, seed, span=(0.08, 0.95),
+             complete_status='complete'):
+    """Render a backing. `span` is the progress range it is allowed to fill.
+
+    A sub-job (the backing under a sung vocal) passes a later span and
+    `complete_status='mixing'`: the token is shared with the job that will mix
+    the voice in, and marking it complete here made the page fetch the bare
+    instrumental and call it finished.
+    """
     tmp_dir = tempfile.mkdtemp(prefix='ace_')
     out_path = os.path.join(tmp_dir, 'song.wav')
     started = time.time()
-    _set(token, status='loading', progress=0.02, tmp_dir=tmp_dir)
+    _set(token, status='loading', progress=span[0], tmp_dir=tmp_dir)
     try:
         _release_lyricist()
         pipeline = _use_soundfile_writes(_load_pipeline())
-        _set(token, status='generating', progress=0.1)
-        with _gpu_lock:
-            outputs = pipeline(
-                audio_duration=seconds,
-                prompt=prompt,
-                lyrics=lyrics,
-                infer_step=steps,
-                guidance_scale=15.0,
-                scheduler_type='euler',
-                cfg_type='apg',
-                omega_scale=10.0,
-                manual_seeds=[seed],
-                guidance_interval=0.5,
-                guidance_interval_decay=0.0,
-                min_guidance_scale=3.0,
-                use_erg_tag=True,
-                use_erg_lyric=True,
-                use_erg_diffusion=True,
-                oss_steps=[],
-                guidance_scale_text=0.0,
-                guidance_scale_lyric=0.0,
-                save_path=out_path,
-            )
+        _set(token, status='generating', progress=span[0])
+        counter = _count_render_steps(token, span)
+        try:
+            with _gpu_lock:
+                outputs = pipeline(
+                    audio_duration=seconds,
+                    prompt=prompt,
+                    lyrics=lyrics,
+                    infer_step=steps,
+                    guidance_scale=15.0,
+                    scheduler_type='euler',
+                    cfg_type='apg',
+                    omega_scale=10.0,
+                    manual_seeds=[seed],
+                    guidance_interval=0.5,
+                    guidance_interval_decay=0.0,
+                    min_guidance_scale=3.0,
+                    use_erg_tag=True,
+                    use_erg_lyric=True,
+                    use_erg_diffusion=True,
+                    oss_steps=[],
+                    guidance_scale_text=0.0,
+                    guidance_scale_lyric=0.0,
+                    save_path=out_path,
+                )
+        finally:
+            _stop_counting(counter)
         print(f'pipeline returned {len(outputs or [])} item(s)', flush=True)
         if not os.path.exists(out_path):
             # Newer/older checkouts name the file themselves; take whatever wav
@@ -548,8 +636,13 @@ def _run_job(token, prompt, lyrics, seconds, steps, seed):
             print('kept a copy at logs/last_song.wav', flush=True)
         except OSError as exc:
             print(f'could not keep a copy of the render: {exc}', flush=True)
-        _set(token, status='complete', progress=1.0, path=out_path,
-             elapsed=round(time.time() - started, 1))
+        _set(token, status=complete_status,
+             progress=1.0 if complete_status == 'complete' else span[1],
+             path=out_path, elapsed=round(time.time() - started, 1))
+        # Only the finished article is kept: a sub-job's instrumental is an
+        # intermediate and would be saved by mistake.
+        if complete_status == 'complete':
+            _keep_song(token, out_path)
     except Exception as exc:  # noqa: BLE001 - reported to the page as text
         traceback.print_exc()
         _set(token, status='error', error=str(exc)[:400],
@@ -878,14 +971,23 @@ def api_song_status(token):
 @app.route('/song_file/<token>')
 def song_file(token):
     with _jobs_lock:
-        job = _jobs.get(token)
-        if job is None or job['status'] != 'complete' or not job.get('path'):
-            return jsonify({'error': 'File not found or not finished'}), 404
-        path = job['path']
-        prompt = job['prompt'] or 'song'
+        job = dict(_jobs.get(token) or {})
 
-    if not os.path.exists(path):
-        return jsonify({'error': 'File not found or expired'}), 404
+    path = None
+    if job.get('status') == 'complete' and job.get('path') and os.path.exists(job['path']):
+        path = job['path']
+    elif os.path.exists(_kept_song(token)):
+        # The job record is gone (a restart, or a later song pruned it) but the
+        # song itself was kept, which is all the player or "Save" needs.
+        path = _kept_song(token)
+
+    if path is None:
+        if job and job.get('status') not in ('complete', 'error'):
+            percent = round((job.get('progress') or 0) * 100)
+            return jsonify({'error': f'this song is still rendering ({percent}%)'}), 404
+        return jsonify({'error': 'that song is no longer on this machine - make it again'}), 404
+
+    prompt = job.get('prompt') or 'song'
 
     label = re.sub(r'[^a-z0-9]+', '-', prompt.lower())[:40].strip('-') or 'song'
     # The job stays until a later one replaces it: the page reads this file once

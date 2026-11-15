@@ -136,6 +136,14 @@ def _text_pipeline(wait_seconds=180):
             time.sleep(0.25)
 
 
+# Tokens at which the write is reported half done. The bar is deliberately not
+# linear against the 1200-token cap: a song usually ends well before it, so a
+# linear bar would sit in single figures and then jump - the same frozen-looking
+# number this replaced. This curve moves on every token and never claims to be
+# finished before the model actually is.
+TOKENS_FOR_HALF = 200
+
+
 class Lyricist:
     """Loads the model once and keeps it resident for later requests."""
 
@@ -170,8 +178,13 @@ class Lyricist:
         return self._pipeline
 
     def write_song(self, genre='electronic music', subject='', seed=0, corpus=None,
-                   angle='', avoid=None):
-        """Return {'sections': [{'section', 'lines'}], 'lines': [...]}."""
+                   angle='', avoid=None, progress=None):
+        """Return {'sections': [{'section', 'lines'}], 'lines': [...]}.
+
+        `progress` takes a fraction of the token budget as each token lands. A
+        cold 3.5B model needs a minute or more to write a song, and a caller with
+        a page to update otherwise has nothing to say for that whole minute.
+        """
         generator = self.pipeline
         # The videos are context, not source material. At most a couple of words
         # are offered as a hint, and the model is free to ignore them: feeding it
@@ -198,8 +211,7 @@ class Lyricist:
             {'role': 'user', 'content': prompt},
         ]
         random.seed(seed)
-        output = generator(
-            messages,
+        settings = dict(
             max_new_tokens=1200,
             do_sample=True,
             temperature=0.92,
@@ -208,6 +220,10 @@ class Lyricist:
             repetition_penalty=1.12,
             no_repeat_ngram_size=3,
         )
+        if progress is None:
+            output = generator(messages, **settings)
+        else:
+            output = self._write_with_token_count(generator, messages, settings, progress)
         text = ''
         result = output[0] if output else {}
         generated = result.get('generated_text')
@@ -219,6 +235,61 @@ class Lyricist:
         sections = parse_song(text, avoid)
         lines = [line for part in sections for line in part['lines']]
         return {'sections': sections, 'lines': lines}
+
+    @staticmethod
+    def _write_with_token_count(generator, messages, settings, progress):
+        """The same generation call, with a streamer that counts tokens.
+
+        `generate` only returns when the song is finished, so the pipeline is run
+        on a worker thread and its streamer drained here: every token the model
+        produces arrives as a tensor of ids, which is the only honest progress
+        signal available without teaching the pipeline to report.
+        """
+        from transformers import TextIteratorStreamer
+
+        produced = {'tokens': 0, 'prompt': None}
+        streamer = TextIteratorStreamer(generator.tokenizer, skip_prompt=True,
+                                        skip_special_tokens=True)
+        put = streamer.put
+
+        def counting_put(value):
+            # Measured here: the first put is the prompt, handed over once, and
+            # every put after it is the single token just decoded. Adding up
+            # lengths instead counted the prompt as a finished song.
+            try:
+                length = int(value.shape[-1])
+            except (AttributeError, TypeError):
+                length = 1
+            if produced['prompt'] is None:
+                produced['prompt'] = length
+            else:
+                produced['tokens'] += max(1, length)
+            try:
+                tokens = produced['tokens']
+                progress(tokens / (tokens + TOKENS_FOR_HALF) if tokens else 0.0)
+            except Exception:  # noqa: BLE001 - a page that went away is not fatal
+                pass
+            return put(value)
+
+        streamer.put = counting_put
+        box = {}
+
+        def run():
+            try:
+                box['output'] = generator(messages, streamer=streamer, **settings)
+            except BaseException as exc:  # noqa: BLE001 - re-raised below
+                box['error'] = exc
+            finally:
+                streamer.end()
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        for _ in streamer:  # draining keeps the token queue moving
+            pass
+        worker.join()
+        if 'error' in box:
+            raise box['error']
+        return box.get('output')
 
     # Kept for older callers: the flat list of lines.
     def write(self, genre='electronic music', subject='', seed=0, lines=14, corpus=None,

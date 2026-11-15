@@ -6096,13 +6096,13 @@
 
         function closeFitPanel() {
             const panel = document.getElementById('fitPanel');
+            // Clear the keyboard-lift override so the next open is not stuck high.
             if (panel) panel.style.bottom = '';
             if (fit.recorder && fit.recorder.state === 'recording') fit.recorder.stop();
             if (fit.stream) fit.stream.getTracks().forEach(track => track.stop());
             fit.stream = null;
             if (fit.url) URL.revokeObjectURL(fit.url);
             fit.url = null;
-            const panel = document.getElementById('fitPanel');
             if (panel) panel.hidden = true;
         }
 

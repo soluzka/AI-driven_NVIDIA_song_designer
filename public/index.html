@@ -913,6 +913,10 @@
             <button class="fit-act rec" id="fitRec" onclick="toggleFitRecord()">Record</button>
             <button class="fit-act" id="fitPlay" onclick="fitPlayback()" disabled>Play</button>
             <button class="fit-act" id="fitSave" onclick="fitDownload()" disabled>Save WAV</button>
+            <button class="fit-act" id="fitMix" onclick="fitMixInto()" disabled
+                    title="Put this phrase into the song the PC last rendered, on the turn and two thirds in">Mix into song</button>
+            <button class="fit-act" id="fitSearchClip" onclick="fitUseSearchClip()" disabled
+                    title="Reuse the clip you just spoke into the voice search">Use voice search clip</button>
         </div>
         <div class="fit-status" id="fitStatus">Say or sing one phrase. The words are not read or searched for; only the sound is reshaped.</div>
     </div>
@@ -5413,6 +5417,9 @@
             mediaRecorder = null;
             const blob = new Blob(recordedChunks, { type: type });
             recordedChunks = [];
+            // Kept for the voice-fit panel: the phrase you spoke for a search can be
+            // shaped and put into a song instead of being thrown away.
+            if (blob.size) window.voiceSearchClip = blob;
 
             if (!blob.size) {
                 voiceTranscript.textContent = '';
@@ -6072,6 +6079,10 @@
             if (target) target.textContent = fitTargetLine();
             if (panel) {
                 panel.hidden = false;
+                const fromSearch = document.getElementById('fitSearchClip');
+                if (fromSearch) fromSearch.disabled = !window.voiceSearchClip;
+                const mix = document.getElementById('fitMix');
+                if (mix) mix.disabled = !fit.result;
                 const view = window.visualViewport;
                 panel.style.bottom = view && view.height < window.innerHeight
                     ? Math.round(window.innerHeight - view.height - view.offsetTop) + 12 + 'px'
@@ -6182,8 +6193,10 @@
                 fit.url = URL.createObjectURL(fitWav(rendered));
                 const play = document.getElementById('fitPlay');
                 const save = document.getElementById('fitSave');
+                const mix = document.getElementById('fitMix');
                 if (play) play.disabled = false;
                 if (save) save.disabled = false;
+                if (mix) mix.disabled = false;
                 fitSay('Done: ' + (semitones === 0 ? 'kept at its own pitch' : (semitones > 0 ? '+' : '') + semitones + ' semitones') +
                     ', ' + Math.round(profile.lp) + ' Hz ceiling, ' + Math.round(profile.wet * 100) + '% room. Press Play, or Save WAV.');
                 fitPlayback();
@@ -6198,6 +6211,58 @@
             if (!fit.url) return;
             const audio = new Audio(fit.url);
             audio.play().catch(() => fitSay('The browser blocked playback. Press Play once more.'));
+        }
+
+        // The song is rendered by the model on the PC, so the phrase is sent there
+        // and mixed into the finished track at the points an arrangement would use
+        // it: the turn and two thirds in.
+        async function fitMixInto() {
+            if (!fit.result) {
+                fitSay('Record a phrase first, then mix it in.');
+                return;
+            }
+            fitSay('Mixing your phrase into the song on this PC\u2026');
+            const blob = fitWav(fit.result);
+            let bases = [];
+            try { bases = await modelBases(false); } catch (err) {}
+            let reason = 'no address answered';
+            for (const base of bases) {
+                try {
+                    const response = await fetchBounded(base + '/api/song/mix', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'audio/wav' },
+                        body: blob
+                    }, 180000);
+                    if (!response.ok) {
+                        const said = await response.json().catch(() => ({}));
+                        reason = said.error || ('answer ' + response.status);
+                        continue;
+                    }
+                    const info = await response.json();
+                    if (!info.token) {
+                        reason = 'no song came back';
+                        continue;
+                    }
+                    const url = base + '/song_file/' + info.token;
+                    const audio = new Audio(url);
+                    audio.play().catch(() => {});
+                    const where = (info.placed_at || []).join('% and ');
+                    fitSay('Mixed in at ' + where + '% of the song and playing it now. Save WAV keeps the voice on its own.');
+                    return;
+                } catch (err) {
+                    reason = (err && err.message) || 'request failed';
+                }
+            }
+            fitSay('Could not mix it in: ' + reason + '. The song is rendered on this PC, so its service has to be running.');
+        }
+
+        function fitUseSearchClip() {
+            if (!window.voiceSearchClip) {
+                fitSay('There is no voice search clip in this tab yet. Use the mic button once, then come back.');
+                return;
+            }
+            fitSay('Using the clip from your voice search\u2026');
+            fitProcess(window.voiceSearchClip);
         }
 
         function fitDownload() {

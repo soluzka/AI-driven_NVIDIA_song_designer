@@ -715,6 +715,105 @@ def song_file(token):
                      mimetype='audio/wav')
 
 
+@app.route('/api/song/mix', methods=['POST', 'OPTIONS'])
+def api_song_mix():
+    """Put a recorded phrase into the song that was just rendered.
+
+    The body is the fitted voice as a wav. It is placed where an arrangement
+    would put it - on the turn and again two thirds in - so the phrase lands with
+    the music rather than playing over the top of it from the first bar.
+    """
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    # Read and written here: without this the read below becomes a local lookup
+    # and fails with UnboundLocalError.
+    global _latest_token
+    voice = request.get_data()
+    if not voice:
+        return jsonify({'error': 'No voice audio sent'}), 400
+
+    with _jobs_lock:
+        job = _jobs.get(_latest_token) if _latest_token else None
+        finished = job if (job and job.get('status') == 'complete' and job.get('path')) else None
+
+    # A restart forgets the jobs, but the last render is kept on disk for exactly
+    # this reason: the song survives, so the voice can still be mixed into it.
+    song_path = finished['path'] if finished else None
+    prompt = (finished.get('prompt') if finished else '') or 'song'
+    if not song_path or not os.path.exists(song_path):
+        kept = os.path.join(HERE, 'logs', 'last_song.wav')
+        if os.path.exists(kept):
+            song_path = kept
+            prompt = 'library song'
+    if not song_path or not os.path.exists(song_path):
+        return jsonify({'error': 'No finished song to mix into yet - generate one first'}), 409
+
+    try:
+        import io
+        import secrets
+        import numpy as np
+        import soundfile as sf
+
+        song, rate = sf.read(song_path, always_2d=True, dtype='float32')
+        phrase, phrase_rate = sf.read(io.BytesIO(voice), always_2d=True, dtype='float32')
+        if phrase.size == 0:
+            return jsonify({'error': 'The voice audio was empty'}), 400
+
+        # Mono, at the song's own rate.
+        mono = phrase.mean(axis=1)
+        if phrase_rate != rate and phrase_rate > 0:
+            wanted = int(round(len(mono) * rate / phrase_rate))
+            mono = np.interp(
+                np.linspace(0, len(mono) - 1, wanted),
+                np.arange(len(mono)),
+                mono,
+            ).astype('float32')
+
+        peak = float(np.max(np.abs(mono)) or 0.0)
+        if peak > 0:
+            mono = (mono / peak) * 0.7
+
+        out = song.copy()
+        channels = out.shape[1]
+        fade = max(1, int(rate * 0.02))
+        envelope = np.ones(len(mono), dtype='float32')
+        envelope[:fade] = np.linspace(0, 1, fade)
+        envelope[-fade:] = np.linspace(1, 0, fade)
+        placed = []
+        for fraction in (0.32, 0.72):
+            start = int(len(out) * fraction)
+            room = len(out) - start
+            if room <= fade * 2:
+                continue
+            part = mono[:room]
+            env = envelope[:len(part)]
+            out[start:start + len(part)] += (part * env)[:, None].repeat(channels, axis=1) * 0.55
+            placed.append(round(fraction * 100))
+
+        loudest = float(np.max(np.abs(out)) or 0.0)
+        if loudest > 0.98:
+            out = out * (0.98 / loudest)
+
+        mixed_path = os.path.join(os.path.dirname(song_path), 'song_with_voice.wav')
+        sf.write(mixed_path, out, rate)
+
+        token = secrets.token_hex(8)
+        with _jobs_lock:
+            _jobs[token] = {
+                'status': 'complete', 'progress': 1.0, 'error': '',
+                'path': mixed_path, 'tmp_dir': None, 'elapsed': 0,
+                'prompt': prompt + ' with voice',
+                'seconds': round(len(out) / float(rate), 2),
+                'created': time.time(),
+            }
+            _latest_token = token
+        print('mixed the voice into the song at %s%%' % placed, flush=True)
+        return jsonify({'token': token, 'seconds': round(len(out) / float(rate), 2), 'placed_at': placed})
+    except Exception as exc:
+        print('mix failed: %r' % exc, flush=True)
+        return jsonify({'error': 'Could not mix the voice in: %s' % exc}), 500
+
+
 @app.route('/last_song')
 def last_song():
     """The last rendered song, saved next to the logs.

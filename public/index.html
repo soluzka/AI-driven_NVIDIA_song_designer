@@ -3471,20 +3471,36 @@
             // A job: the local model reports progress while the GPU works.
             const token = answer.data.token;
             // Loading a 3.5B model and rendering a minute of song on one 8 GB
-            // card is minutes of work, not seconds. Wait as long as it keeps
-            // making progress, and give up only when it has stalled: the old
-            // 60-second cap guaranteed a fallback to the silent instrument band.
+            // card is many minutes of work, not seconds. Three rules keep the
+            // wait honest: the job reports its own progress now, so a changed
+            // percentage counts as life; only a long silence in BOTH counts as a
+            // stall; and there is no minute-count deadline to cut a working
+            // render short. A 105-second song measured over 700 s here, which the
+            // old 5-minute stall rule killed while the GPU was still rendering.
             const started = Date.now();
-            const deadline = started + 20 * 60 * 1000;
+            const ceiling = started + 3 * 60 * 60 * 1000;
+            const stallMs = 15 * 60 * 1000;
             let lastChange = Date.now();
             let lastStatus = '';
-            while (Date.now() < deadline) {
+            let lastProgress = -1;
+            while (Date.now() < ceiling) {
                 await new Promise(resolve => setTimeout(resolve, 2000));
-                let job;
+                let response, job;
                 try {
-                    job = await (await fetchBounded(answer.base + '/api/song/' + token, {}, 20000)).json();
+                    response = await fetchBounded(answer.base + '/api/song/' + token, {}, 20000);
+                    job = await response.json();
                 } catch (err) {
                     continue;
+                }
+                if (!response.ok && !job.status) {
+                    // The service forgot the job - a restart while it rendered.
+                    // The song is kept on disk after it finishes, so take that
+                    // rather than losing a render the GPU actually completed.
+                    try {
+                        const kept = await fetchBounded(answer.base + '/song_file/' + token, { method: 'HEAD' }, 8000);
+                        if (kept.ok) return { audio: answer.base + '/song_file/' + token, model: 'ACE-Step (local)' };
+                    } catch (err) {}
+                    throw new Error(job.error || 'the song service forgot this render');
                 }
                 if (job.status === 'complete') {
                     return { audio: answer.base + '/song_file/' + token, model: 'ACE-Step (local)' };
@@ -3492,18 +3508,23 @@
                 if (job.status === 'error') {
                     throw new Error(job.error || 'the model failed');
                 }
-                if (job.status !== lastStatus) {
+                if (job.status !== lastStatus || job.progress !== lastProgress) {
                     lastStatus = job.status;
+                    lastProgress = job.progress;
                     lastChange = Date.now();
-                } else if (Date.now() - lastChange > 5 * 60 * 1000) {
+                } else if (Date.now() - lastChange > stallMs) {
                     throw new Error('the model stopped responding while composing');
                 }
                 const status = document.getElementById('songStatus');
                 if (status) {
-                    const seconds = Math.round((Date.now() - started) / 1000);
+                    const spent = Math.round((Date.now() - started) / 1000);
+                    const clock = spent >= 60
+                        ? Math.floor(spent / 60) + ' min ' + (spent % 60) + ' s'
+                        : spent + ' s';
+                    const percent = Math.round((job.progress || 0) * 100);
                     status.textContent = job.status === 'loading'
-                        ? `Loading the model on this machine... ${seconds}s`
-                        : `Composing and singing on this machine... ${seconds}s`;
+                        ? `Loading the model on this machine... ${clock}`
+                        : `Composing and singing on this machine... ${percent}% · ${clock}`;
                 }
             }
             throw new Error('the model took too long to finish');
@@ -6327,24 +6348,41 @@
                     // of audio and 700 s for 105 s, so the old 10-minute cap ended
                     // the wait while the model was still working and the page
                     // never showed the song it had actually made.
+                    const finishSong = (songUrl) => {
+                        fit.mixUrl = songUrl;
+                        const playBtn = document.getElementById('fitPlay');
+                        const saveBtn = document.getElementById('fitSave');
+                        if (playBtn) playBtn.textContent = 'Play song';
+                        if (saveBtn) saveBtn.textContent = 'Save song';
+                        new Audio(songUrl).play().catch(() => {});
+                        fitSay('The lyrics are sung in your voice over a new backing. Play and Save WAV use that song.');
+                    };
                     let reached = 0;
                     for (let tick = 0; tick < 720; tick++) {
                         await new Promise(resolve => setTimeout(resolve, 5000));
-                        const state = await fetchBounded(base + '/api/song/' + job.token, {}, 20000)
-                            .then(r => r.json()).catch(() => ({}));
+                        let response = null;
+                        let state = {};
+                        try {
+                            response = await fetchBounded(base + '/api/song/' + job.token, {}, 20000);
+                            state = await response.json();
+                        } catch (err) {}
+                        if (response && !response.ok && !state.status) {
+                            // The service restarted and forgot the job; a finished
+                            // song is kept on disk by token, so use it if it is there.
+                            const kept = base + '/song_file/' + job.token;
+                            try {
+                                const probe = await fetchBounded(kept, { method: 'HEAD' }, 8000);
+                                if (probe.ok) { finishSong(kept); return; }
+                            } catch (err) {}
+                            reason = state.error || 'the song service restarted while it was working';
+                            break;
+                        }
                         if (state.status === 'error') {
                             reason = state.error || 'the song failed';
                             break;
                         }
                         if (state.status === 'complete') {
-                            const songUrl = base + '/song_file/' + job.token;
-                            fit.mixUrl = songUrl;
-                            const playBtn = document.getElementById('fitPlay');
-                            const saveBtn = document.getElementById('fitSave');
-                            if (playBtn) playBtn.textContent = 'Play song';
-                            if (saveBtn) saveBtn.textContent = 'Save song';
-                            new Audio(songUrl).play().catch(() => {});
-                            fitSay('The lyrics are sung in your voice over a new backing. Play and Save WAV use that song.');
+                            finishSong(base + '/song_file/' + job.token);
                             return;
                         }
                         if (stages[state.status]) {

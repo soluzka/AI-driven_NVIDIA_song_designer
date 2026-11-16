@@ -147,6 +147,55 @@ removed afterwards. It is not stored: the saved output is only the singing.
 That is why only one address is public — the tunnel points at 8090, and this
 service stays on loopback.
 
+## Reaching it from outside this machine
+
+It listens on `127.0.0.1:8095` and nothing else, deliberately. The public tunnel
+points at **8090**, and `song_service` calls this service over loopback using
+`VOICE_SERVICE` in `song_service/app.py`. A phone or another computer therefore
+triggers it like this, never by reaching 8095:
+
+```
+POST https://<tunnel>/api/song/voice?...   ->  8090  ->  POST 127.0.0.1:8095/api/voice/sing
+```
+
+Do not tunnel 8095 separately: a second public door is a second way to spend the
+GPU, and this service trusts whoever calls it.
+
+Starting it and singing one line by hand, in PowerShell:
+
+```powershell
+# On its own. The launcher normally starts it with everything else.
+$env:VOICE_PORT = 8095
+voice_service\.venv\Scripts\python.exe voice_service\app.py
+
+# Is it up, and can it see the card?
+Invoke-RestMethod 'http://127.0.0.1:8095/health'
+
+# Sing one line: the body is the reference wav, the query is the words.
+# Any clean wav of a voice works - the phrase you record in the page is the
+# same thing, and this is what the page sends.
+$text = [uri]::EscapeDataString('This line is spoken in the recorded voice')
+$job = Invoke-RestMethod -Method Post -ContentType 'audio/wav' `
+    -Body ([IO.File]::ReadAllBytes('.\my-phrase.wav')) `
+    -Uri "http://127.0.0.1:8095/api/voice/sing?text=$text"
+$job
+Invoke-WebRequest "http://127.0.0.1:8095$($job.url)" -OutFile 'build\one-line.wav'
+```
+
+And through the public address, where the singing route belongs to 8090. A body
+too small to be a recording is refused before any job is queued, so this proves
+the wiring without spending GPU time:
+
+```powershell
+$tunnel = (Invoke-RestMethod 'https://browser.bpiersing.workers.dev/api/song/endpoint').url
+try {
+    Invoke-RestMethod -Method Post -Uri "$tunnel/api/song/voice?prompt=test&seconds=20" `
+        -Body ([byte[]](1..8))
+} catch {
+    $_.ErrorDetails.Message   # {"error":"Send the voice recording as the request body."}
+}
+```
+
 ## Sharing the card
 
 The machine has 8 GB of VRAM. ACE-Step wants most of it for the render and this

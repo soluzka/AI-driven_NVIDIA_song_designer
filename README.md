@@ -290,6 +290,45 @@ the only step a phone needs.
 `tools\start_services.ps1 -NoTunnel` skips the tunnel entirely when you only want
 the local services.
 
+### Reaching the voice through it
+
+There is **one** public address, and it points at **8090**. The singing and
+voice-mapping work lives on that same service (`POST /api/song/voice`), and the
+voice service on **8095** is called by `song_service` over loopback - see
+`VOICE_SERVICE` in `song_service/app.py`. So nothing has to be tunnelled to
+8095, and nothing should be: a second tunnel would be a second public door to a
+model that only ever needs to hear from this machine.
+
+Starting the tunnel by hand, and checking the route end to end, in PowerShell:
+
+```powershell
+Start-Process -FilePath tools\bin\cloudflared.exe -WindowStyle Hidden -ArgumentList @(
+    'tunnel', '--config', 'tools\bin\quick-tunnel.yml',
+    '--url', 'http://127.0.0.1:8090', '--no-autoupdate',
+    '--logfile', 'tunnel.log', '--loglevel', 'info'
+)
+
+# The address the site is telling the page to use
+$tunnel = (Invoke-RestMethod 'https://browser.bpiersing.workers.dev/api/song/endpoint').url
+$tunnel
+
+# The song service, through the tunnel
+Invoke-RestMethod "$tunnel/health" | Select-Object ok, loaded, device
+
+# The singing route, through the tunnel. A body too small to be a recording is
+# refused before any job is queued, which is what makes this safe to run: the
+# answer proves the route is reachable without spending ten minutes on the GPU.
+try {
+    Invoke-RestMethod -Method Post -Uri "$tunnel/api/song/voice?prompt=test&seconds=20" -Body ([byte[]](1..8))
+} catch {
+    $_.ErrorDetails.Message   # {"error":"Send the voice recording as the request body."}
+}
+```
+
+If the first command answers but the last one 404s, an old `cloudflared` is still
+holding a tunnel pointed at the wrong port: stop it and rerun
+`tools\start_services.ps1`, which republishes the address as well.
+
 > A config.yml in `~/.cloudflared` disables Quick Tunnels: its ingress rules win
 > over `--url` and the catch-all answers **404**, so nothing reaches the service.
 > The launcher therefore runs cloudflared with `--config tools/bin/quick-tunnel.yml`,

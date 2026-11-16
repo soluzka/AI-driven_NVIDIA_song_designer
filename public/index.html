@@ -3854,7 +3854,27 @@
             overlay.classList.add('active');
 
             try {
-                await loadIndex();
+                // The clock starts before the first network read, not after it. The
+                // library, the lyric model and the song model are all part of the wait
+                // someone sitting there is enduring, and the number at the end used to
+                // cover only the last step of it.
+                const started = performance.now();
+                const loads = [];
+                const since = () => (performance.now() - started) / 1000;
+
+                // The index is usually a blink, but it is a network read and on a
+                // slow line it was a silent stall. It ticks while it waits.
+                const reading = setInterval(() => {
+                    const line = document.getElementById('songStatus');
+                    if (line) line.textContent = `Reading the library... ${since().toFixed(0)}s`;
+                }, 1000);
+                const indexAt = performance.now();
+                try {
+                    await loadIndex();
+                } finally {
+                    clearInterval(reading);
+                    loads.push(`library index ${((performance.now() - indexAt) / 1000).toFixed(1)}s`);
+                }
                 const seed = (window._nextSongSeed !== undefined)
                     ? window._nextSongSeed
                     : Math.floor(Math.random() * 1000000);
@@ -3865,13 +3885,19 @@
                 const summary = songSource();
                 let lyrics = libraryLyrics(summary, seed);
                 let lyricSource = 'written by the page';
+                // A cold lyric model takes the better part of a minute. That minute is
+                // counted: it is a network load like any other.
+                const lyricAt = performance.now();
                 try {
                     const written = await aiLyrics(summary, seed);
                     if (written) {
                         lyrics = applyAILyrics(lyrics, written);
                         lyricSource = 'written by ' + written.model;
                     }
-                } catch (err) {}
+                } catch (err) {
+                } finally {
+                    loads.push(`lyrics ${((performance.now() - lyricAt) / 1000).toFixed(1)}s`);
+                }
                 // Remembered so the next song avoids these exact lines.
                 window._lastLyricLines = lyrics.reduce((all, part) => all.concat(part.lines), []);
                 // A model song takes tens of seconds, so the player says what it is
@@ -3880,7 +3906,6 @@
                 // The song can come from this machine's model service; nothing is
                 // sent to a hosted provider. The browser band stays as the
                 // fallback for when that service is not running.
-                const started = performance.now();
                 let modelError = null;
                 const model = null;
                 const statusLine = document.getElementById('songStatus');
@@ -3889,18 +3914,24 @@
                 // The sampled band renders in about ten seconds, so it plays first.
                 // The model is asked at the same time and replaces the audio only if
                 // it answers; nothing waits on it, so the button never sits there.
+                const modelAt = performance.now();
                 const modelPromise = requestModelSong(summary, lyrics, seed)
                     .catch(err => {
                         modelError = err && err.message ? err.message : 'the song model is unavailable';
                         return null;
+                    })
+                    .finally(() => {
+                        loads.push(`model song ${((performance.now() - modelAt) / 1000).toFixed(1)}s`);
                     });
 
+                const renderAt = performance.now();
                 const result = await renderLibrarySong(summary, seed);
+                loads.push(`arrangement ${((performance.now() - renderAt) / 1000).toFixed(1)}s`);
                 const url = URL.createObjectURL(encodeWav(result.buffer));
                 let bpm = result.bpm;
                 let seconds = result.seconds;
                 const origin = 'the browser synthesiser';
-                const took = ((performance.now() - started) / 1000).toFixed(1);
+                const took = since().toFixed(1);
                 const extension = '.wav';
 
                 const audio = document.createElement('audio');
@@ -3923,6 +3954,7 @@
                     ? `Built from ${summary.label}, shaped by what dominates it: ${summary.genres.map(genre => `${genre.name} (${genre.count})`).join(', ')}. `
                     : `Built from ${summary.label}. `) +
                     `Rendered and mastered in ${took}s by ${origin}. Lyrics ${lyricSource}.`
+                        + ` Every network load counted: ${loads.join(', ')}.`
                         + (fit && fit.result ? ' These lyrics are sung by the model, fitted to your measured pitch and tone.' : '')
                         + (window._modelNote ? ` ${window._modelNote}.` : '')
                         + (modelError ? ` (model unavailable: ${modelError})` : '');
@@ -4033,6 +4065,7 @@
                         ? `Built from ${summary.label}, shaped by what dominates it: ${summary.genres.map(genre => `${genre.name} (${genre.count})`).join(', ')}. `
                         : `Built from ${summary.label}. `)
                         + `Composed by ${swapped.model || 'the song model'} from the lyrics below, which it sings.`
+                        + ` ${since().toFixed(1)}s from the button press, counting ${loads.join(', ')}.`
                         + (withVoice ? ' Those lyrics are sung by the model, fitted to the pitch and tone measured from your recording.' : '');
                     saveAudio.textContent = withVoice ? 'Save the song with your voice' : 'Save the song';
                     saveAudio.href = source;

@@ -659,8 +659,9 @@ timing belong to the song it is singing over:
    pitch of each, folds the difference into the nearest register (a voice an
    octave away is the same voice) and applies it as a semitone shift on a
    half-semitone grid, never beyond ±7 — and the shift is **formant
-   preserving**: the WORLD vocoder moves the pitch and leaves the spectral
-   envelope alone, so the same singer sounds higher or lower rather than thin;
+   preserving**: the pitch moves, then the source's own spectral envelope is
+   divided back over it, so the same singer sounds higher or lower rather than
+   thin;
 5. the shifted vocal is laid back over the same backing, the bed ducked under it
    and matched so the voice sits `LEAD_DB` (5 dB) above.
 

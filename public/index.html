@@ -3026,7 +3026,22 @@
             // Three groove variants, so the same words do not always sit on the
             // same pattern.
             const variant = seed % 3;
-            const totalBars = sections.reduce((sum, section) => sum + section.bars, 0);
+            let totalBars = sections.reduce((sum, section) => sum + section.bars, 0);
+            // The browser fallback is the song you hear when the model is not
+            // running, so it answers to the same length: grow the form until it
+            // reaches three minutes instead of stopping whenever the random bars
+            // happened to end. Grown a bar at a time, in turn, skipping the
+            // half-length sections, where an extra bar would be heard as a stumble.
+            if (totalBars * barSeconds < SONG_SECONDS) {
+                const wanted = Math.ceil(SONG_SECONDS / barSeconds);
+                let guard = 0;
+                while (totalBars < wanted && guard++ < 400) {
+                    const section = sections[guard % sections.length];
+                    if (section.half) continue;
+                    section.bars += 1;
+                    totalBars += 1;
+                }
+            }
             const seconds = totalBars * barSeconds;
             // The lead genre also decides how dirty, wet and wide the whole mix is.
             const leadFamily = paletteFor(((summary.genres[0] || {}).name) || '');
@@ -3426,10 +3441,10 @@
 
         async function requestModelSong(summary, lyrics, seed) {
             const lyricText = lyrics.map(part => part.lines.join('\n')).join('\n\n');
-            // Between 1:30 and 3:00, picked by the seed: a minute and a half only
-            // fits three verses and a couple of choruses, and the form now carries
-            // three verses, a bridge and a chorus that comes back.
-            const seconds = 90 + 15 * (Math.abs(seed) % 7);
+            // Three minutes, every time: the form carries three verses, a bridge
+            // and a chorus that comes back, and the lyrics are written for that.
+            // A seed-picked 1:30 to 3:00 used to leave the last verses unsung.
+            const seconds = SONG_SECONDS;
             // 24 steps rather than 16: the render measures about a second a step
             // here, so the detail is affordable and the layers land more cleanly.
             // With a phrase recorded, these same lyrics are sung in that voice.
@@ -5930,6 +5945,13 @@
         };
         const FIT_NEUTRAL = { hp: 90, lp: 11000, drive: 0.18, wet: 0.20, echo: 0.10, decay: 1.4, presence: 1 };
 
+        // How long a song is, whichever button asks for it. The lyric is seven
+        // sections long - three verses, a bridge and the chorus coming back - and a
+        // one minute render cut it off after the first chorus. 180 s is three
+        // minutes and is exactly the service's ACE_MAX_SECONDS.
+        const SONG_SECONDS = 180;
+        const FIT_SECONDS = SONG_SECONDS;
+
         // Called as songs open, so the panel fits to whatever is on screen now.
         function rememberFitSong(doc) {
             if (!doc || !doc.remix) return;
@@ -6377,7 +6399,7 @@
             for (const base of bases) {
                 try {
                     const prompt = (fitSong && fitSong.genre) ? fitSong.genre : 'electronic';
-                    const seconds = (fitSong && fitSong.seconds) || 60;
+                    const seconds = (fitSong && fitSong.seconds) || FIT_SECONDS;
                     const ask = base + '/api/song/voice?' + new URLSearchParams(Object.assign(
                         { prompt: prompt, seconds: String(seconds) }, fitMapQuery())).toString();
                     const start = await fetchBounded(ask, {

@@ -8,20 +8,68 @@
     "note": "No CUDA toolkit install is needed on Windows: the NVIDIA driver provides the runtime, and the torch wheel at this index carries its own CUDA libraries. PyPI's default 'torch' on Windows is CPU-only, which is why the index is declared per package instead of left to defaults."
   },
   "packages": [
-    { "spec": "torch", "index": "https://download.pytorch.org/whl/cu126" },
-    { "spec": "torchaudio", "index": "https://download.pytorch.org/whl/cu126" },
-    { "spec": "transformers==4.57.6", "index": "https://pypi.org/simple", "why": "The 5.x line needs huggingface-hub 2.x, which the ACE install does not use; 4.57 pairs with hub 0.36." },
-    { "spec": "huggingface-hub==0.36.2", "index": "https://pypi.org/simple", "why": "Pinned so transformers and the weight downloader agree." },
-    { "spec": "git+https://github.com/ace-step/ACE-Step.git", "why": "The music model's code. The 7 GB checkpoint is downloaded separately below." },
-    { "spec": "flask", "index": "https://pypi.org/simple", "why": "The HTTP service on 127.0.0.1:8090." },
-    { "spec": "flask-cors", "index": "https://pypi.org/simple", "why": "The page is served from another port." },
-    { "spec": "hf_transfer", "index": "https://pypi.org/simple", "why": "Parallel chunked downloads for the weights: ~1.8 MB/s serial versus several times that in parallel." },
-    { "spec": "soundfile", "index": "https://pypi.org/simple", "why": "Writing the rendered wav." },
-    { "spec": "librosa", "index": "https://pypi.org/simple", "why": "ACE-Step's audio loading, and the pitch shift that maps a sung vocal into the song's key." },
-    { "spec": "scipy", "index": "https://pypi.org/simple", "why": "The low-pass and room in the voice map (scipy.signal). librosa pulls it in, but the map imports it by name, so it is named here." },
-    { "spec": "demucs", "index": "https://pypi.org/simple", "why": "Splits a rendered song into the model's vocal and the backing under it, so the voice map touches the words and not the instruments. First run fetches the htdemucs weights (~80 MB)." },
-    { "spec": "numpy==2.4.6", "index": "https://pypi.org/simple", "why": "app.py imports numpy by name for the mix and the pitch measurement. Pinned to the version the models here run on, so a reinstall cannot quietly move the array API under torch." },
-    { "spec": "pyworld==0.3.5", "index": "https://pypi.org/simple", "why": "The WORLD vocoder splits the vocal into pitch, spectral envelope and aperiodicity, so the semitone map can move the pitch and leave the formants where the singer put them. Without it the shift falls back to a phase vocoder, which moves the formants too and makes a shifted voice sound thin. Installs from a prebuilt wheel." }
+    {
+      "spec": "torch",
+      "index": "https://download.pytorch.org/whl/cu126"
+    },
+    {
+      "spec": "torchaudio",
+      "index": "https://download.pytorch.org/whl/cu126"
+    },
+    {
+      "spec": "transformers==4.57.6",
+      "index": "https://pypi.org/simple",
+      "why": "The 5.x line needs huggingface-hub 2.x, which the ACE install does not use; 4.57 pairs with hub 0.36."
+    },
+    {
+      "spec": "huggingface-hub==0.36.2",
+      "index": "https://pypi.org/simple",
+      "why": "Pinned so transformers and the weight downloader agree."
+    },
+    {
+      "spec": "git+https://github.com/ace-step/ACE-Step.git",
+      "why": "The music model's code. The 7 GB checkpoint is downloaded separately below."
+    },
+    {
+      "spec": "flask",
+      "index": "https://pypi.org/simple",
+      "why": "The HTTP service on 127.0.0.1:8090."
+    },
+    {
+      "spec": "flask-cors",
+      "index": "https://pypi.org/simple",
+      "why": "The page is served from another port."
+    },
+    {
+      "spec": "hf_transfer",
+      "index": "https://pypi.org/simple",
+      "why": "Parallel chunked downloads for the weights: ~1.8 MB/s serial versus several times that in parallel."
+    },
+    {
+      "spec": "soundfile",
+      "index": "https://pypi.org/simple",
+      "why": "Writing the rendered wav."
+    },
+    {
+      "spec": "librosa",
+      "index": "https://pypi.org/simple",
+      "why": "ACE-Step's audio loading, and the pitch shift that maps a sung vocal into the song's key."
+    },
+    {
+      "spec": "scipy",
+      "index": "https://pypi.org/simple",
+      "why": "The low-pass and room in the voice map (scipy.signal). librosa pulls it in, but the map imports it by name, so it is named here."
+    },
+    {
+      "spec": "demucs",
+      "index": "https://pypi.org/simple",
+      "why": "Splits a rendered song into the model's vocal and the backing under it, so the voice map touches the words and not the instruments. First run fetches the htdemucs weights (~80 MB)."
+    },
+    {
+      "spec": "numpy==2.4.6",
+      "index": "https://pypi.org/simple",
+      "why": "app.py imports numpy by name for the mix and the pitch measurement. Pinned to the version the models here run on, so a reinstall cannot quietly move the array API under torch."
+    }
   ],
   "imports": {
     "torch": "torch",
@@ -36,8 +84,7 @@
     "librosa": "librosa",
     "scipy": "scipy",
     "demucs": "demucs",
-    "numpy": "numpy",
-    "pyworld": "pyworld"
+    "numpy": "numpy"
   },
   "models": [
     {

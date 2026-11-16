@@ -193,14 +193,19 @@ and applied as a semitone shift on a half-semitone grid, at most ±7 semitones. 
 service computes that itself because only it has both pitches; the page sends no
 semitones.
 
-The shift keeps the formants. A phase vocoder moves the whole spectrum, so +3
-semitones lifts the resonances 19% and the singer sounds like a thinner person
-rather than the same one singing higher. `pyworld` (the WORLD vocoder) gives pitch,
-spectral envelope and aperiodicity separately; the pitch is multiplied by the
-ratio and the envelope and aperiodicity are synthesised back untouched. Measured
-on a separated vocal shifted +3 semitones, F1/F2/F3 moved ×1.019/×0.986/×0.995,
-against ×1.205/×0.915/×0.978 for the phase vocoder the earlier version used. If
-`pyworld` cannot run, the phase vocoder is used and the log says so. Nothing you said into the microphone is in the track and no voice is
+The shift keeps the formants. A bare phase vocoder moves the whole spectrum, so +3
+semitones lifts F1 by 20% and the singer sounds like a thinner person rather than
+the same one singing higher. The shift is therefore two steps: the phase vocoder
+moves the pitch and keeps the texture, then the source's own spectral envelope is
+divided back over the result as a smooth per-frame gain curve (cepstral lifter
+2 ms, gain limited to ±18 dB a band), so the resonances end where the singer left
+them.
+
+Measured on a separated vocal shifted +3 semitones: F1/F2/F3 moved
+×0.993/×0.966/×0.976, against ×1.205/×0.915/×0.978 for the uncorrected vocoder.
+Spectral flatness came out 23% *below* the source's, which is why this is used
+rather than a WORLD resynthesis: WORLD held the formants (×1.019/×0.986/×0.995)
+but measured +281% flatness, heard as a grain or grind. Nothing you said into the microphone is in the track and no voice is
 cloned: the vocal is ACE-Step's own, separated from the music, mapped, and mixed
 back with the bed ducked under it and the voice `LEAD_DB` above.
 

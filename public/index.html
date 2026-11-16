@@ -3361,12 +3361,41 @@
         // because the URL's host is an IP address" - on every finished song. It
         // was a warning rather than a block, but it read like a failure, so the
         // bytes are fetched first and played from a blob URL, which the page owns.
-        async function localAudioBlob(url) {
-            if (!/^http:\/\/(127\.0\.0\.1|localhost)(:|\/)/i.test(url)) return url;
+        // A finished song is a network read like any other: a 180 s WAV is tens of
+        // megabytes. This used to fetch only loopback addresses, so a song served
+        // from the site's own origin was handed to the audio element and downloaded
+        // behind the page's back - visible in DevTools, missing from every count.
+        // Now anything on this origin or the local service is streamed here, so the
+        // bytes and the seconds are known to the page while they arrive.
+        async function localAudioBlob(url, onProgress) {
+            let target;
+            try {
+                target = new URL(url, location.href);
+            } catch (err) {
+                return url;
+            }
+            const loopback = /^(127\.0\.0\.1|localhost)$/i.test(target.hostname);
+            if (target.origin !== location.origin && !loopback) return url;
             try {
                 const response = await fetchBounded(url, {}, 180000);
                 if (!response.ok) return url;
-                return URL.createObjectURL(await response.blob());
+                if (!onProgress || !response.body || !response.body.getReader) {
+                    const whole = await response.blob();
+                    if (onProgress) onProgress(whole.size);
+                    return URL.createObjectURL(whole);
+                }
+                const reader = response.body.getReader();
+                const chunks = [];
+                let received = 0;
+                for (;;) {
+                    const step = await reader.read();
+                    if (step.done) break;
+                    chunks.push(step.value);
+                    received += step.value.length;
+                    onProgress(received);
+                }
+                return URL.createObjectURL(new Blob(chunks, {
+                    type: response.headers.get('content-type') || 'audio/wav' }));
             } catch (err) {
                 return url;   // the element can still try the address itself
             }
@@ -4046,11 +4075,48 @@
 
                 panel.append(head, lyricHead, list, note, actions);
 
+                // The model reports its stage and its elapsed seconds into #songStatus,
+                // and that div lived in the stage - which is emptied the moment the
+                // browser song appears. So the minutes of rendering, and the download
+                // after them, had no counter on screen at all. This one stays in the
+                // panel, so those writes land somewhere someone can see.
+                const liveStatus = document.createElement('div');
+                liveStatus.id = 'songStatus';
+                liveStatus.style.cssText = 'margin:8px 0;color:#8b9aa0;font-size:13px';
+                liveStatus.textContent = 'Asking the song model... ' + since().toFixed(0) + 's';
+                note.after(liveStatus);
+
                 // A real model may answer while the band is already playing. When it
                 // does, the sung track replaces the audio and the labels say so.
                 modelPromise.then(async swapped => {
-                    if (!swapped || !swapped.audio) return;
-                    const source = await localAudioBlob(swapped.audio);
+                    if (!swapped || !swapped.audio) {
+                        liveStatus.textContent = 'The model did not answer; the browser song above is what is playing.';
+                        // The model never answered. The panel used to keep the note it
+                        // wrote before the model was asked, so the minutes it spent - and
+                        // the reason it failed - were missing from it entirely.
+                        note.textContent += ` ${since().toFixed(1)}s from the button press; the model did not`
+                            + ` answer${modelError ? ` (${modelError})` : ''}. Counted: ${loads.join(', ')}.`;
+                        return;
+                    }
+                    // The song itself arrives over the network at the end of the model
+                    // run. It is shown while it downloads and counted when it lands,
+                    // megabytes and all, because that wait is part of the wait.
+                    const downloadAt = performance.now();
+                    let received = 0;
+                    const waiting = setInterval(() => {
+                        note.textContent = `Loading the song from the network... ${since().toFixed(0)}s`
+                            + (received ? ` (${(received / 1048576).toFixed(1)} MB)` : '');
+                    }, 500);
+                    let source;
+                    try {
+                        source = await localAudioBlob(swapped.audio, bytes => { received = bytes; });
+                    } finally {
+                        clearInterval(waiting);
+                    }
+                    loads.push(`song download ${((performance.now() - downloadAt) / 1000).toFixed(1)}s`
+                        + (received ? ` (${(received / 1048576).toFixed(1)} MB)` : ''));
+                    liveStatus.textContent = 'The model song is loaded: '
+                        + `${(received / 1048576).toFixed(1)} MB in ${((performance.now() - downloadAt) / 1000).toFixed(1)}s.`;
                     // The recording is NOT mixed in here any more. With a phrase fitted
                     // the model was asked to sing the lyrics in that voice, so the song
                     // already carries it; also laying the recording over the track put an

@@ -4002,29 +4002,14 @@
                 // does, the sung track replaces the audio and the labels say so.
                 modelPromise.then(async swapped => {
                     if (!swapped || !swapped.audio) return;
-                    let source = await localAudioBlob(swapped.audio);
-                    // A phrase fitted earlier in this tab becomes part of the song rather
-                    // than a separate file beside it: the model's track and the voice are
-                    // returned as one recording, with the voice on the bar lines.
-                    let withVoice = false;
-                    if (fit.result) {
-                        try {
-                            const blob = fitWav(fit.result);
-                            for (const base of await modelBases(false)) {
-                                const answer = await fetchBounded(
-                                    base + '/api/song/mix?bpm=' + encodeURIComponent(bpm || 120) + '&lead=1',
-                                    { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: blob },
-                                    180000);
-                                if (!answer.ok) continue;
-                                const info = await answer.json();
-                                if (!info.token) continue;
-                                source = base + '/song_file/' + info.token;
-                                fit.mixUrl = source;
-                                withVoice = true;
-                                break;
-                            }
-                        } catch (err) { /* the song without the voice still plays */ }
-                    }
+                    const source = await localAudioBlob(swapped.audio);
+                    // The recording is NOT mixed in here any more. With a phrase fitted
+                    // the model was asked to sing the lyrics in that voice, so the song
+                    // already carries it; also laying the recording over the track put an
+                    // unchanged copy of it behind the sung voice, which is what made the
+                    // finished song sound like the recording was part of the backing.
+                    const withVoice = !!(fit && fit.result);
+                    fit.mixUrl = source;
                     audio.src = source;
                     audio.autoplay = true;
                     head.textContent = head.textContent.replace(' · seed', (withVoice ? ' · with your voice · seed' : ' · sung by the model · seed'));
@@ -4032,7 +4017,7 @@
                         ? `Built from ${summary.label}, shaped by what dominates it: ${summary.genres.map(genre => `${genre.name} (${genre.count})`).join(', ')}. `
                         : `Built from ${summary.label}. `)
                         + `Composed by ${swapped.model || 'the song model'} from the lyrics below, which it sings.`
-                        + (withVoice ? ' Your recorded phrase is on the bar lines, with the track ducked under it.' : '');
+                        + (withVoice ? ' Those lyrics are sung in your recorded voice, in this song key.' : '');
                     saveAudio.textContent = withVoice ? 'Save the song with your voice' : 'Save the song';
                     saveAudio.href = source;
                     saveAudio.download = 'library-song.wav';

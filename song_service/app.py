@@ -279,6 +279,13 @@ def _map_vocal(mono, rate, mapping):
     return out
 
 
+# How far above the bed the voice is placed, how far the bed dips under it, and
+# the most gain that will ever be applied to a quiet model output.
+LEAD_DB = 5.0
+DUCK_UNDER_VOICE = 0.55
+MAX_LEAD_GAIN = 8.0
+
+
 def _layout_vocal(song_path, vocal_bytes, out_path, bpm, mapping=(0.0, 0.0, 0.0)):
     """Lay the sung lyrics over the instrumental and keep them the lead."""
     import numpy as np
@@ -307,13 +314,23 @@ def _layout_vocal(song_path, vocal_bytes, out_path, bpm, mapping=(0.0, 0.0, 0.0)
     placed = mono
     # The track steps back under the words so the singing is what is heard, and
     # comes back up wherever the phrase has a gap.
-    envelope = np.ones(len(placed), dtype='float32')
     win = max(1, int(rate * 0.05))
     hit = np.convolve(np.abs(placed), np.ones(win) / win, mode='same')
     gate = np.clip(hit / (float(hit.max()) * 0.12 + 1e-9), 0.0, 1.0)
-    envelope = 1.0 - 0.45 * gate
-    out[start:start + len(placed)] *= envelope[:, None]
-    out[start:start + len(placed)] += (placed * 0.95)[:, None].repeat(channels, axis=1)
+    envelope = 1.0 - DUCK_UNDER_VOICE * gate
+
+    # A fixed gain cannot make a lead vocal: measured on a finished song, the
+    # voice sat 3.2 dB *below* the bed, which is why it sounded like part of the
+    # backing rather than something sung over it. So the voice is matched to the
+    # track it is about to sit on, and put LEAD_DB above it, whatever the model
+    # returned.
+    bed = out[start:start + len(placed)] * envelope[:, None]
+    bed_rms = float(np.sqrt(np.mean(bed ** 2)) or 0.0)
+    voice_rms = float(np.sqrt(np.mean(placed ** 2)) or 0.0)
+    lead_gain = 1.0
+    if bed_rms > 1e-6 and voice_rms > 1e-6:
+        lead_gain = min(MAX_LEAD_GAIN, (bed_rms * 10 ** (LEAD_DB / 20.0)) / voice_rms)
+    out[start:start + len(placed)] = bed + (placed * lead_gain)[:, None].repeat(channels, axis=1)
 
     peak = float(np.max(np.abs(out)) or 0.0)
     if peak > 0.98:
@@ -321,7 +338,8 @@ def _layout_vocal(song_path, vocal_bytes, out_path, bpm, mapping=(0.0, 0.0, 0.0)
     sf.write(out_path, out, rate)
     return {'seconds': round(len(out) / float(rate), 2),
             'vocal_seconds': round(len(placed) / float(rate), 2),
-            'starts_at': round(100.0 * start / max(1, len(out)), 1)}
+            'starts_at': round(100.0 * start / max(1, len(out)), 1),
+            'lead_db': round(20 * float(np.log10(lead_gain)), 1)}
 
 
 def _run_voice_job(token, reference_path, prompt, lyrics, seconds, steps, seed,

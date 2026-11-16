@@ -33,4 +33,8 @@ flask
 flask-cors
 hf_transfer
 soundfile
+# librosa: ACE-Step's audio loading, and the pitch shift that maps the sung vocal
+# into the song's key. scipy: the low-pass and room half of that map - librosa
+# pulls it in, but the code imports scipy.signal by name.
 librosa
+scipy

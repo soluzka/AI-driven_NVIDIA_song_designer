@@ -328,9 +328,12 @@ def _map_vocal(mono, rate, mapping):
 
 
 # How far above the bed the voice is placed, how far the bed dips under it, and
-# the most gain that will ever be applied to a quiet model output.
-LEAD_DB = 5.0
-DUCK_UNDER_VOICE = 0.55
+# the most gain that will ever be applied to a quiet model output. 5 dB over a bed
+# dipped by 5.5 dB read as "vocals a bit too loud for the music", so the voice sits
+# 2.5 dB over a bed dipped by 4.5 dB: still the lead, with the music present under
+# it instead of pushed away.
+LEAD_DB = 2.5
+DUCK_UNDER_VOICE = 0.45
 MAX_LEAD_GAIN = 8.0
 
 

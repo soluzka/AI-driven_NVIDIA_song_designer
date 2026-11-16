@@ -403,11 +403,14 @@ def _map_vocal(mono, rate, mapping):
 
 
 # How far above the bed the voice is placed, how far the bed dips under it, and
-# the most gain that will ever be applied to a quiet model output. 5 dB over a bed
-# dipped by 5.5 dB read as "vocals a bit too loud for the music", so the voice sits
-# 2.5 dB over a bed dipped by 4.5 dB: still the lead, with the music present under
-# it instead of pushed away.
-LEAD_DB = 2.5
+# the most gain that will ever be applied to a quiet model output.
+#
+# The offset is measured where the voice is actually singing, not across the whole
+# track: a sung line covers about a third of a song, so matching whole-track RMS
+# compared a sparse signal with a continuous one and put the voice +13.9 dB over
+# the music (measured on a 180 s song) while claiming 2.5. That is what "too loud"
+# was. Matching the active frames gives the number the ear hears.
+LEAD_DB = 1.5
 DUCK_UNDER_VOICE = 0.45
 MAX_LEAD_GAIN = 8.0
 
@@ -491,8 +494,17 @@ def _mix_separated(backing_path, vocal_path, out_path, mapping=(0.0, 0.0, 0.0)):
     gate = np.clip(hit / (float(hit.max()) * 0.12 + 1e-9), 0.0, 1.0)
     bed *= (1.0 - DUCK_UNDER_VOICE * gate)[:, None]
 
-    bed_rms = float(np.sqrt(np.mean(bed ** 2)) or 0.0)
-    voice_rms = float(np.sqrt(np.mean(placed ** 2)) or 0.0)
+    # Both levels are measured over the frames where the voice is present. Over
+    # the whole track the voice is silent for most of it, its RMS then reads far
+    # below what the ear hears, and the gain that "matches" it overshoots by more
+    # than 10 dB - which is how the vocal ended up on top of the song.
+    active = gate > 0.5
+    if bool(np.any(active)) and float(np.sqrt(np.mean(placed[active] ** 2)) or 0.0) > 1e-6:
+        bed_rms = float(np.sqrt(np.mean(bed[active] ** 2)) or 0.0)
+        voice_rms = float(np.sqrt(np.mean(placed[active] ** 2)) or 0.0)
+    else:
+        bed_rms = float(np.sqrt(np.mean(bed ** 2)) or 0.0)
+        voice_rms = float(np.sqrt(np.mean(placed ** 2)) or 0.0)
     lead_gain = 1.0
     if bed_rms > 1e-6 and voice_rms > 1e-6:
         lead_gain = min(MAX_LEAD_GAIN, (bed_rms * 10 ** (LEAD_DB / 20.0)) / voice_rms)

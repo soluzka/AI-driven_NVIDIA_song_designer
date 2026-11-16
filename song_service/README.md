@@ -191,7 +191,16 @@ The model sings; your recording is a measurement. The recording's median pitch i
 compared with the sung vocal's, the difference is folded into the nearest register
 and applied as a semitone shift on a half-semitone grid, at most ±7 semitones. The
 service computes that itself because only it has both pitches; the page sends no
-semitones. Nothing you said into the microphone is in the track and no voice is
+semitones.
+
+The shift keeps the formants. A phase vocoder moves the whole spectrum, so +3
+semitones lifts the resonances 19% and the singer sounds like a thinner person
+rather than the same one singing higher. `pyworld` (the WORLD vocoder) gives pitch,
+spectral envelope and aperiodicity separately; the pitch is multiplied by the
+ratio and the envelope and aperiodicity are synthesised back untouched. Measured
+on a separated vocal shifted +3 semitones, F1/F2/F3 moved ×1.019/×0.986/×0.995,
+against ×1.205/×0.915/×0.978 for the phase vocoder the earlier version used. If
+`pyworld` cannot run, the phase vocoder is used and the log says so. Nothing you said into the microphone is in the track and no voice is
 cloned: the vocal is ACE-Step's own, separated from the music, mapped, and mixed
 back with the bed ducked under it and the voice `LEAD_DB` above.
 

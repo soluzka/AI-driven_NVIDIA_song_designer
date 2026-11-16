@@ -45,3 +45,7 @@ demucs
 # the version the models run on here, so a reinstall cannot move the array API
 # under torch.
 numpy==2.4.6
+# pyworld: the WORLD vocoder, so the semitone map moves the pitch and keeps the
+# formants. A prebuilt wheel, no compiler needed; without it the shift falls back to
+# a phase vocoder that moves the formants as well.
+pyworld==0.3.5

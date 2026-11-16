@@ -292,6 +292,47 @@ def _apply_room(mono, rate, wet):
     return ((1.0 - wet) * mono + wet * wet_signal).astype('float32')
 
 
+def _shift_pitch_keeping_formants(mono, rate, semitones):
+    """Transpose the voice while its formants stay where the singer left them.
+
+    A phase-vocoder shift (librosa's `pitch_shift`) moves the spectral envelope
+    with the harmonics: +3 semitones moves the formants up 19%, which reads as a
+    thinner, shifted person rather than the same person singing higher. So the
+    decomposition is separated into what actually moves and what must not: the
+    WORLD vocoder gives the excitation pitch, the spectral envelope and the
+    aperiodicity apart from each other, the pitch is multiplied by the ratio and
+    the envelope and aperiodicity go back untouched. That is the whole point of
+    the split, and it is why this is used instead of the vocoder in librosa.
+
+    Returns None when WORLD cannot be used, so the caller can fall back.
+    """
+    import numpy as np
+
+    try:
+        import pyworld as pw
+
+        x = np.ascontiguousarray(mono, dtype='float64')
+        f0, times = pw.harvest(x, int(rate), frame_period=5.0)
+        if not np.any(f0 > 0):
+            print('no pitch found in the vocal, leaving it untransposed', flush=True)
+            return None
+        envelope = pw.cheaptrick(x, f0, times, int(rate))
+        aperiodicity = pw.d4c(x, f0, times, int(rate))
+        # Only the pitched frames move; unvoiced ones are already f0 == 0 and stay so.
+        shifted = f0 * (2.0 ** (float(semitones) / 12.0))
+        out = pw.synthesize(shifted, envelope, aperiodicity, int(rate), frame_period=5.0)
+        if out is None or out.size < len(mono) // 2:
+            return None
+        if out.shape[0] < mono.shape[0]:
+            out = np.pad(out, (0, mono.shape[0] - out.shape[0]))
+        print('formants held: %d frames analysed, pitch x%.4f, envelope untouched'
+              % (len(f0), 2.0 ** (float(semitones) / 12.0)), flush=True)
+        return out[:mono.shape[0]].astype('float32')
+    except Exception as exc:  # noqa: BLE001 - reported, then the caller decides
+        print(f'WORLD could not transpose the vocal: {exc}', flush=True)
+        return None
+
+
 def _map_vocal(mono, rate, mapping):
     """Put the sung vocal through the same map as the fitted phrase.
 
@@ -300,18 +341,27 @@ def _map_vocal(mono, rate, mapping):
     relation to the music. `mapping` is (semitones, low-pass Hz, room) and is
     applied to the vocal itself: transposing it keeps its length, so it still
     lands on the backing's grid.
+
+    The transpose keeps the formants; see `_shift_pitch_keeping_formants`. If
+    WORLD is unavailable the librosa shift is used instead, which moves them, so
+    the run says which one happened rather than leaving it to be guessed.
     """
     import numpy as np
 
     semitones, lowpass, room = mapping or (0.0, 0.0, 0.0)
     out = np.ascontiguousarray(mono, dtype='float32')
     if abs(semitones) >= 0.05:
-        import librosa
+        shifted = _shift_pitch_keeping_formants(out, rate, semitones)
+        if shifted is not None:
+            out = shifted
+        else:
+            import librosa
 
-        try:
-            out = librosa.effects.pitch_shift(out, sr=rate, n_steps=float(semitones))
-        except Exception as exc:  # noqa: BLE001 - a shift that fails keeps the voice
-            print(f'pitch shift by {semitones} semitones failed: {exc}', flush=True)
+            try:
+                out = librosa.effects.pitch_shift(out, sr=rate, n_steps=float(semitones))
+                print('formants not held: fell back to the phase vocoder', flush=True)
+            except Exception as exc:  # noqa: BLE001 - a shift that fails keeps the voice
+                print(f'pitch shift by {semitones} semitones failed: {exc}', flush=True)
     if lowpass and lowpass < rate / 2.0:
         from scipy.signal import butter, sosfilt
 

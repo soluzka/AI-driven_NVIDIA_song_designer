@@ -226,7 +226,60 @@ def _sing_in_voice(reference_bytes, lyrics, token):
         return response.read(), info
 
 
-def _layout_vocal(song_path, vocal_bytes, out_path, bpm):
+def _apply_room(mono, rate, wet):
+    """A short synthetic room, so the vocal sits where the mapped phrase sits."""
+    import numpy as np
+    from scipy.signal import fftconvolve
+
+    length = max(8, int(rate * 0.45))
+    rng = np.random.default_rng(7)
+    tail = rng.standard_normal(length).astype('float32')
+    tail *= np.exp(-np.linspace(0.0, 5.0, length)).astype('float32')
+    tail[0] = 1.0
+    wet_signal = fftconvolve(mono, tail, mode='full')[:len(mono)].astype('float32')
+    dry_rms = float(np.sqrt(np.mean(mono ** 2)) or 0.0)
+    wet_rms = float(np.sqrt(np.mean(wet_signal ** 2)) or 0.0)
+    if wet_rms > 1e-9 and dry_rms > 1e-9:
+        wet_signal *= dry_rms / wet_rms
+    return ((1.0 - wet) * mono + wet * wet_signal).astype('float32')
+
+
+def _map_vocal(mono, rate, mapping):
+    """Put the sung vocal through the same map as the fitted phrase.
+
+    The page pitches the recorded phrase into the song's key and tones it; that
+    map used to stop at the reference, so the words the model sang arrived in no
+    relation to the music. `mapping` is (semitones, low-pass Hz, room) and is
+    applied to the vocal itself: transposing it keeps its length, so it still
+    lands on the backing's grid.
+    """
+    import numpy as np
+
+    semitones, lowpass, room = mapping or (0.0, 0.0, 0.0)
+    out = np.ascontiguousarray(mono, dtype='float32')
+    if abs(semitones) >= 0.05:
+        import librosa
+
+        try:
+            out = librosa.effects.pitch_shift(out, sr=rate, n_steps=float(semitones))
+        except Exception as exc:  # noqa: BLE001 - a shift that fails keeps the voice
+            print(f'pitch shift by {semitones} semitones failed: {exc}', flush=True)
+    if lowpass and lowpass < rate / 2.0:
+        from scipy.signal import butter, sosfilt
+
+        sos = butter(2, float(lowpass) / (rate / 2.0), btype='low', output='sos')
+        out = sosfilt(sos, out).astype('float32')
+    if room and room > 0.01:
+        out = _apply_room(out, rate, min(0.9, float(room)))
+    peak = float(np.max(np.abs(out)) or 0.0)
+    if peak > 0.99:
+        out *= 0.99 / peak
+    print(f'mapped the vocal: {semitones:+.2f} semitones, low-pass {lowpass:.0f} Hz, '
+          f'room {room:.2f}', flush=True)
+    return out
+
+
+def _layout_vocal(song_path, vocal_bytes, out_path, bpm, mapping=(0.0, 0.0, 0.0)):
     """Lay the sung lyrics over the instrumental and keep them the lead."""
     import numpy as np
     import soundfile as sf
@@ -239,6 +292,7 @@ def _layout_vocal(song_path, vocal_bytes, out_path, bpm):
                          np.arange(len(mono)), mono).astype('float32')
     if not len(mono):
         raise RuntimeError('the voice service returned an empty vocal')
+    mono = _map_vocal(mono, rate, mapping)
 
     channels = song.shape[1]
     out = song.copy()
@@ -270,7 +324,8 @@ def _layout_vocal(song_path, vocal_bytes, out_path, bpm):
             'starts_at': round(100.0 * start / max(1, len(out)), 1)}
 
 
-def _run_voice_job(token, reference_path, prompt, lyrics, seconds, steps, seed):
+def _run_voice_job(token, reference_path, prompt, lyrics, seconds, steps, seed,
+                   mapping=(0.0, 0.0, 0.0)):
     """Words from the lyric model, sung in the recorded voice, over a new backing."""
     started = time.time()
     try:
@@ -306,7 +361,7 @@ def _run_voice_job(token, reference_path, prompt, lyrics, seconds, steps, seed):
         _set(token, status='mixing', progress=0.92)
         mixed_path = os.path.join(job['tmp_dir'], 'song_with_voice.wav')
         bpm = 120.0
-        layout = _layout_vocal(job['path'], vocal_bytes, mixed_path, bpm)
+        layout = _layout_vocal(job['path'], vocal_bytes, mixed_path, bpm, mapping)
         _set(token, status='complete', progress=1.0, path=mixed_path,
              lyrics=lyrics, voice=layout, elapsed=round(time.time() - started, 1))
         _keep_song(token, mixed_path)
@@ -895,6 +950,24 @@ def api_song_voice():
     except (TypeError, ValueError):
         steps = DEFAULT_STEPS
     steps = max(8, min(80, steps))
+    # The page's voice map: the same semitones, tone and room it applied to the
+    # recorded phrase, to be applied to what the model sings.
+    try:
+        semitones = float(request.args.get('semitones') or 0)
+    except (TypeError, ValueError):
+        semitones = 0.0
+    semitones = max(-12.0, min(12.0, semitones))
+    try:
+        lowpass = float(request.args.get('lowpass') or 0)
+    except (TypeError, ValueError):
+        lowpass = 0.0
+    lowpass = 0.0 if lowpass <= 0 else max(300.0, min(20000.0, lowpass))
+    try:
+        room = float(request.args.get('room') or 0)
+    except (TypeError, ValueError):
+        room = 0.0
+    room = max(0.0, min(0.9, room))
+    mapping = (semitones, lowpass, room)
 
     global _latest_token
     token = uuid.uuid4().hex
@@ -922,7 +995,8 @@ def api_song_voice():
         _latest_token = token
 
     threading.Thread(target=_run_voice_job,
-                     args=(token, reference_path, prompt, lyrics, seconds, steps, seed),
+                     args=(token, reference_path, prompt, lyrics, seconds, steps, seed,
+                           mapping),
                      daemon=True).start()
     return jsonify({'token': token, 'status': 'writing', 'seconds': seconds}), 202
 

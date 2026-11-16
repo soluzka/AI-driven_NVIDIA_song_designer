@@ -3394,6 +3394,36 @@
             return { data, base };
         }
 
+        // The recorded voice as the singer: the same jobs, but the lyrics go to
+        // /api/song/voice with the recording as the body, so the model sings them
+        // in that timbre instead of asking for an instrumental and leaving the
+        // voice out of the song altogether.
+        async function postVoiceSong(base, payload, voice) {
+            const query = new URLSearchParams(Object.assign({
+                prompt: payload.prompt,
+                lyrics: payload.lyrics,
+                seconds: String(payload.seconds),
+                steps: String(payload.steps)
+            }, fitMapQuery())).toString();
+            let response;
+            try {
+                response = await fetchBounded(base + '/api/song/voice?' + query, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'audio/wav' },
+                    body: voice
+                }, 120000);
+            } catch (err) {
+                return null;
+            }
+            const isJson = (response.headers.get('content-type') || '').includes('application/json');
+            if (!isJson) return null;
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.error || 'the voice service refused the recording');
+            }
+            return { data, base };
+        }
+
         async function requestModelSong(summary, lyrics, seed) {
             const lyricText = lyrics.map(part => part.lines.join('\n')).join('\n\n');
             // Between 1:30 and 3:00, picked by the seed: a minute and a half only
@@ -3402,15 +3432,15 @@
             const seconds = 90 + 15 * (Math.abs(seed) % 7);
             // 24 steps rather than 16: the render measures about a second a step
             // here, so the detail is affordable and the layers land more cleanly.
-            // With a phrase fitted, the model is asked for the backing only: the
-            // recorded voice is the lead, so an AI vocal would fight it.
+            // With a phrase recorded, these same lyrics are sung in that voice.
             const voiced = !!(fit && fit.result);
+            const voiceClip = voiced ? fitWav(fit.result) : null;
             const payload = {
-                prompt: modelPrompt(summary, seed) + (voiced ? ', instrumental, backing track, no lead vocal' : ''),
+                prompt: modelPrompt(summary, seed),
                 lyrics: lyricText,
                 seconds,
                 steps: 24,
-                instrumental: voiced
+                instrumental: false
             };
 
             const bases = await modelBases(false);
@@ -3462,7 +3492,26 @@
             }
             for (const base of bases) {
                 if (answer) break;
-                answer = await postSong(base, payload);
+                if (voiced) {
+                    try {
+                        answer = await postVoiceSong(base, payload, voiceClip);
+                    } catch (err) {
+                        // The recording was refused: say so, and still come back
+                        // with the backing rather than nothing at all.
+                        window._modelNote = 'The voice service refused the recording ('
+                            + ((err && err.message) || 'no reason given')
+                            + '), so this is the backing without a vocal.';
+                        answer = null;
+                    }
+                }
+                if (!answer) {
+                    answer = await postSong(base, voiced
+                        ? Object.assign({}, payload, {
+                            prompt: payload.prompt + ', instrumental, backing track, no lead vocal',
+                            instrumental: true
+                        })
+                        : payload);
+                }
             }
             if (!answer) return null;
             if (answer.data.audio) return answer.data;
@@ -3522,9 +3571,15 @@
                         ? Math.floor(spent / 60) + ' min ' + (spent % 60) + ' s'
                         : spent + ' s';
                     const percent = Math.round((job.progress || 0) * 100);
-                    status.textContent = job.status === 'loading'
-                        ? `Loading the model on this machine... ${clock}`
-                        : `Composing and singing on this machine... ${percent}% · ${clock}`;
+                    const stageWords = {
+                        writing: 'Writing the lyrics on this machine',
+                        singing: 'Singing them in your recorded voice',
+                        loading: 'Loading the song model on this machine',
+                        generating: 'Rendering the backing on this machine',
+                        mixing: 'Laying your voice over the backing'
+                    };
+                    status.textContent = (stageWords[job.status]
+                        || 'Composing and singing on this machine') + `... ${percent}% · ${clock}`;
                 }
             }
             throw new Error('the model took too long to finish');
@@ -3852,6 +3907,7 @@
                     ? `Built from ${summary.label}, shaped by what dominates it: ${summary.genres.map(genre => `${genre.name} (${genre.count})`).join(', ')}. `
                     : `Built from ${summary.label}. `) +
                     `Rendered and mastered in ${took}s by ${origin}. Lyrics ${lyricSource}.`
+                        + (fit && fit.result ? ' These lyrics are sung in your recorded voice.' : '')
                         + (window._modelNote ? ` ${window._modelNote}.` : '')
                         + (modelError ? ` (model unavailable: ${modelError})` : '');
 
@@ -6147,6 +6203,19 @@
 
         const fit = { stream: null, recorder: null, chunks: [], result: null, url: null, busy: false, timer: 0 };
 
+        // The map the panel applied to the recorded phrase, in the shape the song
+        // service accepts: semitones into the song's key, the low-pass ceiling and
+        // how much room. Sent with a job so the sung vocal gets the same map rather
+        // than arriving in whatever key the model chose.
+        function fitMapQuery() {
+            const map = (fit && fit.map) || {};
+            return {
+                semitones: String(map.semitones || 0),
+                lowpass: String(map.lowpass || 0),
+                room: String(map.room || 0)
+            };
+        }
+
         function fitSay(text) {
             const status = document.getElementById('fitStatus');
             if (status) status.textContent = text;
@@ -6274,6 +6343,10 @@
                 const rendered = await fitRender(raw, profile, semitones);
                 if (fit.url) URL.revokeObjectURL(fit.url);
                 fit.result = rendered;
+                // Kept as numbers, not just baked into the phrase: the model sings
+                // its own take on the words, so the same map has to be sent with
+                // the job or the sung vocal lands in no relation to the song.
+                fit.map = { semitones: semitones, lowpass: profile.lp, room: profile.wet };
                 fit.url = URL.createObjectURL(fitWav(rendered));
                 const play = document.getElementById('fitPlay');
                 const save = document.getElementById('fitSave');
@@ -6320,7 +6393,8 @@
                 try {
                     const prompt = (fitSong && fitSong.genre) ? fitSong.genre : 'electronic';
                     const seconds = (fitSong && fitSong.seconds) || 60;
-                    const ask = base + '/api/song/voice?' + new URLSearchParams({ prompt: prompt, seconds: String(seconds) }).toString();
+                    const ask = base + '/api/song/voice?' + new URLSearchParams(Object.assign(
+                        { prompt: prompt, seconds: String(seconds) }, fitMapQuery())).toString();
                     const start = await fetchBounded(ask, {
                         method: 'POST',
                         headers: { 'Content-Type': 'audio/wav' },

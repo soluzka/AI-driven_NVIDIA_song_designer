@@ -3573,10 +3573,11 @@
                     const percent = Math.round((job.progress || 0) * 100);
                     const stageWords = {
                         writing: 'Writing the lyrics on this machine',
-                        singing: 'Singing them in your recorded voice',
+                        singing: 'Singing the lyrics on this machine',
                         loading: 'Loading the song model on this machine',
-                        generating: 'Rendering the backing on this machine',
-                        mixing: 'Laying your voice over the backing'
+                        generating: 'The model singing the lyrics over a new backing',
+                        separating: 'Separating the vocal from the backing',
+                        mixing: 'Mapping the vocal to your measurements'
                     };
                     status.textContent = (stageWords[job.status]
                         || 'Composing and singing on this machine') + `... ${percent}% · ${clock}`;
@@ -3907,7 +3908,7 @@
                     ? `Built from ${summary.label}, shaped by what dominates it: ${summary.genres.map(genre => `${genre.name} (${genre.count})`).join(', ')}. `
                     : `Built from ${summary.label}. `) +
                     `Rendered and mastered in ${took}s by ${origin}. Lyrics ${lyricSource}.`
-                        + (fit && fit.result ? ' These lyrics are sung in your recorded voice.' : '')
+                        + (fit && fit.result ? ' These lyrics are sung by the model, fitted to your measured pitch and tone.' : '')
                         + (window._modelNote ? ` ${window._modelNote}.` : '')
                         + (modelError ? ` (model unavailable: ${modelError})` : '');
 
@@ -4017,7 +4018,7 @@
                         ? `Built from ${summary.label}, shaped by what dominates it: ${summary.genres.map(genre => `${genre.name} (${genre.count})`).join(', ')}. `
                         : `Built from ${summary.label}. `)
                         + `Composed by ${swapped.model || 'the song model'} from the lyrics below, which it sings.`
-                        + (withVoice ? ' Those lyrics are sung in your recorded voice, in this song key.' : '');
+                        + (withVoice ? ' Those lyrics are sung by the model, fitted to the pitch and tone measured from your recording.' : '');
                     saveAudio.textContent = withVoice ? 'Save the song with your voice' : 'Save the song';
                     saveAudio.href = source;
                     saveAudio.download = 'library-song.wav';
@@ -6188,14 +6189,13 @@
 
         const fit = { stream: null, recorder: null, chunks: [], result: null, url: null, busy: false, timer: 0 };
 
-        // The map the panel applied to the recorded phrase, in the shape the song
-        // service accepts: semitones into the song's key, the low-pass ceiling and
-        // how much room. Sent with a job so the sung vocal gets the same map rather
-        // than arriving in whatever key the model chose.
+        // Only the tone half of the voice fit travels with a job. The semitones are
+        // computed by the song service, which is the only side that can compare the
+        // register your recording measured with the register the model actually
+        // sang in - sending the browser's guess as well would let it win.
         function fitMapQuery() {
             const map = (fit && fit.map) || {};
             return {
-                semitones: String(map.semitones || 0),
                 lowpass: String(map.lowpass || 0),
                 room: String(map.room || 0)
             };
@@ -6398,10 +6398,11 @@
                     // A whole song takes minutes on one card; say which part it is on.
                     const stages = {
                         writing: 'writing the lyrics',
-                        singing: 'singing them in your voice',
+                        singing: 'singing them',
                         loading: 'loading the song model',
-                        generating: 'rendering the backing',
-                        mixing: 'laying the voice over the backing'
+                        generating: 'the model singing the lyrics over a new backing',
+                        separating: 'separating the vocal from the backing',
+                        mixing: 'mapping the vocal to your measurements and laying it back'
                     };
                     // 720 ticks of 5 s is an hour: a song measured 447 s for 45 s
                     // of audio and 700 s for 105 s, so the old 10-minute cap ended
@@ -6414,7 +6415,7 @@
                         if (playBtn) playBtn.textContent = 'Play song';
                         if (saveBtn) saveBtn.textContent = 'Save song';
                         new Audio(songUrl).play().catch(() => {});
-                        fitSay('The lyrics are sung in your voice over a new backing. Play and Save WAV use that song.');
+                        fitSay('The model sings the lyrics, fitted to the pitch and tone measured from your recording, over a new backing. Play and Save WAV use that song.');
                     };
                     // No minute-count deadline here either: the loop ends when the
                     // job finishes, fails, is forgotten, or stops reporting for

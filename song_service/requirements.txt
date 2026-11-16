@@ -38,3 +38,10 @@ soundfile
 # pulls it in, but the code imports scipy.signal by name.
 librosa
 scipy
+# demucs: splits a rendered song into the model's vocal and its backing, so the
+# voice map is applied to the words and not to the instruments.
+demucs
+# numpy: app.py imports it by name for the mix and the pitch measurement. Pinned to
+# the version the models run on here, so a reinstall cannot move the array API
+# under torch.
+numpy==2.4.6

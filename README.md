@@ -645,25 +645,36 @@ Measured in the browser: a 220 Hz tone moved to 174.0 Hz at −4 semitones and
 261.0 Hz at +3, with the phrase length unchanged; a two-second phrase renders in
 about 60 ms.
 
-### Singing the lyrics in your own voice
+### The model sings; your voice is the measurement
 
-**Sing the lyrics** in the Fit voice panel uses the recording as a description of
-a voice, not as audio to be pasted into a track: the words are written by the
-language model, sung in your timbre by the voice service, and laid over an
-instrumental backing that ACE-Step renders for them. Nothing you actually said
-into the microphone survives into the song.
+**Sing the lyrics** in the Fit voice panel — and **Generate** or **Song designer**
+once a phrase has been fitted — does not put your recording in the track, and does
+not clone it. The model sings the lyrics itself, so the melody, phrasing and
+timing belong to the song it is singing over:
 
-Every press makes a new song — new lyrics, new backing — the same way Generate
-does, except the singer is your voice instead of the model's.
+1. the lyrics come from the language model, or from the designer's panel;
+2. ACE-Step renders the whole song — its own sung vocal and the backing together;
+3. `demucs` splits that render into a vocal stem and a backing stem;
+4. the vocal is measured against your recording: the service takes the median
+   pitch of each, folds the difference into the nearest register (a voice an
+   octave away is the same voice) and applies it as a semitone shift on a
+   half-semitone grid, never beyond ±7;
+5. the shifted vocal is laid back over the same backing, the bed ducked under it
+   and matched so the voice sits `LEAD_DB` (5 dB) above.
 
-It is a speech-cloning model, so expect a spoken-word delivery rather than a
-sung melody. True sung pitch would need singing-voice conversion and stem
-separation, neither of which is installed here.
+Your recording is only a measurement: its pitch sets the semitone shift, and the
+Fit voice panel's tone profile sets the low-pass ceiling and the room. Nothing you
+said into the microphone is in the song, and no voice is copied — the singer is
+the model's own.
 
-Install and run it with `voice_service/README.md`; the launcher starts it on
-`127.0.0.1:8095` on its own. Only **8090** is ever published — the song service
-calls the voice service locally, so the tunnel and the deployed page need no
-second address.
+That is what makes it sung rather than spoken: the melody comes from ACE-Step and
+is locked to the backing by construction, instead of a text-to-speech line being
+laid over an unrelated track.
+
+`demucs` is installed by the song service's own `install.py` (it is listed in
+`song_service/models.json`), so there is no fourth environment to set up.
+`voice_service` is still installed and started, but it is **no longer the
+singer**: see `voice_service/README.md`. Only **8090** is ever published.
 
 ## API
 

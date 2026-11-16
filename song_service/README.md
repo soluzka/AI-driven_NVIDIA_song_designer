@@ -175,27 +175,30 @@ torch importing, these weights paging in and the site fitting its own models ove
 
 ### Singing the lyrics in a recorded voice
 
-`POST /api/song/voice` is the route the page's **Sing the lyrics** button uses. A
-recording of a voice is the request body, and the query string carries the prompt
-and length. The job then runs in four stages, each reported as a status the page
-polls:
+`POST /api/song/voice` is the route behind **Sing the lyrics**, and behind
+**Generate** and **Song designer** once a phrase is fitted. A recording is the
+request body and the query string carries the prompt, length and the tone half of
+the voice fit (`lowpass`, `room`). Each stage is a status the page polls:
 
 | Status | What is happening |
 | --- | --- |
-| `writing` | the lyric model writes the words |
-| `singing` | the voice service on `127.0.0.1:8095` sings them in the recorded timbre |
-| `loading`, `generating` | ACE-Step renders an instrumental backing |
-| `mixing` | the sung vocal is laid over the backing, which is ducked under it |
+| `writing` | the lyric model writes the words (skipped when the designer sends its own) |
+| `loading`, `generating` | ACE-Step renders the song **with its own sung vocal** |
+| `separating` | `demucs` splits that render into a vocal stem and a backing stem |
+| `mixing` | the vocal is shifted by the computed semitones, then laid back over the backing |
 
-The recording is never used as audio in the track and its words are never read:
-it describes a voice, and the only vocals in the result are the lyrics sung in
-that voice. The backing is requested with `[inst]`, so the model adds no singer of
-its own to compete with it.
+The model sings; your recording is a measurement. The recording's median pitch is
+compared with the sung vocal's, the difference is folded into the nearest register
+and applied as a semitone shift on a half-semitone grid, at most ±7 semitones. The
+service computes that itself because only it has both pitches; the page sends no
+semitones. Nothing you said into the microphone is in the track and no voice is
+cloned: the vocal is ACE-Step's own, separated from the music, mapped, and mixed
+back with the bed ducked under it and the voice `LEAD_DB` above.
 
-That voice model is a separate environment and a separate process, because it
-needs a different torch than this one does. `voice_service/README.md` has its
-install and its limits — chief among them that it speaks rather than sings, so
-the delivery is spoken-word over the beat, not a melodic line.
+`demucs` is installed by this service's `install.py` — it is in `models.json`, so a
+fresh install covers it. The first separation downloads the htdemucs weights
+(about 80 MB). `voice_service` is no longer called by this route; it keeps its own
+endpoints and its own README.
 
 ### Reaching this from the deployed page
 

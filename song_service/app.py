@@ -205,25 +205,73 @@ def _load_pipeline():
 VOICE_SERVICE = os.environ.get('VOICE_SERVICE', 'http://127.0.0.1:8095')
 
 
-def _sing_in_voice(reference_bytes, lyrics, token):
-    """Have the voice service speak the lyrics in the recorded timbre.
-
-    The recording is a description of a voice, not a source of words: the service
-    reads the lyrics the language model wrote and keeps nothing of what was said
-    into the microphone.
+def _measure_pitch(path):
+    """The median pitch of a wav: what the recording measures, and where the model's
+    vocal sits. Neither is a source of audio; the numbers are the whole point.
     """
-    query = urllib.parse.urlencode({'text': lyrics})
-    request_ = urllib.request.Request(
-        VOICE_SERVICE + '/api/voice/sing?' + query, data=reference_bytes, method='POST',
-        headers={'Content-Type': 'audio/wav'})
-    _set(token, status='singing', progress=0.32)
-    with urllib.request.urlopen(request_, timeout=3600) as response:
-        info = json.loads(response.read().decode('utf-8'))
-    if not info.get('token'):
-        raise RuntimeError(info.get('error') or 'the voice service refused the lyrics')
-    _set(token, status='singing', progress=0.55)
-    with urllib.request.urlopen(VOICE_SERVICE + info['url'], timeout=300) as response:
-        return response.read(), info
+    try:
+        import librosa
+        import numpy as np
+        import soundfile as sf
+
+        audio, rate = sf.read(path, always_2d=True)
+        mono = audio.mean(axis=1).astype('float32')
+        mono = librosa.resample(mono, orig_sr=rate, target_sr=16000)
+        f0 = librosa.pyin(mono[:16000 * 12], fmin=70, fmax=600, sr=16000)[0]
+        median = float(np.nanmedian(f0)) if np.isfinite(f0).any() else 0.0
+        return {'f0_hz': round(median, 1), 'seconds': round(len(mono) / 16000.0, 2)}
+    except Exception as exc:  # noqa: BLE001 - a measurement must not fail a song
+        print(f'could not measure {path}: {exc}', flush=True)
+        return {'f0_hz': 0.0, 'seconds': 0.0}
+
+
+def _semitone_fit(reference_f0, vocal_f0, limit=7.0):
+    """The shift that puts the model's vocal in the register your voice measured.
+
+    Computed here rather than in the page: the two pitches being compared are the
+    recording and the vocal the model actually produced, and only the service has
+    both. The difference is folded into the nearest register - a voice an octave
+    away is the same voice - and kept on a half-semitone grid so a noisy pitch
+    estimate cannot ask for a wild shift.
+    """
+    import math
+
+    if not reference_f0 or not vocal_f0:
+        return 0.0
+    steps = 12.0 * math.log2(float(reference_f0) / float(vocal_f0))
+    while steps > 6.0:
+        steps -= 12.0
+    while steps < -6.0:
+        steps += 12.0
+    return max(-limit, min(limit, round(steps * 2) / 2.0))
+
+
+def _separate_song(song_path, work_dir):
+    """Split a finished song into the model's vocal and the backing under it.
+
+    The mapping has to touch the words and nothing else. Shifting or toning the
+    mix would move the instruments with it, so the vocal is separated first and
+    put back after it has been mapped.
+    """
+    import subprocess
+    import sys
+
+    out_dir = os.path.join(work_dir, 'stems')
+    os.makedirs(out_dir, exist_ok=True)
+    command = [sys.executable, '-m', 'demucs', '--two-stems=vocals', '-n', 'htdemucs',
+               '--out', out_dir, song_path]
+    print('separating: ' + ' '.join(command), flush=True)
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError('demucs could not separate the song: '
+                           + (result.stderr or result.stdout or '')[-300:])
+    stem = os.path.splitext(os.path.basename(song_path))[0]
+    folder = os.path.join(out_dir, 'htdemucs', stem)
+    vocal = os.path.join(folder, 'vocals.wav')
+    backing = os.path.join(folder, 'no_vocals.wav')
+    if not (os.path.exists(vocal) and os.path.exists(backing)):
+        raise RuntimeError('demucs wrote no stems for this song')
+    return vocal, backing
 
 
 def _apply_room(mono, rate, wet):
@@ -342,13 +390,49 @@ def _layout_vocal(song_path, vocal_bytes, out_path, bpm, mapping=(0.0, 0.0, 0.0)
             'lead_db': round(20 * float(np.log10(lead_gain)), 1)}
 
 
+def _mix_separated(backing_path, vocal_path, out_path, mapping=(0.0, 0.0, 0.0)):
+    """Map the model's own vocal and lay it back over the backing it was sung with."""
+    import numpy as np
+    import soundfile as sf
+
+    bed, rate = sf.read(backing_path, always_2d=True)
+    vocal, vocal_rate = sf.read(vocal_path, always_2d=True)
+    mono = vocal.mean(axis=1).astype('float32')
+    if vocal_rate != rate and len(mono):
+        mono = np.interp(np.linspace(0, len(mono) - 1, int(len(mono) * rate / vocal_rate)),
+                         np.arange(len(mono)), mono).astype('float32')
+    if not len(mono) or float(np.max(np.abs(mono))) < 1e-4:
+        raise RuntimeError('the song came back with no vocal to map')
+    placed = _map_vocal(mono, rate, mapping)
+
+    frames = min(len(placed), len(bed))
+    bed = bed[:frames].copy()
+    placed = placed[:frames]
+    win = max(1, int(rate * 0.05))
+    hit = np.convolve(np.abs(placed), np.ones(win) / win, mode='same')
+    gate = np.clip(hit / (float(hit.max()) * 0.12 + 1e-9), 0.0, 1.0)
+    bed *= (1.0 - DUCK_UNDER_VOICE * gate)[:, None]
+
+    bed_rms = float(np.sqrt(np.mean(bed ** 2)) or 0.0)
+    voice_rms = float(np.sqrt(np.mean(placed ** 2)) or 0.0)
+    lead_gain = 1.0
+    if bed_rms > 1e-6 and voice_rms > 1e-6:
+        lead_gain = min(MAX_LEAD_GAIN, (bed_rms * 10 ** (LEAD_DB / 20.0)) / voice_rms)
+    mixed = bed + (placed * lead_gain)[:, None].repeat(bed.shape[1], axis=1)
+    peak = float(np.max(np.abs(mixed)) or 0.0)
+    if peak > 0.98:
+        mixed *= 0.98 / peak
+    sf.write(out_path, mixed, rate)
+    return {'seconds': round(len(mixed) / float(rate), 2),
+            'vocal_seconds': round(len(placed) / float(rate), 2),
+            'lead_db': round(20 * float(np.log10(lead_gain)), 1)}
+
+
 def _run_voice_job(token, reference_path, prompt, lyrics, seconds, steps, seed,
                    mapping=(0.0, 0.0, 0.0)):
-    """Words from the lyric model, sung in the recorded voice, over a new backing."""
+    """The model sings the lyrics; the recording is measured, never sung."""
     started = time.time()
     try:
-        with open(reference_path, 'rb') as handle:
-            reference = handle.read()
         if not lyrics:
             _set(token, status='writing', progress=0.02)
             from lyrics import lyrics_model_id, load_manifest
@@ -363,27 +447,43 @@ def _run_voice_job(token, reference_path, prompt, lyrics, seconds, steps, seed,
         if not lyrics.strip():
             raise RuntimeError('the lyric model wrote nothing to sing')
 
-        vocal_bytes, info = _sing_in_voice(reference, lyrics, token)
-        print('voice service sang %s phrases in %s' % (info.get('phrases'), info.get('seconds')),
-              flush=True)
+        measured = _measure_pitch(reference_path)
+        print('the recording measures %(f0_hz)s Hz over %(seconds)s s' % measured, flush=True)
+        _set(token, reference=measured)
 
-        # The backing is instrumental: the only voice in the track is the recorded one.
-        instrumentation = (prompt + ', instrumental, backing track, no lead vocal').strip(', ')
-        _run_job(token, instrumentation, '[inst]', seconds, steps, seed,
-                 span=(0.58, 0.9), complete_status='mixing')
+        # The model sings the lyrics itself, so the melody, timing and phrasing
+        # belong to the song it is singing over. The recording is a measurement
+        # (its pitch, and the tone the page derived from it) applied afterwards;
+        # it is never the voice in the track.
+        _run_job(token, prompt, lyrics, seconds, steps, seed,
+                 span=(0.1, 0.78), complete_status='mixing')
         with _jobs_lock:
             job = dict(_jobs.get(token) or {})
         if job.get('status') not in ('mixing', 'complete'):
-            raise RuntimeError(job.get('error') or 'the backing did not render')
+            raise RuntimeError(job.get('error') or 'the song did not render')
+
+        _set(token, status='separating', progress=0.82)
+        vocal_path, backing_path = _separate_song(job['path'], job['tmp_dir'])
+
+        # The service owns the semitones: it is the only side that can compare the
+        # register the recording measured with the register the model actually sang
+        # in. The tone and room still come from the page's voice fit.
+        sung = _measure_pitch(vocal_path)
+        semitones = _semitone_fit(measured.get('f0_hz'), sung.get('f0_hz'))
+        mapping = (semitones, mapping[1], mapping[2])
+        print('pitch map: recording %(r)s Hz, model vocal %(v)s Hz, shift %(s)+.2f semitones'
+              % {'r': measured.get('f0_hz'), 'v': sung.get('f0_hz'), 's': semitones}, flush=True)
+        _set(token, map={'semitones': semitones, 'reference_hz': measured.get('f0_hz'),
+                         'vocal_hz': sung.get('f0_hz')})
 
         _set(token, status='mixing', progress=0.92)
         mixed_path = os.path.join(job['tmp_dir'], 'song_with_voice.wav')
-        bpm = 120.0
-        layout = _layout_vocal(job['path'], vocal_bytes, mixed_path, bpm, mapping)
+        layout = _mix_separated(backing_path, vocal_path, mixed_path, mapping)
+        layout['semitones'] = semitones
         _set(token, status='complete', progress=1.0, path=mixed_path,
              lyrics=lyrics, voice=layout, elapsed=round(time.time() - started, 1))
         _keep_song(token, mixed_path)
-        print('song with the recorded voice as the singer: %s' % (layout,), flush=True)
+        print('song with the model singing the lyrics, mapped: %s' % (layout,), flush=True)
     except Exception as exc:  # noqa: BLE001 - the page shows the reason
         traceback.print_exc()
         _set(token, status='error', error=str(exc), elapsed=round(time.time() - started, 1))

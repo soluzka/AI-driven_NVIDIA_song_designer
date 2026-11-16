@@ -1,6 +1,16 @@
 # Voice service
 
-The model that sings the AI's lyrics in **your** voice.
+> **Not the singer any more.** `/api/song/voice` no longer calls this service.
+> It clones timbre and speaks, which is not what the song needs: the lead vocal
+> is now ACE-Step's own singing, separated with `demucs` and shifted into the
+> register your recording measured. See the root README,
+> “The model sings; your voice is the measurement”.
+>
+> This service still works and is still started by the launcher, and its
+> `/api/voice/sing` endpoint is intact — it is useful for hearing what the
+> cloning model does on its own. It is simply no longer on the path to a song.
+
+The cloning model that speaks text in **your** voice.
 
 This is a separate service from `song_service` on purpose. That one owns ACE-Step
 (the music model) and the language model that writes the lyrics. This one owns a

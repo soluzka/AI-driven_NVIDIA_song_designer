@@ -18,7 +18,9 @@
     { "spec": "hf_transfer", "index": "https://pypi.org/simple", "why": "Parallel chunked downloads for the weights: ~1.8 MB/s serial versus several times that in parallel." },
     { "spec": "soundfile", "index": "https://pypi.org/simple", "why": "Writing the rendered wav." },
     { "spec": "librosa", "index": "https://pypi.org/simple", "why": "ACE-Step's audio loading, and the pitch shift that maps a sung vocal into the song's key." },
-    { "spec": "scipy", "index": "https://pypi.org/simple", "why": "The low-pass and room in the voice map (scipy.signal). librosa pulls it in, but the map imports it by name, so it is named here." }
+    { "spec": "scipy", "index": "https://pypi.org/simple", "why": "The low-pass and room in the voice map (scipy.signal). librosa pulls it in, but the map imports it by name, so it is named here." },
+    { "spec": "demucs", "index": "https://pypi.org/simple", "why": "Splits a rendered song into the model's vocal and the backing under it, so the voice map touches the words and not the instruments. First run fetches the htdemucs weights (~80 MB)." },
+    { "spec": "numpy==2.4.6", "index": "https://pypi.org/simple", "why": "app.py imports numpy by name for the mix and the pitch measurement. Pinned to the version the models here run on, so a reinstall cannot quietly move the array API under torch." }
   ],
   "imports": {
     "torch": "torch",
@@ -31,7 +33,9 @@
     "hf_transfer": "hf_transfer",
     "soundfile": "soundfile",
     "librosa": "librosa",
-    "scipy": "scipy"
+    "scipy": "scipy",
+    "demucs": "demucs",
+    "numpy": "numpy"
   },
   "models": [
     {

@@ -343,6 +343,30 @@ ever executed, and `latest` is deliberately not used. On 14 Nov 2026 the fetch
 took 28 seconds from a clone with no binary at all, then the tunnel started and
 published its address.
 
+#### The endpoint key never goes to GitHub
+
+`build\song_endpoint.key` is the only thing that can tell the site which tunnel
+address is a real machine's, and it is **never committed**: it is listed in
+`.gitignore`, `git ls-files` does not contain it, and `git log --all --
+build/song_endpoint.key` is empty, so no clone, fork or pull request has ever
+carried a copy. GitHub has no version of it.
+
+The key is generated on the machine that owns it, read from disk by
+`tools\start_services.ps1` and by the song service, and written into the
+Worker's secret store (`SONG_JOIN_KEY`) by `tools\set_kaggle.ps1` — never into a
+source file. Anything that ships publicly starts with it blank and has it filled
+in at run time:
+
+| Shipped file | What it carries | Where the key comes from |
+| --- | --- | --- |
+| `public/song_gpu.ipynb`, `deploy/colab/song_gpu.ipynb`, `public/song_gpu_cell.py` | `JOIN_KEY = ''` | pasted by whoever runs the cell, and only then |
+| The Kaggle kernel `/api/gpu/start` pushes | the key, written in | the Worker secret `SONG_JOIN_KEY` at push time |
+| The page | nothing | it asks the song service beside it (`/api/pool/join`), which reads the file |
+
+So a public notebook that somebody runs does not put their card in this site's
+pool, and nobody reading the repository can publish a machine of their own into
+it.
+
 ### Starting the AI from the site
 
 The deployed page is on Cloudflare, the song AI is on your PC, and a browser tab

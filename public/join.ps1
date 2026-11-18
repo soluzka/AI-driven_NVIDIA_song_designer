@@ -109,6 +109,28 @@ Say 'minutes and about 20 GB of disk. Every step is printed below; leave it runn
 Say ''
 & (Join-Path $appDir 'install_all.ps1') -Start -Autostart
 
+# --- 5. did it actually connect? ---------------------------------------------
+# The installer prints its own progress, but "is the site listing this PC" is a
+# different question, and not one a person can answer from the install output.
+# Ask the pool, which is the list the site reads, and say which answer came back.
 Say ''
-Say 'This PC is in the pool. The site finds it on the next click, and it rejoins'
-Say 'at every logon without anyone touching this window.'
+$tunnelFile = Join-Path $appDir 'build\tunnel_url.txt'
+$mine = if (Test-Path $tunnelFile) { (Get-Content $tunnelFile -Raw).Trim() } else { '' }
+try {
+    $pool = Invoke-RestMethod -Uri 'https://song-pool.bpiersing.workers.dev/pool' -TimeoutSec 25
+    $urls = @($pool.machines | ForEach-Object { $_.url })
+    if ($mine -and ($urls -contains $mine)) {
+        Say "connected: the site lists this PC at $mine"
+    } elseif ($urls.Count -gt 0) {
+        Say "the pool is answering, and lists $($urls.Count) machine(s):"
+        foreach ($u in $urls) { Say "  $u" }
+        Say "this PC's address was $($(if ($mine) { $mine } else { 'not published' }))"
+    } else {
+        Say 'the pool lists no machines yet: the install finished, but the announcement did not land.'
+        Say 'Run tools\start_services.ps1 once more; it republishes the address.'
+    }
+} catch {
+    Say "could not reach the pool to confirm the join: $($_.Exception.Message)"
+}
+Say ''
+Say 'The site finds this PC on the next click, and it rejoins at every logon'

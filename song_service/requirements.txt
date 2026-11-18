@@ -44,10 +44,17 @@ accelerate
 click
 cutlet
 datasets
-diffusers
+# capped: diffusers 0.42 requires huggingface-hub>=1.32, and hub is pinned to
+# 0.36.2 above for the lyrics model's transformers 4.57 line. 0.39 is the
+# version this install runs and imports cleanly.
+diffusers<0.40
 einops
 fugashi
-gradio
+# capped with gradio-client: gradio 6.31 and gradio-client 2.7 require
+# huggingface-hub>=1.16, the same clash as diffusers. These are the versions
+# that work next to hub 0.36.2.
+gradio<6.20
+gradio-client<2.6
 hangul-romanize
 loguru
 matplotlib

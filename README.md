@@ -1033,6 +1033,21 @@ the button is wired to Kaggle.
 | `KAGGLE_KEY` | the `key` field of the same file |
 | `SONG_JOIN_KEY` | `build\song_endpoint.key`, so the started card can add itself to the pool |
 
+**Requirements at Kaggle** — all of these were hit for real before the button did
+anything useful:
+
+| Requirement | Why | What it looks like when missing |
+| --- | --- | --- |
+| A verified phone number (kaggle.com/settings → Phone Verification) | Kaggle gives no GPU *and* no internet to an unverified account | the version sits on **Queued** and never starts, or starts on CPU with `Could not resolve host: github.com` |
+| A free GPU hour left this week | the free tier allows ~30 hours, shared across all kernels | the run is refused or queues indefinitely |
+| `enableInternet` actually granted | the kernel clones this repository and installs ~10 GB | `NO INTERNET in this kernel` printed by the kernel's first check |
+| A token that may **read** the kernel, not only push it | `kaggle kernels output …` fetches the log | `Permission 'kernels.get' was denied` — pushing a version still works, so this can look like a broken kernel |
+| A private kernel | the pushed code is your account's, and it carries the join key | a public kernel would publish the key with the code |
+
+The queue is Kaggle's, not the site's: **Queued** means no worker has been granted
+yet, the log stays empty until it becomes **Running**, and a version that has sat
+there for half an hour does not pick itself up — cancel it and start again.
+
 **Building `build\kaggle.json`, once per machine**
 
 1. Sign in at <https://www.kaggle.com/settings/api> and press **Create New Token**.

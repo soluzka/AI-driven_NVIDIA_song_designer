@@ -135,6 +135,10 @@ export default {
       });
     }
 
+    if (url.pathname === '/api/song/probe') {
+      return songProbe(url);
+    }
+
     if (SONG_ROUTES.some((route) => route.test(url.pathname))) {
       return song(request, env, url);
     }
@@ -192,6 +196,55 @@ async function readPool(env) {
 async function writePool(env, pool) {
   await env.STATS.put(POOL_KEY, JSON.stringify(pool.slice(0, POOL_LIMIT)));
   if (pool.length) await env.STATS.put('song_api', pool[0].url);
+}
+
+// --- is that address actually alive? ----------------------------------------
+// "Connect my model" holds an address the browser typed, and the browser cannot
+// say why it refused it: a CORS block, a dead Colab session and a typo are all
+// "Failed to fetch" there. This Worker can see the status or the network error,
+// so the page asks it instead of guessing. Only the hosts a song service can
+// live on are probed, so this is not an open proxy.
+const PROBE_HOSTS = ['.trycloudflare.com', '.workers.dev', 'localhost', '127.0.0.1'];
+
+function probeAllowed(value) {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return false;
+    const host = parsed.hostname.toLowerCase();
+    return PROBE_HOSTS.some((allowed) => host === allowed || host.endsWith(allowed));
+  } catch (err) {
+    return false;
+  }
+}
+
+async function songProbe(url) {
+  const target = String(url.searchParams.get('url') || '').trim().replace(/\/+$/, '');
+  if (!probeAllowed(target)) {
+    return json({ ok: false, error: 'This site only probes song-service addresses.' }, 400);
+  }
+  const started = Date.now();
+  try {
+    const answer = await fetch(target + '/health', {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(10000),
+    });
+    const text = await answer.text();
+    let body = null;
+    try { body = JSON.parse(text); } catch (err) {}
+    return json({
+      ok: answer.ok,
+      status: answer.status,
+      ms: Date.now() - started,
+      device: body && body.device,
+      gpu: body && body.gpu,
+      loaded: body && body.loaded,
+      // A tunnel can answer 200 with its own HTML error page; the first characters
+      // say which, which a bare status hides.
+      sample: body ? undefined : String(text || '').slice(0, 160),
+    });
+  } catch (err) {
+    return json({ ok: false, error: String((err && err.message) || err), ms: Date.now() - started }, 502);
+  }
 }
 
 async function songEndpoint(request, env) {

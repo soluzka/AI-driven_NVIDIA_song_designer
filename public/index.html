@@ -3909,24 +3909,62 @@
             // and a Quick Tunnel changes name, both leaving the saved value looking
             // fine. Ask the machine itself, and keep the answer in the colour and
             // the title rather than in the label.
-            checkModelAddress(address);
+            checkModelAddress(address, false);
         }
-        async function checkModelAddress(address) {
+        async function checkModelAddress(address, announce) {
             const button = document.getElementById('modelBtn');
             if (!button) return;
-            if (!/^https?:\/\//i.test(address)) { button.dataset.state = 'dead'; return; }
-            try {
-                const answer = await fetchBounded(address + '/health', { cache: 'no-store' }, 6000);
-                if (!answer.ok) throw new Error('health ' + answer.status);
-                const info = await answer.json();
-                const where = info.device === 'cuda' ? (info.gpu || 'CUDA') : 'CPU';
+            const connected = (info) => {
+                const where = info && info.device === 'cuda'
+                    ? (info.gpu || 'CUDA')
+                    : ((info && info.device) || 'answering');
                 button.dataset.state = 'ready';
                 button.title = 'Connected: songs render on ' + address + ' (' + where + '). Press to change or clear it.';
-            } catch (err) {
+            };
+            const failed = (reason) => {
                 button.dataset.state = 'dead';
-                button.title = 'Nothing answered at ' + address + '. The model is not running there now '
-                    + '(a Colab session that ended, or a tunnel that restarted with a new address). '
-                    + 'Press to change or clear it.';
+                button.title = 'Nothing answered at ' + address + ' - ' + reason + '. Press to change or clear it.';
+                if (announce) {
+                    showToast('error', 'That address did not answer',
+                        address + ' - ' + reason + '. While the notebook is running its last cell prints the '
+                        + 'current address; a session that ended takes its address with it.',
+                        { autoClose: 12000 });
+                }
+            };
+            if (!/^https?:\/\//i.test(address)) { failed('that is not an http(s) address'); return; }
+            // The Worker asks first. A browser cannot tell a CORS block from a dead
+            // tunnel from a typo - all three are "Failed to fetch" - while the
+            // Worker sees the status or the network error itself.
+            try {
+                const probe = await fetchBounded(
+                    '/api/song/probe?url=' + encodeURIComponent(address), { cache: 'no-store' }, 14000);
+                if (probe.ok) {
+                    const info = await probe.json();
+                    if (info && info.ok) { connected(info); return; }
+                    // Cloudflare's 530/1016 is a tunnel name that no longer exists -
+                    // the commonest reason a pasted Colab address stops working, and
+                    // one a bare status code does not explain.
+                    let why = 'no health answer';
+                    if (info && info.status === 530) {
+                        why = 'the tunnel name no longer exists (Cloudflare 1016): the Colab session that made it has ended';
+                    } else if (info && info.status >= 500) {
+                        why = 'the tunnel answered HTTP ' + info.status + ', so the name exists but the service behind it is not running';
+                    } else if (info && info.error) {
+                        why = info.error;
+                    } else if (info && info.status) {
+                        why = 'HTTP ' + info.status;
+                    }
+                    failed(String(why));
+                    return;
+                }
+            } catch (err) { }
+            // An older Worker has no probe route: ask the machine directly.
+            try {
+                const answer = await fetchBounded(address + '/health', { cache: 'no-store' }, 12000);
+                if (!answer.ok) throw new Error('HTTP ' + answer.status);
+                connected(await answer.json());
+            } catch (err) {
+                failed((err && err.message) || 'no answer');
             }
         }
         function promptConnectModel() {
@@ -3942,9 +3980,9 @@
             } catch (err) {}
             reflectModelAddress();
             if (clean) {
-                showToast('info', 'Model address saved',
-                    'Songs from this browser will be rendered at ' + clean + '. The header shows whether it answers.',
-                    { autoClose: 6000 });
+                // Check immediately and report the result where the person is
+                // looking, instead of leaving a red dot with no sentence under it.
+                checkModelAddress(clean, true);
             } else {
                 showToast('info', 'Model address cleared',
                     'The page goes back to whatever machine the site finds on its own.',

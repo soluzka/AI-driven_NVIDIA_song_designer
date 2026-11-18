@@ -28,7 +28,8 @@
 param(
     [string]$Target = (Join-Path $env:LOCALAPPDATA 'internet-gpu'),
     [string]$Key = '',
-    [string]$Source = 'https://codeload.github.com/soluzka/AI-driven_NVIDIA_song_designer/zip/refs/heads/main'
+    [string]$Source = 'https://codeload.github.com/soluzka/AI-driven_NVIDIA_song_designer/zip/refs/heads/main',
+    [switch]$Offline
 )
 
 $ErrorActionPreference = 'Continue'
@@ -52,20 +53,30 @@ if ($smi) {
 
 # --- 2. the application ------------------------------------------------------
 $appDir = Join-Path $Target 'AI-driven_NVIDIA_song_designer-main'
-if (-not (Test-Path (Join-Path $appDir 'install_all.ps1'))) {
-    Say "app:   fetching to $Target"
+# Downloaded on every run, not only when the folder is missing. The old check meant a
+# copy from an older commit kept reinstalling itself forever, so a corrected
+# dependency pin never arrived and the same pip error came back on every attempt.
+# -Offline uses whatever is already on disk.
+if (-not $Offline) {
+    Say "app:   fetching the current sources to $Target"
     New-Item -ItemType Directory -Force -Path $Target | Out-Null
     $zip = Join-Path $Target 'internet.zip'
+    $downloaded = $false
     try {
         Invoke-WebRequest -UseBasicParsing -Uri $Source -OutFile $zip
+        Expand-Archive -Path $zip -DestinationPath $Target -Force
+        Remove-Item $zip -ErrorAction SilentlyContinue
+        $downloaded = $true
     } catch {
         Say "app:   could not download the archive ($($_.Exception.Message))"
-        Say '       ask for the project folder and run install.cmd inside it'
-        exit 1
+        Remove-Item $zip -ErrorAction SilentlyContinue
+        if (-not (Test-Path (Join-Path $appDir 'install_all.ps1'))) {
+            Say '       ask for the project folder and run install.cmd inside it'
+            exit 1
+        }
+        Say '       using the copy already on disk instead'
     }
-    Expand-Archive -Path $zip -DestinationPath $Target -Force
-    Remove-Item $zip -ErrorAction SilentlyContinue
-    if (-not (Test-Path (Join-Path $appDir 'install_all.ps1'))) {
+    if ($downloaded -and -not (Test-Path (Join-Path $appDir 'install_all.ps1'))) {
         # A zip whose root folder is named differently (a release, a branch rename).
         $found = Get-ChildItem -Path $Target -Directory |
             Where-Object { Test-Path (Join-Path $_.FullName 'install_all.ps1') } |

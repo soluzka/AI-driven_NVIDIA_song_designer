@@ -85,7 +85,7 @@ say "installing into $VENV"
 
 # torch first and from the CUDA index: PyPI's wheel is the CPU build, and a CPU
 # build turns a three minute song into an afternoon.
-"$PY" -m pip install --disable-pip-version-check torch==2.14.1+cu126 torchaudio==2.14.1+cu126 \
+"$PY" -m pip install --disable-pip-version-check torch==2.14.1+cu126 torchaudio==2.11.0+cu126 \
     --index-url "$TORCH_INDEX"
 "$PY" -m pip install --disable-pip-version-check -r requirements.txt
 "$PY" -m pip install --disable-pip-version-check -r downloader_service/requirements.txt

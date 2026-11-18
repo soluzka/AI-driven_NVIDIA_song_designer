@@ -4221,6 +4221,63 @@
             draw.textAlign = 'start';
         }
 
+        // A picture that runs with whatever is playing, so the player never shows a
+        // bare audio bar. It is the same frame the lyric video records, drawn live
+        // against the audio element's own clock, so it cannot drift from the voice.
+        function attachLiveLyrics(playerAudio, data) {
+            if (!playerAudio || !data || !Array.isArray(data.lyrics) || !data.lyrics.length) {
+                return () => {};
+            }
+            const lines = data.lyrics
+                .reduce((all, part) => all.concat(part.lines || []), [])
+                .map(line => String(line).trim())
+                .filter(Boolean);
+            if (!lines.length) return () => {};
+
+            const canvas = document.createElement('canvas');
+            canvas.width = 1280;
+            canvas.height = 720;
+            canvas.className = 'gen-canvas';
+            canvas.style.width = '100%';
+            canvas.style.height = 'auto';
+            const draw = canvas.getContext('2d');
+            const holder = document.createElement('div');
+            holder.style.width = '100%';
+            holder.appendChild(canvas);
+            if (playerAudio.parentElement) {
+                playerAudio.parentElement.insertBefore(holder, playerAudio);
+            }
+
+            const beat = data.bpm ? 60 / data.bpm : 0.5;
+            const frame = {
+                title: data.title || 'Song',
+                line2: data.line2 || '',
+                genre: data.genre || '',
+                lines: lines,
+                current: 0,
+                at: 0,
+                pulse: 1
+            };
+            let running = true;
+            const paint = () => {
+                if (!running) return;
+                const at = playerAudio.currentTime || 0;
+                const total = Number.isFinite(playerAudio.duration) && playerAudio.duration > 0
+                    ? playerAudio.duration
+                    : (data.seconds || 30);
+                frame.at = at;
+                frame.pulse = Math.exp(-6 * ((at % beat) / beat));
+                frame.current = Math.min(lines.length - 1, Math.floor((at / total) * lines.length));
+                drawLyricFrame(draw, canvas.width, canvas.height, frame);
+                requestAnimationFrame(paint);
+            };
+            requestAnimationFrame(paint);
+            return () => {
+                running = false;
+                holder.remove();
+            };
+        }
+
         // Records the canvas and the song together, in real time: the length of the
         // recording is the length of the song, because that is how a browser captures
         // a picture, and pretending otherwise would produce a silent, frozen file.
@@ -5304,6 +5361,17 @@
                 audio.src = url;
                 stage.innerHTML = '';
                 stage.appendChild(audio);
+                // The picture starts with the first note, not after the model answers:
+                // the same lyrics over the same palette the recording will use.
+                if (window._liveLyricsStop) window._liveLyricsStop();
+                window._liveLyricsStop = attachLiveLyrics(audio, {
+                    title: head.textContent,
+                    line2: `${bpm} BPM` + (summary.genres.length ? ' · ' + summary.genres[0].name : ''),
+                    genre: summary.genres.length ? summary.genres[0].name : '',
+                    lyrics: lyrics,
+                    bpm: bpm,
+                    seconds: seconds
+                });
 
                 const lyricsText = lyrics.map(part =>
                     [part.section.toUpperCase()].concat(part.lines).join('\n')).join('\n\n');
@@ -5357,6 +5425,9 @@
                     if (intoPlayer && statusLine) {
                         statusLine.textContent = 'Recording the lyric video: it takes as long as the song.';
                     }
+                    // The recorder plays the song through its own element; leaving the
+                    // player going as well would play it twice, a second apart.
+                    try { audio.pause(); } catch (err) {}
                     try {
                         const blob = await makeLyricVideo({
                             audio: videoSource,
@@ -5382,6 +5453,7 @@
                             // The player runs the video itself: the words are drawn on the
                             // picture and the song's own audio is inside the file, so
                             // picture and voice cannot drift apart.
+                            if (window._liveLyricsStop) { window._liveLyricsStop(); window._liveLyricsStop = null; }
                             const played = URL.createObjectURL(blob);
                             const piece = document.createElement('video');
                             piece.controls = true;

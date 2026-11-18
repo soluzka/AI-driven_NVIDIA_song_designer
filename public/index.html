@@ -4335,6 +4335,20 @@
         // button then stayed on "AI warming…" after the model had finished.
         let wakeBusy = false;
 
+        // One rule for the address button: it reports the connection the header
+        // reports. Grey next to a loaded model was the complaint - nothing may look
+        // unconnected while the model answers, and nothing may look connected while
+        // it does not. A pasted address still owns this button and sets its own state.
+        function reflectAutoConnection(state, title) {
+            let saved = '';
+            try { saved = (localStorage.getItem('songApi') || '').trim().replace(/\/+$/, ''); } catch (err) {}
+            if (saved) return;
+            const button = document.getElementById('modelBtn');
+            if (!button) return;
+            button.dataset.state = state;
+            button.title = title;
+        }
+
         async function refreshGpu() {
             const chip = document.getElementById('gpuChip');
             const text = document.getElementById('gpuText');
@@ -4387,7 +4401,11 @@
             // or this computer. A pasted quick tunnel is somebody's Colab.
             const answeredWhat = (savedModel && answeredBy === savedModel)
                 ? (/trycloudflare|colab|ngrok|localtunnel/i.test(savedModel) ? 'Colab' : 'your model')
-                : (answeredHere ? 'this PC' : 'Pool');
+                // "Pool" when the site publishes an address, because that is the
+                // address songs are sent to first (modelBases puts it ahead of
+                // loopback). Saying "this PC" there named the machine that answered a
+                // health check, not the one doing the work.
+                : ((answeredHere && !String(window.remoteSongApi || '').trim()) ? 'this PC' : 'Pool');
             // The button follows the same answer, so both devices read the same
             // way: AI ready wherever the model answers, rather than only on the PC
             // that was able to launch it.
@@ -4398,6 +4416,8 @@
                 // and then answer again. If it answered recently, say it is busy
                 // rather than losing the GPU on every refresh.
                 if (lastGoodAt && Date.now() - lastGoodAt < 4 * 60 * 1000) {
+                    reflectAutoConnection('warming', 'The model answered within the last few minutes and is '
+                        + 'still loading onto the card; it turns green when the model reports it is ready.');
                     chip.dataset.state = 'retrying';
                     text.textContent = 'AI not connected yet · busy loading';
                     chip.title = 'The model is being loaded onto the card, so answers time out for a few minutes. It is still running.';
@@ -4408,6 +4428,8 @@
                     }
                     return;
                 }
+                reflectAutoConnection('dead', 'Nothing answered' + (savedModel ? ' at ' + savedModel : '')
+                    + ', so this site is not connected to a model. Press to paste an address, or start the model on this PC.');
                 chip.dataset.state = 'offline';
                 text.textContent = 'Nothing is running';
                 chip.title = 'Nothing answered on ' + (savedModel || 'the pool or this computer')
@@ -4498,6 +4520,13 @@
                         : 'The service is up but the model is still loading (' + (warmSeconds ? clock : 'just started') + '); songs start when it is ready.');
                 }
             }
+            // The address button says the same thing the header does, so a loaded
+            // model is green in both places instead of one of them sitting grey.
+            reflectAutoConnection(loaded ? 'ready' : 'warming', loaded
+                ? 'Connected through this site to ' + (answeredHost || 'the model') + ':'
+                    + ' the model is loaded and can render. Press to paste a different address.'
+                : 'The service at ' + (answeredHost || 'this machine') + ' answers, but its model is still warming;'
+                    + ' it turns green when the model is loaded.');
             // One rule so the two can never disagree: "AI ready" is shown only on the
             // green state, and a green state always says "AI ready".
             if (wakeBtn) {

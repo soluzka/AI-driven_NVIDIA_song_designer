@@ -8,10 +8,12 @@
     "directory": "./public",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    // The page itself goes through worker.js so it can be sent with no-store. Left
-    // to the asset handler it was served straight from the edge cache, and a page
-    // that had just been fixed kept showing the previous behaviour.
-    "run_worker_first": ["/", "/index.html"]
+    // Every request goes through worker.js, which forwards to ASSETS at the end.
+    // That is what lets the page be sent with no-store, and it is required here:
+    // with the single-page fallback below, a list of only "/" handed every other
+    // path - /api/search, /health, /api/song/endpoint - to the asset handler, which
+    // answered them all with the page.
+    "run_worker_first": true
   },
   // One Cloudflare-hosted model, and only for voice: /api/transcribe runs
   // Whisper on the edge so the microphone works without any app running. Music

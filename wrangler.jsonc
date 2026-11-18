@@ -27,7 +27,11 @@
     // Optional address of the music model when it is reachable from the
     // internet. Empty means the Worker answers /api/song and /api/lyrics with a
     // clear "this runs on the GPU machine" instead of a 405.
-    "SONG_API": ""
+    "SONG_API": "",
+    // The pool's own Worker (pool-worker.js, wrangler.pool.jsonc). When it answers,
+    // the site reads the GPU list from there and forwards every machine's
+    // announcement to it; when it is down, the list in this Worker's KV is used.
+    "POOL_API": "https://song-pool.bpiersing.workers.dev"
   },
   "ai": {
     "binding": "AI"

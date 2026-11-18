@@ -1,0 +1,26 @@
+{
+  // The pool on its own: a second Worker, a separate base from the site.
+  //
+  //   npx wrangler kv namespace create song-pool
+  //   npx wrangler deploy --config wrangler.pool.jsonc
+  //   npx wrangler secret put JOIN_KEY --config wrangler.pool.jsonc
+  //
+  // Then tell the site Worker where it is: set POOL_API in wrangler.jsonc (or the
+  // dashboard) to https://song-pool.<account>.workers.dev, and the site reads the
+  // pool from here instead of from its own KV.
+  "name": "song-pool",
+  "main": "pool-worker.js",
+  "compatibility_date": "2026-11-07",
+  // No assets and no models: this Worker only keeps a list of addresses and hands
+  // one back. It stays up when the site is redeployed and can sit on another
+  // account if the cards are spread across owners.
+  "kv_namespaces": [
+    {
+      "binding": "POOL",
+      "id": "41fccf777bca40b19f53d7c62d4598cc"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

@@ -913,22 +913,45 @@ here changed from `bpier` to `soluzka_3eenj0v`, all three venvs still pointed at
 failed to start until those paths were repointed. Recreate the environments on the
 new machine rather than copying the folder.
 
-## Sharing cards between PCs
+## Two Workers: the site, and the pool
 
-The site keeps a **pool** of GPUs, not one address. Any PC that runs `install.cmd`
-(or downloads `join.cmd` from the site and double-clicks it) publishes its own
-tunnel address to the Worker; a model call then goes to a member chosen at
-random, and the next member is tried when one does not answer. `GET
-/api/song/pool` lists who is in, and the launcher's key (`SONG_ENDPOINT_KEY`, read
-from `build\song_endpoint.key`) is what lets a machine publish itself.
+There are two Cloudflare bases, and they do different jobs.
 
-Measured against the live site with a dead address first in the pool: 4 of 4
-requests to `/last_song` still answered `200` with the 34,542,420-byte song, and
-the dead entry was removed with `{"remove": "..."}`.
+| Base | File | What it is |
+| --- | --- | --- |
+| `browser.bpiersing.workers.dev` | `worker.js` | the site: page, search, downloads, and a copy of the model proxy |
+| `song-pool.bpiersing.workers.dev` | `pool-worker.js` | **Cloudflare 2**: the GPU pool, and a model base of its own |
 
-Each machine keeps rejoining by itself: the Windows agents use the logon Run key
-plus a watchdog, the Linux one uses the systemd unit, so nothing depends on the
-owner being at a keyboard when a visitor clicks.
+The second one holds only the list of machines — no assets, no page — so it
+survives a redeploy of the site, can live on another account, and serves the AI
+by itself: `/api/song`, `/api/song/<token>`, `/api/song/voice`, `/api/lyrics`,
+`/song_file/<token>` and `/last_song` are forwarded to a machine from the pool.
+
+The weights are not on Cloudflare and cannot be: ACE-Step is ~10 GB and needs
+CUDA. Cloudflare holds the address book and forwards the requests; the cards run
+the model.
+
+```
+npx wrangler kv namespace create song-pool
+npx wrangler deploy --config wrangler.pool.jsonc
+npx wrangler secret put JOIN_KEY --config wrangler.pool.jsonc
+```
+
+The site reads the pool from there (`POOL_API` in `wrangler.jsonc`) and forwards
+every machine's announcement to it, falling back to its own KV when the pool base
+is unreachable.
+
+**Measured on Cloudflare 2 itself:** `GET /api/song/latest` → `200` with the job
+JSON, and `HEAD /last_song` → `200 audio/wav, Content-Length: 34542420`. With a
+dead address added to the pool, three of three `/last_song` requests still
+answered `200`; removing it returned the pool to one machine.
+
+A machine joins by running the agent once (on Windows, `install.cmd`; on Linux,
+`install.sh` with the systemd unit). A browser cannot hand its GPU to a site, and
+WebGPU runs inside the visiting tab, which cannot hold this model — so "joining"
+is that one local step, and after it the machine rejoins by itself at every logon.
+Nothing depends on the owner's PC being switched on: the pool uses whichever
+machines are awake.
 
 ## Running the whole stack on a GPU host
 

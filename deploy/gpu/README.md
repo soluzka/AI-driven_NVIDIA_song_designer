@@ -101,6 +101,30 @@ or set `SONG_API` in the dashboard (Settings → Variables). After that the page
 calls its own origin for everything — no CORS, no mixed content, no address in the
 browser — and Cloudflare is the only front door to the GPU.
 
+## Where a machine announces itself
+
+The pool has its own Worker (`pool-worker.js`, deployed with
+`wrangler.pool.jsonc`), so the list of GPU machines survives a redeploy of the
+site. A machine publishes with the join key:
+
+```bash
+curl -X POST https://song-pool.bpiersing.workers.dev/join \
+  -H "x-join-key: $SONG_ENDPOINT_KEY" -H 'content-type: application/json' \
+  -d '{"url":"https://ai.example.com","note":"office 4090"}'
+```
+
+`GET /pool` lists everyone, `GET /pick` returns one machine, `POST /remove` takes
+one out. That base also serves the model paths itself, so it can be used as the
+AI's address without the site Worker in front:
+
+```bash
+curl -I https://song-pool.bpiersing.workers.dev/last_song
+# HTTP/1.1 200 OK, content-type: audio/wav, content-length: 34542420
+```
+
+The agent does this automatically: `start_services.ps1` (Windows) and
+`entrypoint.sh` (Linux) post the machine's own tunnel address on every start.
+
 ## How a browser reaches it
 
 1. This machine starts and publishes its address: `POST /api/song/endpoint` with

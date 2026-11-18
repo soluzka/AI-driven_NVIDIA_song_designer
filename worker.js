@@ -153,6 +153,23 @@ const POOL_LIMIT = 8;                                  // machines kept
 const POOL_TTL_MS = 7 * 24 * 60 * 60 * 1000;           // forgotten after a week
 
 async function readPool(env) {
+  // A separate pool base wins when it is configured. That Worker holds only the
+  // list, so it survives a redeploy of the site and can be run by whoever owns the
+  // cards. An unreachable pool base falls through to this Worker's own KV, so one
+  // broken address cannot take the site's models offline.
+  const remote = String(env.POOL_API || '').trim().replace(/\/+$/, '');
+  if (remote) {
+    try {
+      const answer = await fetch(remote + '/pool', { headers: { accept: 'application/json' } });
+      if (answer.ok) {
+        const info = await answer.json();
+        const list = (info.machines || [])
+          .map((machine) => ({ url: String(machine.url || '').replace(/\/+$/, ''), seen: machine.seen || Date.now() }))
+          .filter((machine) => machine.url);
+        if (list.length) return list;
+      }
+    } catch (err) {}
+  }
   if (!env.STATS) return [];
   let entries = [];
   try {
@@ -214,6 +231,19 @@ async function songEndpoint(request, env) {
     if (known) known.seen = now;
     else pool.unshift({ url: value, seen: now });
     await writePool(env, pool);
+    // When the pool lives on its own base, the machine belongs there too: this
+    // Worker forwards the announcement so both lists agree, and neither the site
+    // nor the pool has to be redeployed for the other to keep working.
+    const poolBase = String(env.POOL_API || '').trim().replace(/\/+$/, '');
+    if (poolBase) {
+      try {
+        await fetch(poolBase + '/join', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-join-key': env.SONG_ENDPOINT_KEY || '' },
+          body: JSON.stringify({ url: value }),
+        });
+      } catch (err) {}
+    }
     return json({ ok: true, url: value, pool: pool.map((entry) => entry.url) });
   }
 

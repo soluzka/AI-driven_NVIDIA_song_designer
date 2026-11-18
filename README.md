@@ -1092,9 +1092,11 @@ entry disappears with it, and the header goes back to `Start a GPU`.
 A token that starts with `KGAT` is a bearer token, not a username-and-key pair;
 the Worker sends it as `Authorization: Bearer`, and only falls back to basic auth
 for an older `kaggle.json`. Sending a `KGAT` token as basic auth is answered with
-`401 Unauthorized`. The `username` field may hold a display name such as
-`Bob 21savage`; the API wants the handle (`bob21savage`), so the Worker strips it
-before it is used in a slug.
+`401 Unauthorized`. The `username` field may hold a display name (it can contain
+spaces and capitals) while the API wants the account handle (lowercase, no
+spaces), so the Worker reduces it to that form before it is used in a slug. No
+name is written anywhere in this repository; the handle is only ever read from
+the Worker's secret.
 
 #### What is never pushed
 

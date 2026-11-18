@@ -186,9 +186,10 @@ function kaggleAuth(env) {
     ? 'Bearer ' + key
     : (user ? 'Basic ' + btoa(user + ':' + key) : null);
   if (!header) return null;
-  // The username field in kaggle.json can hold a display name ("Bob 21savage");
-  // the API wants the handle ("bob21savage"). Kaggle silently sanitises whatever
-  // is in a slug, which turned the returned address into a different one.
+  // The username field in kaggle.json can hold a display name (spaces, capitals);
+  // the API wants the account handle (lowercase, no separators). Kaggle silently
+  // sanitises whatever is in a slug, which turned the returned address into a
+  // different one. Nothing here is written down: it all comes from the secret.
   const handle = user.toLowerCase().replace(/[^a-z0-9_-]/g, '');
   return { user, key, handle, header };
 }

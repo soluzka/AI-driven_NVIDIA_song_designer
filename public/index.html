@@ -4030,9 +4030,12 @@
         // own readout so the control and the address are not the same thing.
         let baseModelCache = { at: 0, address: '' };
         async function siteBaseModel(force) {
-            if (!force && baseModelCache.address && Date.now() - baseModelCache.at < 60000) {
+            if (!force && baseModelCache.address && Date.now() - baseModelCache.at < 30000) {
                 return baseModelCache.address;
             }
+            // Only the published tunnel. This is the "normal" address the site hands
+            // out, and nothing else belongs in this readout: not a pool member, not
+            // an address pasted into Connect my model, not window.SONG_API.
             let address = '';
             try {
                 const answer = await fetchBounded('/api/song/endpoint', { cache: 'no-store' }, 8000);
@@ -4041,16 +4044,6 @@
                     address = String(info.url || '').trim().replace(/\/+$/, '');
                 }
             } catch (err) { }
-            if (!address) {
-                try {
-                    const answer = await fetchBounded('/api/song/pool', { cache: 'no-store' }, 8000);
-                    if (answer.ok) {
-                        const info = await answer.json();
-                        const first = (info.machines || [])[0];
-                        if (first && first.url) address = String(first.url).trim().replace(/\/+$/, '');
-                    }
-                } catch (err) { }
-            }
             baseModelCache = { at: Date.now(), address };
             return address;
         }
@@ -4074,11 +4067,8 @@
             // The whole address, ellipsised by CSS: "the model location" is the
             // request, and a host alone loses the scheme someone needs to paste.
             text.textContent = base;
-            const override = currentModelAddress();
-            chip.title = base + ' is the address the site publishes.'
-                + (override && override !== base
-                    ? ' This browser overrides it with ' + override + ' (Connect my model).'
-                    : ' Nothing pasted in this browser, so this is what it uses.');
+            chip.title = 'The tunnel this site publishes: ' + base
+                + '. Everyone who has not pasted an address of their own renders there.';
         }
         refreshBaseModel();
         setInterval(refreshBaseModel, 60000);

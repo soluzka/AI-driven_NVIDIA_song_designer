@@ -964,6 +964,8 @@
         </div>
         <!-- Only shown when the pool is empty: Kaggle is the one free service whose
              API can boot a GPU without a person, so this asks the site to start one. -->
+        <!-- Only when it is needed: with a machine already serving songs the header
+             stays quiet, and the button appears when nothing answers. -->
         <button class="library-song-btn install-btn" id="startGpuBtn" onclick="startPoolGpu()" hidden
                 title="Starts a free Kaggle GPU that joins the pool by itself">
             Start a GPU
@@ -4010,7 +4012,8 @@
                 // pressed for a machine to appear here; the page asks the pool every
                 // minute and uses whatever answers.
                 text.textContent = (count === 1 ? 'Pool · 1 GPU' : 'Pool · ' + count + ' GPUs') + ' · auto';
-                // An empty pool gets the one control that can fill it on its own.
+                // Hidden while a machine is connected, shown when none is: it is the
+                // control for an empty pool, not another piece of header furniture.
                 const startBtn = document.getElementById('startGpuBtn');
                 if (startBtn) startBtn.hidden = count > 0;
                 if (chip) {

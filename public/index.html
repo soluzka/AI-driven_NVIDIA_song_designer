@@ -251,6 +251,23 @@
         #modelBtn[data-state="ready"] { border-color: rgba(74, 222, 128, 0.5); }
         #modelBtn[data-state="dead"]::before { background: #f87171; }
         @media (max-width: 600px) { #modelBtn { max-width: 170px; } }
+        .model-base {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            max-width: 300px;
+            padding: 5px 10px;
+            border: 1px solid var(--surface2);
+            border-radius: 999px;
+            font-size: 11px;
+            color: var(--text-dim);
+            white-space: nowrap;
+        }
+        .model-base-label { font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.7; }
+        #modelBaseText { overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+        .model-base[data-state="ready"] { color: #4ade80; border-color: rgba(74, 222, 128, 0.35); }
+        .model-base[data-state="none"] { color: #fbbf24; border-color: rgba(251, 191, 36, 0.35); }
+        @media (max-width: 600px) { .model-base { max-width: 190px; font-size: 10px; } }
         .install-panel { max-height: 82vh; overflow-y: auto; }
         .install-list { display: grid; gap: 12px; }
         .install-item { border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
@@ -906,6 +923,13 @@
              tell the page where their model is. -->
         <button class="library-song-btn install-btn" id="modelBtn" onclick="promptConnectModel()"
                 data-state="off" title="Paste the address of a song service to render songs on that machine">Connect my model</button>
+        <!-- The base model is a readout, not a control: the address the page uses
+             when this browser has not pasted one. Kept separate from the button so
+             neither one has to stand in for the other. -->
+        <span class="model-base" id="modelBase" data-state="none" title="The base model address">
+            <span class="model-base-label">Base model</span>
+            <span id="modelBaseText">checking…</span>
+        </span>
         <div class="conn-chip" id="connChip" data-state="connecting"
              title="Checking the connection to the search server">
             <span class="conn-dot"></span>
@@ -3984,6 +4008,7 @@
                 else localStorage.removeItem('songApi');
             } catch (err) {}
             reflectModelAddress();
+            refreshBaseModel();
             if (clean) {
                 // Check immediately and report the result where the person is
                 // looking, instead of leaving a red dot with no sentence under it.
@@ -3998,6 +4023,58 @@
             if (typeof refreshGpu === 'function') refreshGpu();
         }
         reflectModelAddress();
+
+        // The base model: the address the page uses when this browser has not pasted
+        // one. It is the Worker's published address first and a pool machine second,
+        // because those are exactly what a song request falls back to. Shown as its
+        // own readout so the control and the address are not the same thing.
+        let baseModelCache = { at: 0, address: '' };
+        async function siteBaseModel(force) {
+            if (!force && baseModelCache.address && Date.now() - baseModelCache.at < 60000) {
+                return baseModelCache.address;
+            }
+            let address = '';
+            try {
+                const answer = await fetchBounded('/api/song/endpoint', { cache: 'no-store' }, 8000);
+                if (answer.ok) {
+                    const info = await answer.json();
+                    address = String(info.url || '').trim().replace(/\/+$/, '');
+                }
+            } catch (err) { }
+            if (!address) {
+                try {
+                    const answer = await fetchBounded('/api/song/pool', { cache: 'no-store' }, 8000);
+                    if (answer.ok) {
+                        const info = await answer.json();
+                        const first = (info.machines || [])[0];
+                        if (first && first.url) address = String(first.url).trim().replace(/\/+$/, '');
+                    }
+                } catch (err) { }
+            }
+            baseModelCache = { at: Date.now(), address };
+            return address;
+        }
+        async function refreshBaseModel() {
+            const chip = document.getElementById('modelBase');
+            const text = document.getElementById('modelBaseText');
+            if (!chip || !text) return;
+            const pasted = currentModelAddress();
+            const base = await siteBaseModel();
+            const shown = pasted || base;
+            if (!shown) {
+                chip.dataset.state = 'none';
+                text.textContent = 'none yet';
+                chip.title = 'No machine has published an address yet. Join one, or paste an address with Connect my model.';
+                return;
+            }
+            chip.dataset.state = 'ready';
+            // The whole address, ellipsised by CSS: "the model location" is the
+            // request, and a host alone loses the scheme someone needs to paste.
+            text.textContent = shown;
+            chip.title = shown + (pasted ? ' (set in this browser)' : ' (the site default: no address is set in this browser)');
+        }
+        refreshBaseModel();
+        setInterval(refreshBaseModel, 60000);
 
         // When the badge last got a real answer. A timeout while the model loads is
         // not the service disappearing, and treating it as such is what made a

@@ -1159,20 +1159,51 @@ the Worker's secret.
 Every credential and every machine-specific address is gitignored, so a clone
 does not carry one and `git status` stays quiet about them:
 
-| Path | Why it is local |
-| --- | --- |
-| `build\song_endpoint.key` | publishes a machine into the pool |
-| `build\kaggle.json` | boots a GPU on your account |
-| `build\tunnel_url.txt` | one session's tunnel address, useless tomorrow |
-| `song_service\models\` | ~10 GB of ACE-Step weights, and the `dataset-metadata.json` the packer writes there |
-| `build\kaggle_pack\` | 11 GB of repo copy, Linux packages and ACE-Step source, all rebuilt by the packer |
-| `build\kaggle_pack\requirements-offline.txt` | the filtered list (`tokenizers==0.22.1`, no torch, no chatterbox, no cutlet) |
-| `.venv\`, `song_service\.venv\` | the Python environments |
-| `tools\bin\*.exe` | `cloudflared.exe`, a 53 MB binary fetched on first run |
+| Path | Why it is local | Where it belongs instead |
+| --- | --- | --- |
+| `build\song_endpoint.key` | publishes a machine into the pool | nowhere: `tools\set_kaggle.ps1` writes `SONG_JOIN_KEY` as a Worker secret |
+| `build\kaggle.json` | boots a GPU on your account | nowhere: your Kaggle account. **This is the one file that must never be shared**, and the packer reads it rather than taking a key on the command line |
+| `build\tunnel_url.txt` | one session's tunnel address, useless tomorrow | nowhere |
+| `song_service\models\` | ~10 GB of ACE-Step weights, and the `dataset-metadata.json` the packer writes there | Hugging Face (`ACE-Step/ACE-Step-v1-3.5B`), re-fetched by `song_service\install.py --weights` |
+| `build\kaggle_pack\` | 11 GB of repo copy, Linux packages and ACE-Step source, all rebuilt by the packer | your own private Kaggle dataset, uploaded by `tools\kaggle_pack.ps1 -Create` |
+| `build\kaggle_pack\requirements-offline.txt` | the filtered list (`tokenizers==0.22.1`, no torch, no chatterbox, no cutlet) | regenerated on every `-Packages` run |
+| `.venv\`, `song_service\.venv\` | the Python environments | rebuilt by `install.cmd` (see [One script, one environment](#one-script-one-environment-the-whole-application)) |
+| `tools\bin\*.exe` | `cloudflared.exe`, a 53 MB binary fetched on first run | fetched again on first run |
 
 When committing, name the files (`git add worker.js tools/set_kaggle.ps1 README.md`) rather
 than `git add -A`; if a credential is ever committed, revoke it at the provider
 first and treat the old value as burnt.
+
+**The packer is tracked; only what it produces is ignored.** `tools\kaggle_pack.ps1`
+and `public/song_gpu_offline.py` are normal files in the repository — the packer is
+the thing that rebuilds everything in the table above from a clone. Nothing it
+generates has to be committed for it to work, and nothing it reads from the
+account is ever committed.
+
+#### If someone else wants the same setup
+
+The datasets are not shared, and they do not need to be: each person makes their
+own, under their own account, with the same script. Nothing in this repository
+names an account.
+
+1. Sign up at kaggle.com and **verify the phone number**: Kaggle only grants GPUs
+to verified accounts, and an unverified one is what leaves a pushed kernel
+sitting at *Queued* forever.
+2. Account → Settings → API → **Create New Token**, and save the file as
+   `build\kaggle.json` (`tools\set_kaggle.ps1` does this without printing the key).
+3. Get the weights, since `song_service\models\` is ignored:
+   `.venv\Scripts\python song_service\install.py --weights`
+4. Run the four packer commands listed in [The offline datasets](#the-offline-datasets-mounting-instead-of-downloading)
+   above, in the order they appear there.
+
+`-Create` makes `<handle>/song-gpu-code` and `<handle>/song-gpu-weights` **private**
+(`isPrivate` in the metadata the packer writes), so the account name is not
+published alongside the weights. `worker.js` derives both slugs from the account
+that owns the token and can be pointed elsewhere with `KAGGLE_CODE_DATASET` and
+`KAGGLE_WEIGHTS_DATASET`.
+
+The packer runs on Windows: it uses `robocopy` for the repository copy and `uv`
+for the package target, and says so at the top if either is missing.
 
 ### The offline datasets (mounting instead of downloading)
 
@@ -1420,4 +1451,4 @@ image contains — is in `deploy\gpu\README.md`.
   network or proxy rather than editing the check away.
 
 `vercel.json` is a leftover deployment target that routes everything to
-`app.py`; the Cloudflare Worker is the supported static deployment.
+`ai_engine`; the Cloudflare Worker is the supported static deployment.

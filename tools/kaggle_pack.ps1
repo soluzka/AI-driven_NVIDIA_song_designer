@@ -35,6 +35,17 @@ $ErrorActionPreference = 'Stop'
 
 function Say($message) { Write-Host $message }
 
+# This script rebuilds everything it needs from the repository, so a fresh clone can
+# run it with no ignored file present except the two it reads: build\kaggle.json (for
+# -Create) and song_service\models (the weights). Checked up front so the failure is
+# a sentence rather than a stack trace halfway through an 11 GB upload.
+if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+    throw 'uv is not on PATH: install it (winget install --id=astral-sh.uv) and run this again'
+}
+if (-not (Get-Command robocopy -ErrorAction SilentlyContinue)) {
+    throw 'robocopy is not on PATH: this packer runs on Windows'
+}
+
 $codeDir = Join-Path $Stage 'code'
 $weightsDir = Join-Path $Stage 'weights'
 $repoCopy = Join-Path $codeDir 'repo'
@@ -126,8 +137,12 @@ if ($Packages) {
     Set-Content -Path $filtered -Value $lines -Encoding utf8
     Say ("unpacking {0} requirements for Python {1} / {2} (this is the slow part) ..." -f $lines.Count, $PythonVersion, $Platform)
     if (Test-Path $pylibs) { Remove-Item $pylibs -Recurse -Force }
+    # --no-deps on purpose: resolving would pull torch back in through
+    # pytorch_lightning and demucs, and a resolved torch drags 3 GB of CUDA wheels for
+    # a card that already has it. The list is curated instead, exactly like the boot
+    # cell on the card installs it.
     & uv pip install --target $pylibs --python-version $PythonVersion --python-platform $Platform `
-        --only-binary :all: --no-cache -r $filtered
+        --no-deps --only-binary :all: --no-cache -r $filtered
     if ($LASTEXITCODE -ne 0) { throw "uv pip install failed with $LASTEXITCODE" }
     Say ("packages: {0:N0} entries, {1:N0} MB" -f (Get-ChildItem $pylibs).Count,
         ((Get-ChildItem $pylibs -Recurse -File | Measure-Object Length -Sum).Sum / 1MB))

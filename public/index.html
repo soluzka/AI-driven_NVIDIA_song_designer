@@ -4327,7 +4327,7 @@
             text.textContent = onCuda
                 ? (loaded ? 'CUDA · ' + String(info.gpu || 'GPU').replace(/^NVIDIA\s+/i, '')
                           : 'AI not connected yet · warming ' + (warmSeconds ? clock : 'up'))
-                  + (answeredHere ? '' : ' · pool')
+                  + (answeredHere ? ' · this PC' : ' · pool')
                 : 'CPU only';
             chip.title = !onCuda
                 ? 'Torch cannot see a CUDA device, so songs and lyrics will be very slow.'
@@ -4341,7 +4341,7 @@
                 // and when the answer came from a pooled machine the label says that
                 // too rather than passing it off as this computer's model.
                 wakeBtn.textContent = loaded
-                    ? (answeredHere ? 'AI ready' : 'AI ready · pool')
+                    ? (answeredHere ? 'AI ready · this PC' : 'AI ready · pool')
                     : 'AI not connected yet';
                 wakeBtn.dataset.state = loaded ? 'ready' : 'starting';
                 wakeBtn.title = loaded

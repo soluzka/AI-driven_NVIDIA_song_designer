@@ -4119,8 +4119,11 @@
         async function saveSongToLibrary(source, info) {
             if (!source || !info || !info.id) return false;
             try {
-                const response = await fetch(source);
-                const blob = await response.blob();
+                // A finished song arrives as a URL (blob: or http:), a fitted phrase as a
+                // Blob already in memory; both are stored the same way.
+                const blob = (typeof Blob !== 'undefined' && source instanceof Blob)
+                    ? source
+                    : await (await fetch(source)).blob();
                 if (!blob || !blob.size) return false;
                 await savedWrite('readwrite', store => store.put({
                     id: info.id,
@@ -7586,6 +7589,15 @@
                 // the job or the sung vocal lands in no relation to the song.
                 fit.map = { semitones: semitones, lowpass: profile.lp, room: profile.wet };
                 fit.url = URL.createObjectURL(fitWav(rendered));
+                // A fitted phrase is finished audio as well, so it goes into the same
+                // library under its own id. It is not a song the model sang, and the
+                // title says so, so the two are never confused later.
+                saveSongToLibrary(fitWav(rendered), {
+                    id: 'fit-' + Date.now(),
+                    title: 'Voice fit · ' + ((fitSong && fitSong.key) || 'A minor')
+                        + ((fitSong && fitSong.genre) ? ' · ' + fitSong.genre : ''),
+                    model: 'your voice, fitted'
+                });
                 const play = document.getElementById('fitPlay');
                 const save = document.getElementById('fitSave');
                 const mix = document.getElementById('fitMix');

@@ -4317,7 +4317,9 @@
             }
 
             const beat = data.bpm ? 60 / data.bpm : 0.5;
-            const schedule = Array.isArray(data.schedule) && data.schedule.length ? data.schedule : null;
+            // Settable after mounting: the song service measures the timing once the
+            // audio is here, and the picture on screen switches to it without a redraw.
+            let schedule = Array.isArray(data.schedule) && data.schedule.length ? data.schedule : null;
             const frame = {
                 title: data.title || 'Song',
                 line2: data.line2 || '',
@@ -4346,10 +4348,14 @@
                 requestAnimationFrame(paint);
             };
             requestAnimationFrame(paint);
-            return () => {
+            const stop = () => {
                 running = false;
                 holder.remove();
             };
+            stop.setSchedule = list => {
+                if (Array.isArray(list) && list.length) schedule = list;
+            };
+            return stop;
         }
 
         // Where the words actually fall. The song's own loudness says when the singing
@@ -4484,7 +4490,10 @@
             const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : (song.seconds || 30);
             // Measured before recording starts, from the same audio that is about to be
             // captured, so the words sit where the voice is in the finished file.
-            const schedule = (Array.isArray(song.schedule) && song.schedule.length)
+            // The timing has to match this recording line for line: a schedule left
+            // over from a different set of words would draw the wrong line, so a
+            // mismatched one is measured again here, before the recorder starts.
+            const schedule = (Array.isArray(song.schedule) && song.schedule.length === lines.length)
                 ? song.schedule
                 : await lyricSchedule(song.audio, song.lyrics, duration);
 
@@ -4713,6 +4722,9 @@
                                 schedule: schedule
                             });
                             const kept = await savedAttachVideo(item.id, blob);
+                            // Stored after the video exists, and only with it: the timing
+                            // belongs to the recording that was just made.
+                            if (kept && schedule.length) await savedAttachSchedule(item.id, schedule);
                             record.textContent = kept ? 'Video saved' : 'Could not store it';
                         } catch (err) {
                             record.textContent = 'Record the video';
@@ -5898,6 +5910,9 @@
                     // song lands; the song service then measures the real timing against
                     // the separated vocal and the stored schedule is replaced.
                     scheduleForSong = await measureSchedule(source);
+                    if (window._liveLyricsStop && window._liveLyricsStop.setSchedule) {
+                        window._liveLyricsStop.setSchedule(scheduleForSong);
+                    }
                     const alignment = (async () => {
                         try {
                             const bytes = await (await fetch(source)).blob();
@@ -5905,6 +5920,9 @@
                             const measured = await alignWithService(bytes, lyricWords(lyrics));
                             if (!measured.length) return scheduleForSong;
                             scheduleForSong = measured;
+                            if (window._liveLyricsStop && window._liveLyricsStop.setSchedule) {
+                                window._liveLyricsStop.setSchedule(measured);
+                            }
                             liveStatus.textContent = 'The words are timed from the separated vocal.';
                         } catch (err) {
                         }

@@ -4612,6 +4612,23 @@
                 return;
             }
 
+            // Starting the model here is the join.cmd path, which is a different
+            // promise from a tunnel: it needs the install and its weights on this PC.
+            // Asked once per page, so a second press does not nag.
+            if (!window._startConfirmed) {
+                const ok = window.confirm('Start the model on this PC?\n\n'
+                    + 'This runs the install join.cmd sets up - the song service on 8090 with the ~10 GB of '
+                    + 'ACE-Step weights loaded onto this card. It only works on a PC that has had join.cmd run.\n\n'
+                    + 'Continue?');
+                if (!ok) {
+                    window._startConfirmed = false;
+                    if (btn) btn.disabled = false;
+                    await refreshGpu();
+                    return;
+                }
+                window._startConfirmed = true;
+            }
+
             // Nothing answers: only a browser on the PC can launch the service, and
             // a link click is the one gesture browsers allow to do it.
             if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; btn.dataset.state = 'starting'; }

@@ -4419,7 +4419,11 @@
             // What answered: the address pasted here, a machine the site published,
             // or this computer. A pasted quick tunnel is somebody's Colab.
             const answeredWhat = (savedModel && answeredBy === savedModel)
-                ? (/trycloudflare|colab|ngrok|localtunnel/i.test(savedModel) ? 'Colab' : 'your model')
+                ? (/trycloudflare|colab|ngrok|localtunnel/i.test(savedModel)
+                    ? 'Colab'
+                    // A pasted PC address is this PC, and the label has to say so:
+                    // "your model" hid the very change the confirm warns about.
+                    : (/^https?:\/\/(127\.|localhost|\[::1\])/i.test(savedModel) ? 'this PC' : 'your model'))
                 // "Pool" when the site publishes an address, because that is the
                 // address songs are sent to first (modelBases puts it ahead of
                 // loopback). Saying "this PC" there named the machine that answered a

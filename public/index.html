@@ -874,6 +874,16 @@
             <span class="conn-dot"></span>
             <span id="gpuText">GPU…</span>
         </div>
+        <!-- The pool, as Cloudflare 2 sees it: every machine that has joined and
+             can render a song, on anybody's PC. Clicking it starts this PC's
+             agent through songsvc://, which is registered per-user, so no
+             administrator prompt is involved. -->
+        <div class="conn-chip gpu-chip" id="poolChip" data-state="connecting"
+             onclick="wakeLocalAI()" style="cursor:pointer"
+             title="GPUs in the pool that can render a song, on any PC">
+            <span class="conn-dot"></span>
+            <span id="poolText">Pool…</span>
+        </div>
     </div>
 
     <!-- Search Section -->
@@ -3686,6 +3696,33 @@
                 if (url && !/(127\.0\.0\.1|localhost)/.test(url)) window.remoteSongApi = url;
             } catch (err) {}
         })();
+
+        // The pool badge: how many machines can render a song right now, and with
+        // no GPU online it is the thing to press — the wake path goes through
+        // songsvc://, a per-user registration, so it never asks for administrator.
+        async function refreshPoolBadge() {
+            const text = document.getElementById('poolText');
+            const chip = document.getElementById('poolChip');
+            if (!text) return;
+            try {
+                const answer = await fetchBounded('/api/song/pool', { cache: 'no-store' }, 8000);
+                if (!answer.ok) throw new Error('pool ' + answer.status);
+                const info = await answer.json();
+                const count = Number(info.count || 0);
+                text.textContent = count === 1 ? 'Pool · 1 GPU' : 'Pool · ' + count + ' GPUs';
+                if (chip) {
+                    chip.dataset.state = count ? 'online' : 'offline';
+                    chip.title = count
+                        ? 'Machines that can render a song: ' + (info.machines || []).map(m => m.url).join(', ')
+                        : 'No machine has joined. Press to start the AI on this PC (songsvc://, no admin).';
+                }
+            } catch (err) {
+                text.textContent = 'Pool · offline';
+                if (chip) chip.dataset.state = 'offline';
+            }
+        }
+        refreshPoolBadge();
+        setInterval(refreshPoolBadge, 60000);
 
         // When the badge last got a real answer. A timeout while the model loads is
         // not the service disappearing, and treating it as such is what made a

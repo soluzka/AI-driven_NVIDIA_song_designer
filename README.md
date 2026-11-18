@@ -953,7 +953,15 @@ is that one local step. After it, the machine rejoins on its own: every launcher
 run posts its address to the site and to Cloudflare 2 directly, so the pool lists
 every agent that is awake, and nothing depends on the owner's PC.
 
-### Start at boot, before anyone logs in
+### The badge in the header
+
+`Pool · N GPUs` reads the pool from Cloudflare 2 every minute. Pressing it starts
+this PC's agent through `songsvc://`, which is registered per user under
+`HKCU\Software\Classes` — **no administrator prompt** — and with no GPU online its
+tooltip says so. That is the only thing anyone clicks: the site already answers
+without it when another machine is in the pool.
+
+### Start at boot, before anyone logs in (optional, needs admin once)
 
 The logon Run key needs somebody to sign in first. A Scheduled Task does not:
 

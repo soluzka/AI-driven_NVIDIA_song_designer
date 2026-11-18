@@ -33,10 +33,13 @@ Write-Host "run key set: $runKey\AI song services"
 
 $startup = [Environment]::GetFolderPath('Startup')
 $cmd = Join-Path $startup 'AI song services.cmd'
+# Built before the array, not inside it: "'a' + $x" as an array element is not
+# reliably one element, and the file came out as a line ending after "/min".
+$startupLine = 'start "" /min ' + $command
 Set-Content -Path $cmd -Encoding ascii -Value @(
     '@echo off',
     'rem Added by tools\install_autostart_ai.ps1: start the AI and re-announce it at logon.',
-    'start "" /min ' + $command
+    $startupLine
 )
 Write-Host "startup entry: $cmd"
 

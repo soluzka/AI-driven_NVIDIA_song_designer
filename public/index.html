@@ -4157,6 +4157,10 @@
                     // The words are kept with the song, so a video can be recorded later
                     // without asking the model for them again.
                     lyrics: Array.isArray(info.lyrics) ? info.lyrics : [],
+                    // Measured once and kept: the picture in the card and the recording
+                    // then use the same timing, so neither drifts from the other.
+                    schedule: Array.isArray(info.schedule) ? info.schedule : [],
+                    bpm: info.bpm || 0,
                     genres: Array.isArray(info.genres) ? info.genres : [],
                     label: info.label || '',
                     tracks: info.tracks || 0,
@@ -4391,7 +4395,9 @@
             const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : (song.seconds || 30);
             // Measured before recording starts, from the same audio that is about to be
             // captured, so the words sit where the voice is in the finished file.
-            const schedule = await lyricSchedule(song.audio, lines, duration);
+            const schedule = (Array.isArray(song.schedule) && song.schedule.length)
+                ? song.schedule
+                : await lyricSchedule(song.audio, lines, duration);
 
             let audioStream = null;
             try {
@@ -4601,8 +4607,9 @@
                                 line2: (item.genres || []).join(' · '),
                                 genre: (item.genres || [])[0] || '',
                                 lyrics: item.lyrics,
-                                bpm: 0,
-                                seconds: item.seconds || 30
+                                bpm: item.bpm || 0,
+                                seconds: item.seconds || 30,
+                                schedule: item.schedule || []
                             });
                             const kept = await savedAttachVideo(item.id, blob);
                             record.textContent = kept ? 'Video saved' : 'Could not store it';
@@ -4620,6 +4627,20 @@
                 body.appendChild(chips);
                 body.appendChild(player);
                 body.appendChild(actions);
+                // A song without a recorded video still gets a picture: the same lyric
+                // frame, drawn live from the card's own player, so nothing has to be
+                // recorded before it can be looked at.
+                if (!isVideo && Array.isArray(item.lyrics) && item.lyrics.length) {
+                    attachLiveLyrics(player, {
+                        title: item.title,
+                        line2: (item.genres || []).join(' · '),
+                        genre: (item.genres || [])[0] || '',
+                        lyrics: item.lyrics,
+                        bpm: item.bpm || 0,
+                        seconds: item.seconds || 30,
+                        schedule: item.schedule || []
+                    });
+                }
                 card.appendChild(thumb);
                 card.appendChild(body);
                 grid.appendChild(card);
@@ -5565,7 +5586,8 @@
                             genre: summary.genres.length ? summary.genres[0].name : '',
                             lyrics: lyrics,
                             bpm: bpm,
-                            seconds: seconds
+                            seconds: seconds,
+                            schedule: options && Array.isArray(options.schedule) ? options.schedule : []
                         });
                         // The song's own entry gains the video, so the saved song is the
                         // video file itself: picture and its own audio in one webm, and
@@ -5697,6 +5719,18 @@
                 // A real model may answer while the band is already playing. When it
                 // does, the sung track replaces the audio and the labels say so.
                 modelPromise.then(async swapped => {
+                    // The line timing is measured from the song that will be stored, and
+                    // kept with it; everything that draws the words uses this one copy.
+                    let scheduleForSong = [];
+                    const measureSchedule = async (url) => {
+                        try {
+                            const flat = lyrics.reduce((all, part) => all.concat(part.lines || []), []);
+                            const length = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : seconds;
+                            return await lyricSchedule(url, flat, length);
+                        } catch (err) {
+                            return [];
+                        }
+                    };
                     // The wait is over either way, so the ticker stops here: left
                     // running it would keep overwriting the answer below with the
                     // same question.
@@ -5728,6 +5762,9 @@
                     }
                     loads.push(`song download ${((performance.now() - downloadAt) / 1000).toFixed(1)}s`
                         + (received ? ` (${(received / 1048576).toFixed(1)} MB)` : ''));
+                    // Measured after the bytes are here, not before: the line timing has
+                    // to come from the file that is actually being stored.
+                    scheduleForSong = await measureSchedule(source);
                     liveStatus.textContent = 'The model song is loaded: '
                         + `${(received / 1048576).toFixed(1)} MB in ${((performance.now() - downloadAt) / 1000).toFixed(1)}s.`;
                     // The recording is NOT mixed in here any more. With a phrase fitted
@@ -5766,12 +5803,14 @@
                         tracks: summary.total || 0,
                         seconds: seconds || 0,
                         thumb: sourceThumb,
-                        lyrics: lyrics
+                        lyrics: lyrics,
+                        bpm: bpm,
+                        schedule: scheduleForSong
                     });
                     // And then the same song with its words on the picture: recorded once,
                     // stored as its own card, and put where the audio bar was so the
                     // player plays the video.
-                    recordLyricVideo({ replacePlayer: true });
+                    recordLyricVideo({ replacePlayer: true, schedule: scheduleForSong });
                 });
             } catch (err) {
                 panel.innerHTML = '';

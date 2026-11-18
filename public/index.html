@@ -4367,6 +4367,23 @@
                 const took = since().toFixed(1);
                 const extension = '.wav';
 
+                // A raw exception from the model service is the truth, but it is not
+                // advice: the same string kept appearing on a machine that only needed
+                // one package pinned, with nothing saying so. The failures seen on real
+                // machines are mapped to what to do; anything else passes through.
+                function explainModelError(message) {
+                    const text = String(message || '');
+                    if (text.includes('from_pickled_model')) {
+                        return 'that machine has py3langid 0.4, whose loader ACE-Step cannot call; '
+                            + 'restart it with 0.2.2 - git reset --hard origin/main, '
+                            + 'pip install py3langid==0.2.2 - and re-run its service';
+                    }
+                    if (/out of memory/i.test(text)) {
+                        return 'that machine ran out of GPU memory; free it and try again';
+                    }
+                    return text;
+                }
+
                 const audio = document.createElement('audio');
                 audio.controls = true;
                 audio.autoplay = true;
@@ -4390,7 +4407,7 @@
                         + ` Every network load counted: ${loads.join(', ')}.`
                         + (fit && fit.result ? ' These lyrics are sung by the model, fitted to your measured pitch and tone.' : '')
                         + (window._modelNote ? ` ${window._modelNote}.` : '')
-                        + (modelError ? ` (model unavailable: ${modelError})` : '');
+                        + (modelError ? ` (model unavailable: ${explainModelError(modelError)})` : '');
 
                 const list = document.createElement('div');
                 list.className = 'gen-lyrics';
@@ -4494,7 +4511,8 @@
                 // does, the sung track replaces the audio and the labels say so.
                 modelPromise.then(async swapped => {
                     if (!swapped || !swapped.audio) {
-                        liveStatus.textContent = 'The model did not answer; the browser song above is what is playing.';
+                        liveStatus.textContent = 'The model did not answer; the browser song above is what is playing.'
+                            + (modelError ? ' ' + explainModelError(modelError) + '.' : '');
                         // The model never answered. The panel used to keep the note it
                         // wrote before the model was asked, so the minutes it spent - and
                         // the reason it failed - were missing from it entirely.

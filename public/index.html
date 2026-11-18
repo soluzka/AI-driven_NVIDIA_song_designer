@@ -3714,7 +3714,8 @@
                     chip.dataset.state = count ? 'online' : 'offline';
                     chip.title = count
                         ? 'Machines that can render a song: ' + (info.machines || []).map(m => m.url).join(', ')
-                        : 'No machine has joined. Press to start the AI on this PC (songsvc://, no admin).';
+                        : 'No machine has joined. Press to start the AI on this PC (songsvc://, no admin), '
+                          + 'or run song_gpu.ipynb on a free Colab T4 (no install, no payment).';
                 }
             } catch (err) {
                 text.textContent = 'Pool · offline';

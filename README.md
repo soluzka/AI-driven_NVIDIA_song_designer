@@ -730,6 +730,20 @@ singer**: see `voice_service/README.md`. Only **8090** is ever published.
 logon entry, so nothing is ever typed and a reboot brings everything back. That is
 the whole setup on a machine with an NVIDIA card.
 
+Nothing has to be installed first, and no administrator prompt appears: a PC that
+has never run Python gets a portable `uv` (15 MB) and a portable `git` (40 MB) in
+`tools\bin`, and `uv` fetches its own Python 3.11. The only thing the script asks
+of the machine is about 20 GB of free disk for torch, the packages and the ~10 GB
+of weights, and an NVIDIA driver 560 or newer. Without a card it still finishes and
+runs on the processor, and says so: minutes to hours per song instead of seconds.
+
+Before it downloads anything, `-Check` reports the card, the driver version and the
+free space, plus every package the environment already has:
+
+```
+.\install_all.ps1 -Check
+```
+
 The same thing from a shell, or with pieces skipped:
 
 ```
@@ -980,10 +994,22 @@ happens with no terminal at all.
 
 `deploy/colab/song_gpu.ipynb` (also served at
 `https://browser.bpiersing.workers.dev/song_gpu.ipynb`) is the no-cost card. Open it
-in Colab, choose a free T4, press **Run all**: it installs the song service, opens a
-tunnel and registers the card in the pool, and the site uses it while the notebook
-is open. The only thing typed is the join key, once. A T4 has 16 GB — twice the
-card here — so songs render faster while the session lasts.
+in Colab, choose a free T4, press **Run all**: it installs the song service on the
+notebook's own machine, opens a tunnel and prints an `https://…trycloudflare.com`
+address. Nothing is installed on your computer and nothing is rented.
+
+That address is usable two ways, and the first needs no key and no permission:
+
+1. open the site → **Song designer** → **Connect my model** and paste it. The page
+   then writes lyrics and renders songs on that T4 until the notebook stops;
+2. or paste the join key when the notebook asks, and the card joins the pool, so
+   every visitor's click can use it with nothing pasted anywhere.
+
+A T4 has 16 GB — twice the card here — so songs render faster while the session
+lasts. The trade is the session: when Colab stops it, the card leaves the pool, and
+that is what "free" costs. It is also the only free card that can run this model:
+Workers AI has no music model, Containers have no GPU, and a browser tab cannot
+lend its card to a page.
 
 The trade is the session: when Colab stops it, the card leaves the pool. That is
 what "free" costs, and it is the only free GPU that can run this model: Workers AI

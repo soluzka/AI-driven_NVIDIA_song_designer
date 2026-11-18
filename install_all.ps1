@@ -87,16 +87,134 @@ Say "root:    $root"
 Say "python:  $python"
 Say ''
 
+# --- 0. the two prerequisites nobody should have to install ------------------
+# A Windows machine that has never developed anything has no Python 3.11 and no
+# git, and both are required: pip needs the interpreter, and ACE-Step installs
+# from its GitHub URL, which pip can only do when git is on PATH. Installing
+# either by hand is a download, a wizard and sometimes an administrator prompt,
+# which is exactly what this script exists to avoid - so both are fetched here
+# as portable, per-user copies. The same shape as the cloudflared fetch in the
+# launcher: pinned version, no elevation, no PATH edit that outlives the run.
+$toolsBin = Join-Path $root 'tools\bin'
+$gitDir = Join-Path $toolsBin 'git'
+if (-not (Test-Path $toolsBin)) { New-Item -ItemType Directory -Path $toolsBin -Force | Out-Null }
+if (Test-Path (Join-Path $gitDir 'cmd')) { $env:PATH = (Join-Path $gitDir 'cmd') + ';' + $env:PATH }
+$env:PATH = $toolsBin + ';' + $env:PATH
+
+$uvVersion = '0.13.9'
+$uvZipUrl = "https://github.com/astral-sh/uv/releases/download/$uvVersion/uv-x86_64-pc-windows-msvc.zip"
+$gitVersion = '2.56.1'
+$gitZipUrl = "https://github.com/git-for-windows/git/releases/download/v$gitVersion.windows.1/MinGit-$gitVersion-64-bit.zip"
+
+function Save-Zip([string]$url, [string]$target) {
+    $partial = "$target.download"
+    $ProgressPreference = 'SilentlyContinue'
+    Invoke-WebRequest -Uri $url -OutFile $partial -UseBasicParsing -TimeoutSec 600
+    if (Test-Path $target) { Remove-Item $target -Force -ErrorAction SilentlyContinue }
+    Move-Item -Path $partial -Destination $target -Force
+}
+
+# uv is what creates the 3.11 interpreter and the venv. On Windows "python" is
+# usually the Microsoft Store stub, and py.exe cannot always start the 3.11 that
+# uv installed, so uv is the one interpreter manager this script relies on.
+function Ensure-Uv {
+    $found = Get-Command uv -ErrorAction SilentlyContinue
+    if ($found) { return $found.Source }
+    $exe = Join-Path $toolsBin 'uv.exe'
+    if (Test-Path $exe) { return $exe }
+    Say "  uv is missing: fetching $uvVersion (~15 MB, once, no installer)"
+    try {
+        $zip = Join-Path $toolsBin 'uv.zip'
+        Save-Zip $uvZipUrl $zip
+        Expand-Archive -Path $zip -DestinationPath $toolsBin -Force
+        Remove-Item $zip -ErrorAction SilentlyContinue
+    } catch {
+        Say "  could not fetch uv: $($_.Exception.Message)"
+        return $null
+    }
+    if (-not (Test-Path $exe)) {
+        $nested = Get-ChildItem -Path $toolsBin -Filter 'uv.exe' -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($nested) { $exe = $nested.FullName } else { return $null }
+    }
+    Say '  uv in place'
+    return $exe
+}
+
+# MinGit: the portable git, 40 MB, unzips into tools\bin\git. pip's git+https
+# support shells out to git, and without it the ACE-Step line of the install
+# fails with "Cannot find command 'git'" after everything else has succeeded.
+function Ensure-Git {
+    if (Get-Command git -ErrorAction SilentlyContinue) { return $true }
+    if (Test-Path (Join-Path $gitDir 'cmd\git.exe')) {
+        $env:PATH = (Join-Path $gitDir 'cmd') + ';' + $env:PATH
+        return $true
+    }
+    Say "  git is missing: fetching MinGit $gitVersion (~40 MB, once, no installer)"
+    try {
+        $zip = Join-Path $toolsBin 'mingit.zip'
+        Save-Zip $gitZipUrl $zip
+        if (Test-Path $gitDir) { Remove-Item $gitDir -Recurse -Force -ErrorAction SilentlyContinue }
+        Expand-Archive -Path $zip -DestinationPath $gitDir -Force
+        Remove-Item $zip -ErrorAction SilentlyContinue
+    } catch {
+        Say "  could not fetch git: $($_.Exception.Message)"
+        return $false
+    }
+    if (-not (Test-Path (Join-Path $gitDir 'cmd\git.exe'))) { return $false }
+    $env:PATH = (Join-Path $gitDir 'cmd') + ';' + $env:PATH
+    Say '  git in place'
+    return $true
+}
+
+# What the machine itself has: the card, the driver, and room on disk for ~20 GB
+# of wheels and weights. Reported before anything is downloaded, because "no
+# NVIDIA GPU" and "2 GB free" are the two answers that turn an install into
+# something to stop rather than wait out.
+function Report-Machine {
+    $disk = Get-PSDrive -Name ($root.Substring(0, 1)) -ErrorAction SilentlyContinue
+    $freeGb = if ($disk) { [math]::Round($disk.Free / 1GB, 1) } else { $null }
+    $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+    $gpu = ''
+    $driver = ''
+    if ($smi) {
+        $gpu = (& $smi.Source --query-gpu=name,memory.total --format=csv,noheader 2>$null | Select-Object -First 1)
+        $driver = (& $smi.Source --query-gpu=driver_version --format=csv,noheader 2>$null | Select-Object -First 1)
+    }
+    Say 'This machine:'
+    Say ("  {0,-12} {1}" -f 'gpu', $(if ($gpu) { $gpu } else { 'none detected (CPU only - a 3 minute song takes hours)' }))
+    Say ("  {0,-12} {1}" -f 'driver', $(if ($driver) { $driver } else { 'n/a - an NVIDIA driver 560 or newer is what makes the card usable' }))
+    Say ("  {0,-12} {1}" -f 'disk free', $(if ($freeGb) { "$freeGb GB (about 20 GB is used by torch, the packages and the weights)" } else { 'unknown' }))
+    if ($freeGb -and $freeGb -lt 20) {
+        Say '  warning: less than 20 GB free - free some space or run with -NoWeights first'
+    }
+    if (-not $gpu) {
+        Say '  warning: no NVIDIA card found. The CUDA torch wheel still installs and runs on the'
+        Say '           processor; songs render from the same model, only much more slowly.'
+    }
+    Say ''
+}
+
+Report-Machine
+
+# -Check installs nothing, so it must not create an environment on the way to
+# reporting one: a bare machine would download uv and a 3.11 interpreter merely
+# to be told what it does not have.
+if ($Check -and -not (Test-Path $python)) {
+    Say 'no .venv yet: nothing is installed here.'
+    Say 'Run install.cmd (or this script without -Check) to install everything.'
+    return
+}
+
 # --- 1. the environment ------------------------------------------------------
 # A venv's python is what every step below uses: pip, the package lists and the
 # weight download all run through the same interpreter, which is the point of
-# this script. uv is preferred because on Windows "python" is often the Microsoft
-# Store stub, and --seed is what puts pip inside the new environment.
+# this script. --seed is what puts pip inside the new environment.
 if (-not (Test-Path $python)) {
     Say 'no .venv yet: creating one with Python 3.11'
-    $uv = Get-Command uv -ErrorAction SilentlyContinue
-    if ($uv) {
-        & $uv.Source venv $venv --python 3.11 --seed
+    $uvPath = Ensure-Uv
+    if ($uvPath) {
+        & $uvPath venv $venv --python 3.11 --seed
         if ($LASTEXITCODE -ne 0) { throw 'uv could not create the environment' }
     } else {
         $launcher = Get-Command py -ErrorAction SilentlyContinue
@@ -110,7 +228,7 @@ if (-not (Test-Path $python)) {
         }
     }
     Say '  environment created'
-} else {
+} elseif (-not $Check) {
     Say '.venv already exists: installing into it'
 }
 
@@ -135,6 +253,8 @@ if ($Check) {
         $value = if ($row.value) { $row.value } else { 'MISSING' }
         Say ("  {0,-24} {1}" -f $row.name, $value)
     }
+    Say ("  {0,-24} {1}" -f 'git (ACE-Step)', $(if (Get-Command git -ErrorAction SilentlyContinue) { 'ok' } else { 'MISSING - install_all fetches a portable copy' }))
+    Say ("  {0,-24} {1}" -f 'uv (venv, Python 3.11)', $(if (Get-Command uv -ErrorAction SilentlyContinue) { 'ok' } else { 'MISSING - install_all fetches a portable copy' }))
     $weights = Join-Path $root 'song_service\models\ACE-Step-v1-3.5B'
     Say ("  {0,-24} {1}" -f 'ACE-Step weights', $(if (Test-Path $weights) { 'present' } else { 'MISSING' }))
     Say ("  {0,-24} {1}" -f 'shared marker', $(if (Test-Path $marker) { 'present (launcher will use this env)' } else { 'absent' }))
@@ -145,11 +265,24 @@ if ($Check) {
 }
 
 # --- 2. the card -------------------------------------------------------------
+# pip, wheel and setuptools first: a Python 3.11 that uv just downloaded ships an
+# older setuptools, and ACE-Step's setup.py needs one below 81 to build.
+Say ''
+Say 'build tools'
+Pip @('--upgrade', 'pip', 'wheel', 'setuptools<81')
+
 # PyPI's Windows torch wheel is the CPU build. A CPU build renders a three minute
 # song in hours, so the CUDA wheel comes first and from the CUDA index.
 Say ''
 Say 'torch for the card (CUDA 12.6 wheels)'
 Pip @('torch==2.14.1+cu126', 'torchaudio==2.14.1+cu126', '--index-url', $torchIndex)
+$cudaNow = Probe 'torch' 'torch.cuda.is_available()'
+if ($cudaNow -eq 'False') {
+    Say '  torch is installed but sees no card. The AI will run on the processor:'
+    Say '  install the NVIDIA driver (560 or newer) from nvidia.com and rerun -Check.'
+} else {
+    Say '  torch sees the card'
+}
 
 # --- 3. the three services ---------------------------------------------------
 Say ''
@@ -162,8 +295,11 @@ Pip @('-r', 'downloader_service\requirements.txt')
 
 Say ''
 Say 'the song service (8090): ACE-Step, demucs, librosa'
-if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    Say '  warning: git is not on PATH, and ACE-Step installs from its GitHub repo'
+# ACE-Step installs as git+https://..., and pip shells out to git for that. The
+# portable copy fetched in step 0 is already on PATH; if that failed, say so here
+# instead of letting pip fail four hundred lines into a build.
+if (-not (Ensure-Git)) {
+    throw 'git is required for ACE-Step (pip installs it from GitHub) and could not be fetched'
 }
 Pip @('-r', 'song_service\requirements.txt', '--extra-index-url', $torchIndex)
 
@@ -182,6 +318,7 @@ if ($NoWeights) {
 Say ''
 Say 'check'
 $cuda = Probe 'torch' "'%s cuda=%s' % (torch.__version__, torch.cuda.is_available())"
+$cudaOk = $cuda -and $cuda.EndsWith('cuda=True')
 Say ("  torch:     " + $(if ($cuda) { $cuda } else { 'MISSING' }))
 foreach ($pair in @(@('flask', 'flask'), @('flask_socketio', 'flask_socketio'), @('yt_dlp', 'yt_dlp'),
         @('librosa', 'librosa'), @('scipy', 'scipy'), @('demucs', 'demucs'), @('soundfile', 'soundfile'))) {
@@ -203,6 +340,12 @@ $info = [ordered]@{
 $info | ConvertTo-Json | Set-Content -Path $marker -Encoding utf8
 Say ''
 Say "wrote $marker"
+if (-not $cudaOk) {
+    Say ''
+    Say 'The model is installed, but torch cannot see a card, so songs render on the CPU:'
+    Say 'minutes to hours instead of seconds. Nothing else is missing - an NVIDIA driver'
+    Say '560 or newer is the only fix, and it is a normal download, not an administrator task.'
+}
 Say ''
 Say 'Next:'
 Say '  install.cmd                    double-click: install, start, and keep it running'

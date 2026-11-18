@@ -1,8 +1,10 @@
 @echo off
-rem Double-click this. Nothing else is typed, ever:
+rem Double-click this. Nothing else is typed, ever, and nothing has to be
+rem installed first: if this PC has no Python 3.11 and no git, both are fetched
+rem as portable copies into tools\bin (no installer, no administrator prompt).
 rem
 rem   one .venv with the site, the downloader and the song service
-rem   the ACE-Step / Hugging Face weights
+rem   the ACE-Step / Hugging Face weights (~10 GB, once)
 rem   the services started now
 rem   and the logon entry that brings them back by themselves after a reboot
 rem

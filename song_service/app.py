@@ -1030,6 +1030,56 @@ def pc_proxy(rest):
     return response
 
 
+@app.route('/api/align', methods=['POST', 'OPTIONS'])
+def api_align():
+    """Where each lyric line is sung, measured from the song's own vocal.
+
+    The page sends the audio it is about to store and the lines it will draw, and
+    keeps the schedule that comes back with the song, so the card, the player and
+    the recorded video all use one measured timing instead of a guess.
+    """
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    body = request.get_json(silent=True) or {}
+    raw_lines = request.form.get('lines', body.get('lines'))
+    if isinstance(raw_lines, str):
+        try:
+            raw_lines = json.loads(raw_lines)
+        except ValueError:
+            raw_lines = [line for line in raw_lines.splitlines() if line.strip()]
+    if not isinstance(raw_lines, list) or not raw_lines:
+        return jsonify({'error': 'no lines to align'}), 400
+    lines = [str(line).strip()[:200] for line in raw_lines if str(line).strip()][:120]
+    if not lines:
+        return jsonify({'error': 'no lines to align'}), 400
+
+    work = tempfile.mkdtemp(prefix='align-request-')
+    try:
+        upload = request.files.get('audio')
+        if upload is not None and upload.filename:
+            suffix = os.path.splitext(upload.filename)[1] or '.wav'
+            audio_path = os.path.join(work, 'song' + suffix)
+            upload.save(audio_path)
+        else:
+            audio_path = str(body.get('path') or '')
+            if not audio_path or not os.path.exists(audio_path):
+                return jsonify({'error': 'send the audio file, or a path that exists'}), 400
+
+        from align import align_lines
+
+        started = time.time()
+        result = align_lines(audio_path, lines, work_dir=os.path.join(work, 'align'))
+        result['seconds_taken'] = round(time.time() - started, 1)
+        print('aligned %d lines in %.1fs from %s'
+              % (len(lines), result['seconds_taken'], result.get('source')), flush=True)
+        return jsonify(result)
+    except Exception as exc:  # noqa: BLE001 - report the reason to the page
+        traceback.print_exc()
+        return jsonify({'error': 'alignment failed: %s' % exc}), 500
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 @app.route('/api/top', methods=['POST', 'OPTIONS'])
 def api_top_proxy():
     """The most-watched listing, carried by the one address the internet can reach.

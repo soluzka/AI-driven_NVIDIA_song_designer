@@ -4137,6 +4137,31 @@
         }
         window.savedAttachVideo = savedAttachVideo;
 
+        // The measured line timing, stored on the entry once the song service has
+        // fitted the words to the separated vocal. Until then the estimate is used.
+        async function savedAttachSchedule(id, schedule) {
+            if (!Array.isArray(schedule) || !schedule.length) return false;
+            try {
+                const db = await savedDb();
+                return await new Promise((resolve, reject) => {
+                    const tx = db.transaction(SAVED_STORE, 'readwrite');
+                    const store = tx.objectStore(SAVED_STORE);
+                    const read = store.get(id);
+                    read.onsuccess = () => {
+                        const item = read.result;
+                        if (!item) { resolve(false); return; }
+                        item.schedule = schedule;
+                        store.put(item);
+                    };
+                    tx.oncomplete = () => resolve(true);
+                    tx.onerror = () => reject(tx.error);
+                });
+            } catch (err) {
+                return false;
+            }
+        }
+        window.savedAttachSchedule = savedAttachSchedule;
+
         // Copied, not linked: the bytes are read now, while the machine that rendered
         // them is still answering, and kept after it stops.
         async function saveSongToLibrary(source, info) {
@@ -4461,6 +4486,40 @@
         }
         window.lyricSchedule = lyricSchedule;
 
+        // Asks the song service on this machine to time the lines against the song.
+        // It separates the vocal and fits the words to the sung phrases, which is
+        // measured rather than guessed; an empty answer means "keep the estimate".
+        async function alignWithService(blob, lines) {
+            if (!blob || !Array.isArray(lines) || !lines.length) return [];
+            const base = String(window.SONG_API || 'http://127.0.0.1:8090').replace(/\/+$/, '');
+            const form = new FormData();
+            form.append('audio', blob, 'song.wav');
+            form.append('lines', JSON.stringify(lines));
+            const control = new AbortController();
+            const timer = setTimeout(() => control.abort(), 300000);
+            try {
+                const response = await fetch(base + '/api/align', {
+                    method: 'POST',
+                    body: form,
+                    signal: control.signal
+                });
+                if (!response.ok) return [];
+                const answer = await response.json();
+                const schedule = (answer.lines || []).map(entry => ({
+                    start: Number(entry.start),
+                    end: Number(entry.end)
+                }));
+                if (schedule.length !== lines.length) return [];
+                if (schedule.some(entry => !Number.isFinite(entry.start) || !Number.isFinite(entry.end))) return [];
+                return schedule;
+            } catch (err) {
+                return [];
+            } finally {
+                clearTimeout(timer);
+            }
+        }
+        window.alignWithService = alignWithService;
+
         // Records the canvas and the song together, in real time: the length of the
         // recording is the length of the song, because that is how a browser captures
         // a picture, and pretending otherwise would produce a silent, frozen file.
@@ -4693,9 +4752,21 @@
                     record.textContent = 'Record the video';
                     record.onclick = async () => {
                         record.disabled = true;
-                        record.textContent = 'Recording...';
+                        record.textContent = 'Timing the words...';
                         const source = new Audio(objectUrl);
                         try {
+                            // Measured first, so a re-record of an older song puts the
+                            // words where they are sung instead of re-using the estimate
+                            // the first recording was made with.
+                            let schedule = item.schedule || [];
+                            try {
+                                const measured = await alignWithService(mediaBlob, lyricWords(item.lyrics));
+                                if (measured.length) {
+                                    schedule = measured;
+                                    await savedAttachSchedule(item.id, measured);
+                                }
+                            } catch (err) {}
+                            record.textContent = 'Recording...';
                             const blob = await makeLyricVideo({
                                 element: source,
                                 audio: objectUrl,
@@ -4705,7 +4776,7 @@
                                 lyrics: item.lyrics,
                                 bpm: item.bpm || 0,
                                 seconds: item.seconds || 30,
-                                schedule: item.schedule || []
+                                schedule: schedule
                             });
                             const kept = await savedAttachVideo(item.id, blob);
                             record.textContent = kept ? 'Video saved' : 'Could not store it';
@@ -4715,6 +4786,34 @@
                         }
                     };
                     actions.appendChild(record);
+                }
+                // A song that already has its video can have its timing measured again;
+                // the stored schedule is replaced, and the video is re-recorded from
+                // it on the next record, because the old picture has the old words
+                // burned into it.
+                if (isVideo && Array.isArray(item.lyrics) && item.lyrics.length && item.blob) {
+                    const retime = document.createElement('button');
+                    retime.textContent = 'Re-time the words';
+                    retime.onclick = async () => {
+                        retime.disabled = true;
+                        retime.textContent = 'Timing the words...';
+                        try {
+                            const measured = await alignWithService(item.blob, lyricWords(item.lyrics));
+                            if (!measured.length) {
+                                retime.textContent = 'The song service did not answer';
+                                retime.disabled = false;
+                                return;
+                            }
+                            const kept = await savedAttachSchedule(item.id, measured);
+                            retime.textContent = kept
+                                ? 'Timed: record the video again to put them in it'
+                                : 'Could not store the timing';
+                        } catch (err) {
+                            retime.textContent = 'The song service did not answer';
+                            retime.disabled = false;
+                        }
+                    };
+                    actions.appendChild(retime);
                 }
                 actions.appendChild(download);
                 actions.appendChild(drop);
@@ -5857,9 +5956,24 @@
                     }
                     loads.push(`song download ${((performance.now() - downloadAt) / 1000).toFixed(1)}s`
                         + (received ? ` (${(received / 1048576).toFixed(1)} MB)` : ''));
-                    // Measured after the bytes are here, not before: the line timing has
-                    // to come from the file that is actually being stored.
+                    // An estimate first, so the card and the picture work the moment the
+                    // song lands; the song service then measures the real timing against
+                    // the separated vocal and the stored schedule is replaced.
                     scheduleForSong = await measureSchedule(source);
+                    const alignment = (async () => {
+                        try {
+                            const bytes = await (await fetch(source)).blob();
+                            liveStatus.textContent = 'Timing the words against the vocal...';
+                            const measured = await alignWithService(bytes, lyricWords(lyrics));
+                            if (!measured.length) return scheduleForSong;
+                            scheduleForSong = measured;
+                            await savedAttachSchedule(songId, measured);
+                            if (window._savedViewOpen) await openSavedSongs();
+                            liveStatus.textContent = 'The words are timed from the separated vocal.';
+                        } catch (err) {
+                        }
+                        return scheduleForSong;
+                    })();
                     liveStatus.textContent = 'The model song is loaded: '
                         + `${(received / 1048576).toFixed(1)} MB in ${((performance.now() - downloadAt) / 1000).toFixed(1)}s.`;
                     // The recording is NOT mixed in here any more. With a phrase fitted
@@ -5905,7 +6019,8 @@
                     // And then the same song with its words on the picture: recorded once,
                     // stored as its own card, and put where the audio bar was so the
                     // player plays the video.
-                    recordLyricVideo({ replacePlayer: true, schedule: scheduleForSong });
+                    const finalSchedule = await alignment;
+                    recordLyricVideo({ replacePlayer: true, schedule: finalSchedule });
                 });
             } catch (err) {
                 panel.innerHTML = '';

@@ -1333,6 +1333,60 @@ what "free" costs, and it is the only free GPU that can run this model: Workers 
 has no music model, Containers have no GPU, and a browser tab cannot lend its card
 to a page.
 
+### Timing the words against the vocal
+
+The lyric video used to guess when each line is sung: an even slice of the clock
+per line, then a slice weighted by the bars of its section. Both drift, and a
+drifting lyric video is worse than none.
+
+`song_service/align.py` measures it instead. It is not a new model — it is the
+model the service already runs, applied to a new question:
+
+1. **Separate the voice.** demucs `htdemucs`, the same separator the voice map
+   uses (`--two-stems=vocals`), leaves a stem with the singing and almost no band.
+2. **Find the phrases.** A 20 ms RMS envelope of that stem, gated against its own
+   peak, gives the runs where the voice is present; runs shorter than 150 ms are
+   dropped and gaps shorter than 120 ms are closed.
+3. **Fit the lines.** Every line is given a share of the *sung* time (not the wall
+   clock) by syllable count, and each boundary is moved onto a phrase edge when
+   one is within 0.4 s — a line in a lyric video starts when the singing does, and
+   never creeps through an instrumental gap.
+
+Because the input is the separated vocal, the gate has something to gate: on the
+full mix a drone keeps the meter above the threshold for the whole song and the
+result is the flat split again. Measured on a test song whose four voice phrases
+begin at 1.2 s, 3.8 s, 7.0 s and 10.8 s, the separated run returned phrases at
+1.20, 3.82, 7.02 and 10.82 s, and the first line started at 1.20 s rather than 0.
+
+**HTTP**, from the page:
+
+```
+POST /api/align        multipart: audio=<file>, lines=<json array of strings>
+  -> { lines: [{start, end}, ...], seconds, phrases: [[start, end], ...],
+       source: "the separated vocal" | "the song itself", seconds_taken }
+```
+
+**Command line**, for a finished song:
+
+```
+song_service\.venv\Scripts\python.exe song_service\align.py song.wav --lines lines.json
+song_service\.venv\Scripts\python.exe song_service\align.py song.wav --lines lines.json --no-separate
+```
+
+The page keeps the returned schedule with the saved song, so the card's picture,
+the player and the recorded video all use one timing. When the service is not
+running — a phone, another machine, the model down — the in-page estimate stays
+in charge; the song is never blocked on alignment. `Re-time the words` on a saved
+song measures it again, and `Record the video` measures first and then records,
+which is how an older song gets its words in the right place.
+
+Limits, stated plainly: this is line-level, not word-level. Word-level timing
+needs a speech recogniser with timestamps, which is a different download and a
+different set of mistakes; the aligner here trades that for no new weights at
+all. And a video that was already recorded has the old words burned into it —
+re-timing updates the stored schedule, and the video has to be recorded again
+from it.
+
 ### The 10 GB on Cloudflare
 
 Storage is not the obstacle — execution is. The checkpoint fits in R2 (free

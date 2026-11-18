@@ -34,6 +34,11 @@ if (-not $user -or -not $key) {
     Write-Host 'That file has no username/key in it. It should be the kaggle.json Kaggle gives you.'
     exit 1
 }
+if ($user -like 'PASTE_*' -or $key -like 'PASTE_*') {
+    Write-Host "$CredentialFile still holds the placeholder text, not a real token."
+    Write-Host 'Open it and replace the two PASTE_ values with your Kaggle username and key, or overwrite the file with the kaggle.json Kaggle downloaded.'
+    exit 1
+}
 
 $temporary = Join-Path ([System.IO.Path]::GetTempPath()) ('kaggle-' + [guid]::NewGuid().ToString('N') + '.txt')
 try {

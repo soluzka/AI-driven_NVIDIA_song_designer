@@ -70,17 +70,70 @@ SONG_PROMPT = (
     '{avoid}'
 )
 
-TAG = re.compile(r'^\s*[\[\(]\s*(verse\s*\d|chorus|hook|bridge|pre[-\s]?chorus|'
-                 r'intro|outro|refrain)\s*[\]\)]\s*:?\s*$', re.I)
+# The model writes "[Repeat Chorus]" and "[chorus x2]" as often as "[chorus]",
+# and an unmatched tag was not skipped: it was cleaned into a lyric line and
+# then sung as one.
+TAG = re.compile(r'^\s*[\[\(]\s*(?:(?:repeat|another|second)\s+)?'
+                 r'(verse\s*\d|chorus|hook|bridge|pre[-\s]?chorus|'
+                 r'intro|outro|refrain)\s*(?:[x×]\s*\d+)?\s*[\]\)]\s*:?\s*$', re.I)
 
 # Lines that describe the collection instead of a life are thrown away rather
 # than shown as lyrics.
 BANNED = re.compile(
     r'\b(libraries|library|database|databases|collection|playlist|playlists|'
     r'search\w*|index|indexed|algorithm|metadata|catalog\w*|archiv\w+|'
-    r'tracks?|videos?|clips?|uploads?|channels?|subscri\w+|results?)\b',
+    r'tracks?|videos?|clips?|uploads?|channels?|subscri\w+|results?|'
+    # The wire, named outright. "Say the reddit again" is what a small model does
+    # when it reaches for a specific thing and finds a product name instead.
+    r'reddit|google|facebook|instagram|tiktok|twitter|youtube|netflix|spotify|'
+    r'iphone|android|playstation|xbox|wifi|wi-fi|internet|online|download\w*)\b',
     re.I,
 )
+
+# Left to itself the model picks a mood and then fills it with whatever nouns are
+# nearest in its weights - pizza, ghostbusters, a year - which is how a finished
+# song came back as word salad. It needs somewhere specific to stand.
+#
+# The subject is not a list of finished ideas: a place and a moment are drawn
+# separately for each seed, so every song gets a different one and no two come
+# out of a fixed menu. Each half is a phrase that reads correctly next to any
+# half from the other list, so the pair is always grammatical.
+PLACES = [
+    'the last bus home',
+    'a kitchen at the back of the flat',
+    'the stairwell of the building you left',
+    'a supermarket car park',
+    'the laundrette on the corner',
+    'a bridge with the lights off',
+    'the service station at the edge of town',
+    'a hospital corridor',
+    'a record shop that is closing down',
+    'the corner shop before it shuts',
+    'an empty office after everyone has gone',
+    'a hotel lobby at the wrong end of the night',
+]
+MOMENTS = [
+    'an hour after the pubs shut',
+    'on the first cold morning of the year',
+    'the week the heating broke',
+    'the night before you moved out',
+    'on a Tuesday that felt like a Sunday',
+    'the last evening of the summer',
+    'in the hour before the shift starts',
+    'the day the letter finally came',
+    'while it rained without stopping',
+    'after the last train had gone',
+]
+
+
+def random_subject(seed):
+    """A place and a moment for this song, drawn fresh from two short lists."""
+    # Seeded by name, not by an arithmetic hash of the number: multiplying a small
+    # integer by a constant and taking it modulo 2**32 left neighbouring seeds
+    # drawing the same moment, which is how three songs in a row ended up in the
+    # same place on the same evening.
+    picker = random.Random('song-subject-%s' % seed)
+    return '%s, %s' % (picker.choice(PLACES), picker.choice(MOMENTS))
 
 MOODS = [
     'tired and honest, played late',
@@ -193,6 +246,10 @@ class Lyricist:
         theme_hint = ''
         if hint_words and not subject:
             theme_hint = ' If it helps, these are near the mood: ' + ', '.join(hint_words) + '.'
+        subject = str(subject or '').strip()
+        if not subject:
+            subject = random_subject(seed)
+        theme_hint = ' This song is about ' + subject + '.' + theme_hint
         avoid = [str(line).strip() for line in (avoid or []) if str(line).strip()][-14:]
         avoid_block = ''
         if avoid:
@@ -210,29 +267,49 @@ class Lyricist:
             {'role': 'system', 'content': SYSTEM_PROMPT},
             {'role': 'user', 'content': prompt},
         ]
-        random.seed(seed)
-        settings = dict(
-            max_new_tokens=1200,
-            do_sample=True,
-            temperature=0.92,
-            top_p=0.92,
-            top_k=60,
-            repetition_penalty=1.12,
-            no_repeat_ngram_size=3,
-        )
-        if progress is None:
-            output = generator(messages, **settings)
-        else:
-            output = self._write_with_token_count(generator, messages, settings, progress)
-        text = ''
-        result = output[0] if output else {}
-        generated = result.get('generated_text')
-        if isinstance(generated, list):
-            text = generated[-1].get('content', '')
-        elif isinstance(generated, str):
-            text = generated
+        # Up to three answers, and the first one that passes the checks is the one
+        # used. The temperature comes down each time, because the failure being
+        # retried is the model wandering: higher heat made more of the sentences
+        # that read like something the radio said rather than something sung.
+        attempts = []
+        for round_number in range(3):
+            random.seed(seed + round_number * 7919)
+            settings = dict(
+                max_new_tokens=1200,
+                do_sample=True,
+                temperature=(0.7, 0.6, 0.5)[round_number],
+                top_p=(0.9, 0.85, 0.8)[round_number],
+                top_k=40,
+                repetition_penalty=1.12,
+                no_repeat_ngram_size=3,
+            )
+            counted = progress if round_number == 0 else None
+            if counted is None:
+                output = generator(messages, **settings)
+            else:
+                output = self._write_with_token_count(generator, messages, settings, counted)
+            text = ''
+            result = output[0] if output else {}
+            generated = result.get('generated_text')
+            if isinstance(generated, list):
+                text = generated[-1].get('content', '')
+            elif isinstance(generated, str):
+                text = generated
 
-        sections = parse_song(text, avoid)
+            sections = parse_song(text, avoid)
+            problems = lint_song(sections)
+            attempts.append((problems, sections))
+            if not problems:
+                break
+
+        attempts.sort(key=lambda item: len(item[0]))
+        problems, sections = attempts[0]
+        # Still bad after three tries: say so with an empty answer, and let the
+        # page keep the words it writes itself. A nonsense lyric is worse than a
+        # plain one.
+        if len(problems) > 2:
+            print('lyrics rejected: %s' % '; '.join(problems), flush=True)
+            return {'sections': [], 'lines': []}
         lines = [line for part in sections for line in part['lines']]
         return {'sections': sections, 'lines': lines}
 
@@ -314,10 +391,29 @@ def _section_name(raw):
     return 'Verse ' + (match.group(1) if match else '1')
 
 
+SECTION_WORDS = re.compile(
+    r'^\s*(?:verse|chorus|hook|bridge|pre[-\s]?chorus|intro|outro|refrain)'
+    r'\s*\d*\s*$', re.I)
+
+
 def _clean_line(raw):
     line = re.sub(r'^\s*(?:\d+[.)]|[-*\u2022])\s*', '', raw).strip()
+    # Emphasis marks anywhere, not just at the front: an answer that bolds a tag
+    # ("*Verse 1**") was arriving as a lyric line and being sung.
+    line = line.replace('*', '').replace('_', ' ')
+    line = re.sub(r'\s+', ' ', line).strip()
     line = line.strip('"\u2018\u2019\u201c\u201d`\' ')
     if not line or line.endswith(':'):
+        return ''
+    # A bare tag written without brackets is a label, not a line.
+    if SECTION_WORDS.match(line):
+        return ''
+    # The same label in brackets, when the tag pattern still did not claim it.
+    if SECTION_WORDS.match(line.strip('[]()')):
+        return ''
+    # A year in a lyric is nearly always the model reaching for a fact instead of
+    # an image ("every 2026 sounds like something that I lost").
+    if re.search(r'\b(?:19|20)\d{2}\b', line):
         return ''
     if len(line.split()) > 14:
         return ''
@@ -326,6 +422,36 @@ def _clean_line(raw):
     if BANNED.search(line):
         return ''
     return line
+
+
+def lint_song(sections):
+    """What is wrong with this answer, if anything.
+
+    The small model drivels: it will answer with a shape that looks like a song
+    and a middle made of whatever was on the wire - names of things nobody sang
+    about, a chorus that changes words, a bridge that is a stray tag. Nothing
+    checked that before, which is how a finished song came back as nonsense. An
+    empty list means the song is worth keeping.
+    """
+    problems = []
+    lines = [line for part in sections for line in part['lines']]
+    if len(sections) < 4:
+        problems.append('fewer than four sections')
+    if len(lines) < 16:
+        problems.append('fewer than sixteen lines')
+    choruses = [' | '.join(part['lines']).lower()
+                for part in sections if part['section'] == 'Chorus']
+    if len(choruses) < 2:
+        problems.append('no repeated chorus')
+    elif len(set(choruses)) > 1:
+        problems.append('the chorus changes words')
+    if lines and len(set(line.lower() for line in lines)) < max(8, int(len(lines) * 0.6)):
+        problems.append('too repetitive')
+    if any(len(re.findall(r"[A-Za-z']+", line)) < 3 for line in lines):
+        problems.append('a line is too short to sing')
+    if any(not re.search(r"[aeiouyAEIOUY]", line) for line in lines):
+        problems.append('a line has no vowels')
+    return problems
 
 
 def parse_song(text, avoid=None):

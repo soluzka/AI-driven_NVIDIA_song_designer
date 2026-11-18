@@ -227,6 +227,22 @@
         }
         .fit-act:disabled { opacity: 0.4; cursor: default; }
         .fit-act.rec { background: rgba(255, 91, 74, 0.14); border-color: rgba(255, 91, 74, 0.45); }
+
+        /* Run this AI. The installer and the free-GPU notebook were already served
+           by this Worker as plain files; nothing on the page pointed at either, so
+           a visitor had no way to find them. */
+        .install-btn { margin-left: 0; }
+        .install-panel { max-height: 82vh; overflow-y: auto; }
+        .install-list { display: grid; gap: 12px; }
+        .install-item { border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+        .install-name { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+        .install-note { font-size: 12px; color: var(--text-dim); line-height: 1.6; }
+        .install-note a { color: var(--accent2); }
+        .install-note code { background: var(--surface2); padding: 1px 5px; border-radius: 5px; font-size: 11.5px; }
+        .install-act { display: inline-block; margin-top: 10px; text-decoration: none; }
+        .install-code { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+        .install-code code { flex: 1; min-width: 0; font-size: 11px; background: var(--surface2); padding: 7px 9px; border-radius: 8px; overflow-x: auto; white-space: nowrap; }
+        .install-foot { font-size: 11.5px; color: var(--text-dim); margin-top: 12px; line-height: 1.6; }
         .fit-act.rec.live { animation: pulse 1.2s infinite; }
         .fit-status { font-size: 12px; color: var(--text-dim); margin-top: 10px; min-height: 16px; line-height: 1.55; }
         .top-btn {
@@ -864,6 +880,8 @@
                 title="Design one song from the tracks you found">Song designer</button>
         <button class="library-song-btn wake-btn" id="wakeBtn" onclick="wakeLocalAI()"
                 title="Starts the AI services on this computer and waits until they answer">Start the AI</button>
+        <button class="library-song-btn install-btn" id="installBtn" onclick="openInstallPanel()"
+                title="Install the AI on this PC in one double-click, or run it on a free Colab GPU">Get the AI</button>
         <div class="conn-chip" id="connChip" data-state="connecting"
              title="Checking the connection to the search server">
             <span class="conn-dot"></span>
@@ -930,6 +948,58 @@
                     title="Reuse the clip you just spoke into the voice search">Use voice search clip</button>
         </div>
         <div class="fit-status" id="fitStatus">Say or sing one phrase. The words are not read or searched for; only the sound is reshaped.</div>
+    </div>
+
+    <!-- Run this AI: the installer and the free card, where a visitor can reach
+         them. Both files are served by this Worker; until now only the README
+         mentioned them, which is not where a visitor stands. -->
+    <div class="fit-panel install-panel" id="installPanel" hidden>
+        <div class="fit-head">
+            <div class="fit-title">Run this AI — nobody pays</div>
+            <button class="fit-close" onclick="closeInstallPanel()">Close</button>
+        </div>
+        <div class="fit-target" id="installState">Checking the pool…</div>
+        <div class="install-list">
+            <div class="install-item">
+                <div class="install-name">This PC — Windows, one double-click</div>
+                <div class="install-note">
+                    One file. It fetches its own Python 3.11 and git, installs the CUDA build of
+                    torch, all three services and the ~10 GB of model weights, starts everything
+                    and registers it to come back at every logon. No administrator prompt, nothing
+                    to install first, about 20 GB of disk and an NVIDIA driver 560 or newer.
+                    With no NVIDIA card it still runs, on the processor: minutes to hours a song
+                    instead of seconds.
+                </div>
+                <a class="fit-act install-act" href="/join.cmd" download>Download join.cmd</a>
+            </div>
+            <div class="install-item">
+                <div class="install-name">A free GPU — nothing installed here</div>
+                <div class="install-note">
+                    Open <a href="/song_gpu.ipynb" target="_blank" rel="noopener">song_gpu.ipynb</a>
+                    in Colab, choose a free T4, press <strong>Run all</strong>. It prints an address:
+                    paste that into <strong>Song designer → Connect my model</strong>. Nothing is
+                    rented and this computer installs nothing. The card leaves when the Colab
+                    session ends.
+                </div>
+                <a class="fit-act install-act" href="/song_gpu.ipynb" target="_blank" rel="noopener">Open the free-GPU notebook</a>
+            </div>
+            <div class="install-item">
+                <div class="install-name">Linux, or a server that stays on</div>
+                <div class="install-note">
+                    The same install in one line. It also installs the boot service, so the machine
+                    serves from power-on with nobody logged in.
+                </div>
+                <div class="install-code">
+                    <code>curl -fsSL https://browser.bpiersing.workers.dev/join.sh | bash</code>
+                    <button class="fit-close" onclick="copyInstallCommand(this)">Copy</button>
+                </div>
+            </div>
+        </div>
+        <div class="install-foot">
+            Cloudflare cannot run this model — a Worker is a 128 MB isolate with no GPU — so the
+            machine that renders is always a real computer: this one, a free Colab card, or another
+            visitor's PC in the pool.
+        </div>
     </div>
 
     <!-- Results -->
@@ -3724,6 +3794,56 @@
         }
         refreshPoolBadge();
         setInterval(refreshPoolBadge, 60000);
+
+        // Where the AI comes from. The installer and the free-GPU notebook are
+        // served by this Worker at /join.cmd and /song_gpu.ipynb; the page now
+        // hands both out instead of leaving them to the README.
+        function openInstallPanel() {
+            const panel = document.getElementById('installPanel');
+            if (!panel) return;
+            if (typeof closeFitPanel === 'function') closeFitPanel();
+            panel.hidden = false;
+            refreshInstallState();
+        }
+        function closeInstallPanel() {
+            const panel = document.getElementById('installPanel');
+            if (panel) panel.hidden = true;
+        }
+        // The same live count the header badge shows, said as a sentence: it tells a
+        // visitor whether anything can render before they click a song.
+        async function refreshInstallState() {
+            const line = document.getElementById('installState');
+            if (!line) return;
+            try {
+                const answer = await fetchBounded('/api/song/pool', { cache: 'no-store' }, 8000);
+                if (!answer.ok) throw new Error('pool ' + answer.status);
+                const info = await answer.json();
+                const count = Number(info.count || 0);
+                line.textContent = count
+                    ? count + (count === 1 ? ' machine is' : ' machines are')
+                        + ' online and can render a song right now. Add another below.'
+                    : 'No machine is online right now, so nothing can render until one joins.';
+            } catch (err) {
+                line.textContent = 'The pool did not answer, so the live count is unknown.';
+            }
+        }
+        function copyInstallCommand(button) {
+            const command = 'curl -fsSL https://browser.bpiersing.workers.dev/join.sh | bash';
+            const confirm = () => {
+                const old = button.textContent;
+                button.textContent = 'Copied';
+                setTimeout(() => { button.textContent = old; }, 1500);
+            };
+            try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(command).then(confirm, () => window.prompt('Copy this:', command));
+                } else {
+                    window.prompt('Copy this:', command);
+                }
+            } catch (err) {
+                window.prompt('Copy this:', command);
+            }
+        }
 
         // When the badge last got a real answer. A timeout while the model loads is
         // not the service disappearing, and treating it as such is what made a

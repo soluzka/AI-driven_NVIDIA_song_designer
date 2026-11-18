@@ -204,7 +204,10 @@ async function writePool(env, pool) {
 // "Failed to fetch" there. This Worker can see the status or the network error,
 // so the page asks it instead of guessing. Only the hosts a song service can
 // live on are probed, so this is not an open proxy.
-const PROBE_HOSTS = ['.trycloudflare.com', '.workers.dev', 'localhost', '127.0.0.1'];
+// No loopback here, on purpose: this code runs at Cloudflare's edge, where
+// 127.0.0.1 is Cloudflare's own machine and answers 403. A local song service can
+// only be probed by the browser that shares its machine.
+const PROBE_HOSTS = ['.trycloudflare.com', '.workers.dev'];
 
 function probeAllowed(value) {
   try {
@@ -220,7 +223,13 @@ function probeAllowed(value) {
 async function songProbe(url) {
   const target = String(url.searchParams.get('url') || '').trim().replace(/\/+$/, '');
   if (!probeAllowed(target)) {
-    return json({ ok: false, error: 'This site only probes song-service addresses.' }, 400);
+    const loopback = /^https?:\/\/(127\.|localhost|\[::1\])/i.test(target);
+    return json({
+      ok: false,
+      error: loopback
+        ? 'A local address is checked by the browser itself, not from the edge.'
+        : 'This site only probes tunnel and Worker addresses.',
+    }, 400);
   }
   const started = Date.now();
   try {

@@ -3955,16 +3955,21 @@
                 button.title = 'Nothing answered at ' + address + ' - ' + reason + '. Press to change or clear it.';
                 if (announce) {
                     showToast('error', 'That address did not answer',
-                        address + ' - ' + reason + '. While the notebook is running its last cell prints the '
-                        + 'current address; a session that ended takes its address with it.',
+                        address + ' - ' + reason + '. Check that the service is running there, and that '
+                        + 'the address is the one it printed most recently.',
                         { autoClose: 12000 });
                 }
             };
             if (!/^https?:\/\//i.test(address)) { failed('that is not an http(s) address'); return; }
-            // The Worker asks first. A browser cannot tell a CORS block from a dead
-            // tunnel from a typo - all three are "Failed to fetch" - while the
+            // A local address can only be checked here: the Worker runs at Cloudflare's
+            // edge, where 127.0.0.1 is Cloudflare's own machine and answers 403. The
+            // 403 that used to arrive for a perfectly healthy local service was that
+            // mistake, not the model refusing.
+            const loopback = /^https?:\/\/(127\.|localhost|\[::1\])/i.test(address);
+            // Otherwise the Worker asks first. A browser cannot tell a CORS block from
+            // a dead tunnel from a typo - all three are "Failed to fetch" - while the
             // Worker sees the status or the network error itself.
-            try {
+            if (!loopback) try {
                 const probe = await fetchBounded(
                     '/api/song/probe?url=' + encodeURIComponent(address), { cache: 'no-store' }, 14000);
                 if (probe.ok) {
@@ -3987,7 +3992,7 @@
                     return;
                 }
             } catch (err) { }
-            // An older Worker has no probe route: ask the machine directly.
+            // Loopback, or an older Worker with no probe route: ask the machine directly.
             try {
                 const answer = await fetchBounded(address + '/health', { cache: 'no-store' }, 12000);
                 if (!answer.ok) throw new Error('HTTP ' + answer.status);

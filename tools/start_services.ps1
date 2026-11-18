@@ -43,10 +43,10 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
 # One environment for every role that needs the card. install_all.ps1 fills .venv
-# with the site, the downloader and the song service and leaves this marker; when
-# it is there those roles run from it instead of building a venv each. The voice
-# service is the exception and keeps its own: chatterbox pins numpy 1.x and torch
-# 2.6, which cannot live beside numpy 2.4.6 and torch 2.14.
+# with the site, the downloader, the song service and the voice service's chatterbox
+# and leaves this marker; when it is there those roles run from it instead of
+# building a venv each. chatterbox's declared pins (numpy 1.x, torch 2.6) are
+# metadata only: it loads and sings on the numpy 2.4.6 and torch 2.14.1 here.
 $sharedPython = Join-Path $root '.venv\Scripts\python.exe'
 $useShared = (Test-Path (Join-Path $root '.venv\all_services.json')) -and (Test-Path $sharedPython)
 
@@ -246,8 +246,14 @@ if (Answers $voicePort) {
     Say 'voice service is still starting, leaving it alone'
 } else {
     $voice = Join-Path $root 'voice_service'
+    # Its own venv if someone built one, otherwise the shared environment, which
+    # install_all.ps1 now fills with chatterbox: no second Python, no Python
+    # installed by hand, and the service comes up like the other three.
     $voicePython = Join-Path $voice '.venv\Scripts\python.exe'
-    if (Test-Path $voicePython) {
+    if (-not (Test-Path $voicePython)) { $voicePython = $sharedPython }
+    $voiceLogs = Join-Path $voice 'logs'
+    if (-not (Test-Path $voiceLogs)) { New-Item -ItemType Directory -Path $voiceLogs -Force | Out-Null }
+    if ((Test-Path $voicePython) -and (Test-Path (Join-Path $voice 'app.py'))) {
         $env:VOICE_PORT = "$voicePort"
         Start-Process -FilePath $voicePython -ArgumentList 'app.py', '--role', 'voice' -WorkingDirectory $voice `
             -WindowStyle Hidden `
@@ -255,7 +261,7 @@ if (Answers $voicePort) {
             -RedirectStandardError (Join-Path $voice 'logs\service_err.log') | Out-Null
         Say "voice service starting on 127.0.0.1:$voicePort (log: voice_service\logs\service_err.log)"
     } else {
-        Say 'voice service not installed yet (voice_service\.venv missing)'
+        Say 'voice service not installed yet (no shared environment: run install_all.ps1)'
     }
 }
 

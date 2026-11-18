@@ -4112,6 +4112,31 @@
             });
         }
 
+        // Gives an existing entry its video, so the saved song is the video: one card,
+        // one file, instead of a song and a separate clip beside it.
+        async function savedAttachVideo(id, videoBlob) {
+            try {
+                const db = await savedDb();
+                return await new Promise((resolve, reject) => {
+                    const tx = db.transaction(SAVED_STORE, 'readwrite');
+                    const store = tx.objectStore(SAVED_STORE);
+                    const read = store.get(id);
+                    read.onsuccess = () => {
+                        const item = read.result;
+                        if (!item) { resolve(false); return; }
+                        item.videoBlob = videoBlob;
+                        item.videoBytes = videoBlob.size;
+                        store.put(item);
+                    };
+                    tx.oncomplete = () => resolve(true);
+                    tx.onerror = () => reject(tx.error);
+                });
+            } catch (err) {
+                return false;
+            }
+        }
+        window.savedAttachVideo = savedAttachVideo;
+
         // Copied, not linked: the bytes are read now, while the machine that rendered
         // them is still answering, and kept after it stops.
         async function saveSongToLibrary(source, info) {
@@ -4295,13 +4320,19 @@
             canvas.height = 720;
             const draw = canvas.getContext('2d');
 
-            const audio = new Audio();
-            audio.src = song.audio;
+            // The player's own element when there is one. A fresh Audio() started minutes
+            // after the press has lost the user gesture autoplay needs, so play() is
+            // refused and the recording silently fails; the element already playing the
+            // song has that permission and the song's own audio in it.
+            const audio = song.element || new Audio();
+            if (!song.element) audio.src = song.audio;
             audio.preload = 'auto';
-            await new Promise((resolve, reject) => {
-                audio.addEventListener('loadedmetadata', resolve, { once: true });
-                audio.addEventListener('error', () => reject(new Error('the song would not load for recording')), { once: true });
-            });
+            if (!(audio.readyState >= 1)) {
+                await new Promise((resolve, reject) => {
+                    audio.addEventListener('loadedmetadata', resolve, { once: true });
+                    audio.addEventListener('error', () => reject(new Error('the song would not load for recording')), { once: true });
+                });
+            }
             const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : (song.seconds || 30);
 
             let audioStream = null;
@@ -4324,7 +4355,13 @@
             canvas.captureStream(30).getVideoTracks().forEach(track => stream.addTrack(track));
             audioStream.getAudioTracks().forEach(track => stream.addTrack(track));
 
-            const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 2500000 });
+            // 1.2 Mbit/s of vp9 holds the lyrics legibly and keeps a three-minute
+            // song near 30 MB instead of 60; the audio is already compressed by opus.
+            const recorder = new MediaRecorder(stream, {
+                mimeType: mime,
+                videoBitsPerSecond: 1200000,
+                audioBitsPerSecond: 96000
+            });
             const chunks = [];
             recorder.ondataavailable = event => { if (event.data && event.data.size) chunks.push(event.data); };
             const finished = new Promise(resolve => { recorder.onstop = resolve; });
@@ -4455,15 +4492,17 @@
                     chip.textContent = name;
                     chips.appendChild(chip);
                 });
-                // A lyric video is stored beside the songs and shown in the same card,
-                // in the place a video result would put its player.
-                const player = document.createElement(item.kind === 'video' ? 'video' : 'audio');
+                // A song that has a video plays the video: the entry is one webm with
+                // the picture and the song's own audio inside it.
+                const mediaBlob = item.videoBlob || item.blob;
+                const isVideo = !!item.videoBlob || item.kind === 'video';
+                const player = document.createElement(isVideo ? 'video' : 'audio');
                 player.controls = true;
                 player.preload = 'none';
-                if (item.kind === 'video') player.playsInline = true;
+                if (isVideo) player.playsInline = true;
                 // A blob URL per card, made when the list is drawn: the audio itself is
                 // in IndexedDB, so this is the only thing holding it in memory.
-                const objectUrl = URL.createObjectURL(item.blob);
+                const objectUrl = URL.createObjectURL(mediaBlob);
                 player.src = objectUrl;
                 player.addEventListener('play', () => {
                     container.querySelectorAll('.saved-card audio, .saved-card video').forEach(other => {
@@ -4476,7 +4515,7 @@
                 download.textContent = 'Download';
                 download.href = objectUrl;
                 download.download = (item.title || 'song').replace(/[^a-z0-9]+/gi, '-').toLowerCase()
-                    + (item.kind === 'video' ? '.webm' : '.wav');
+                    + (isVideo ? '.webm' : '.wav');
                 const drop = document.createElement('button');
                 drop.className = 'drop';
                 drop.textContent = 'Delete';
@@ -5425,12 +5464,10 @@
                     if (intoPlayer && statusLine) {
                         statusLine.textContent = 'Recording the lyric video: it takes as long as the song.';
                     }
-                    // The recorder plays the song through its own element; leaving the
-                    // player going as well would play it twice, a second apart.
-                    try { audio.pause(); } catch (err) {}
                     try {
                         const blob = await makeLyricVideo({
                             audio: videoSource,
+                            element: audio,
                             title: head.textContent,
                             line2: `${bpm} BPM` + (summary.genres.length ? ' · ' + summary.genres[0].name : ''),
                             genre: summary.genres.length ? summary.genres[0].name : '',
@@ -5438,17 +5475,11 @@
                             bpm: bpm,
                             seconds: seconds
                         });
-                        const kept = await saveSongToLibrary(blob, {
-                            id: songId + '-video',
-                            kind: 'video',
-                            title: 'Lyric video · ' + head.textContent.replace(/^Song · /, ''),
-                            model: 'the page, recording the picture',
-                            query: searchInput ? searchInput.value.trim() : '',
-                            genres: (summary.genres || []).map(genre => genre.name).slice(0, 4),
-                            seconds: seconds || 0,
-                            thumb: sourceThumb
-                        });
-                        videoButton.textContent = kept ? 'Lyric video saved' : 'Could not store the video';
+                        // The song's own entry gains the video, so the saved song is the
+                        // video file itself: picture and its own audio in one webm, and
+                        // no second card sitting beside the song.
+                        const kept = await savedAttachVideo(songId, blob);
+                        videoButton.textContent = kept ? 'Lyric video saved with the song' : 'Could not store the video';
                         if (intoPlayer && blob) {
                             // The player runs the video itself: the words are drawn on the
                             // picture and the song's own audio is inside the file, so

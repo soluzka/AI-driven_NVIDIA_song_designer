@@ -1,0 +1,35 @@
+# Boot without anyone logging in and without a terminal.
+#
+# Installed by deploy/gpu/install_service.sh, which fills in the checkout path and
+# the user that owns it. After that:
+#
+#   sudo systemctl status song-stack     one line: active (running)
+#   sudo journalctl -u song-stack -f     the services' own output
+#
+# The unit starts deploy/gpu/entrypoint.sh, which runs the site (5001), the
+# downloader (8080), the song service (8090) and cloudflared together and stops
+# them together. Variables (TUNNEL_TOKEN, TUNNEL_HOSTNAME, SONG_ENDPOINT_KEY,
+# SITE_URL, QUICK_TUNNEL) are read from /etc/song-stack.env.
+[Unit]
+Description=Video song stack: site, downloader, ACE-Step song service and Cloudflare tunnel
+Documentation=file:///opt/internet/deploy/gpu/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__ROOT__
+EnvironmentFile=-/etc/song-stack.env
+Environment=APP_DIR=__ROOT__
+Environment=SONG_HOST=127.0.0.1
+Environment=SONG_WARM=1
+Environment=PYTHONUNBUFFERED=1
+ExecStart=__ROOT__/deploy/gpu/entrypoint.sh
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

@@ -726,16 +726,22 @@ singer**: see `voice_service/README.md`. Only **8090** is ever published.
 
 ### One script, one environment (the whole application)
 
+**Double-click `install.cmd`.** It installs, starts the services and registers the
+logon entry, so nothing is ever typed and a reboot brings everything back. That is
+the whole setup on a machine with an NVIDIA card.
+
+The same thing from a shell, or with pieces skipped:
+
+```
+.\install_all.ps1 -Check              # what is installed, what is missing; changes nothing
+.\install_all.ps1 -Start -Autostart   # install, start now, come back at logon
+.\install_all.ps1 -NoWeights          # packages only (~10 GB of weights skipped)
+```
+
 `install_all.ps1` fills the single `.venv` at the root with everything the three
 running services need — the site, the downloader and the song service — and then
 downloads the ACE-Step weights. `tools\start_services.ps1` picks that one
-environment up on its own once the script has written its marker:
-
-```
-.\install_all.ps1 -Check      # what is installed, what is missing; changes nothing
-.\install_all.ps1             # packages + ~10 GB of weights
-.\install_all.ps1 -NoWeights  # packages only
-```
+environment up on its own once the script has written its marker.
 
 `voice_service` is not folded in: chatterbox pins `numpy==1.26.4` and
 torch 2.6.0, which pip cannot hold beside the song service's `numpy==2.4.6` and
@@ -930,8 +936,15 @@ that hostname once and the page talks to its own origin for the model:
 npx wrangler deploy --var SONG_API:https://ai.example.com
 ```
 
-The full walkthrough — tunnel commands, GPU reservation, what the image contains —
-is in `deploy\gpu\README.md`.
+On a Linux GPU host it starts at boot with no terminal and nobody logged in:
+
+```
+sudo ./deploy/gpu/install_service.sh
+sudo systemctl status song-stack
+```
+
+The full walkthrough — tunnel commands, GPU reservation, the systemd unit, what the
+image contains — is in `deploy\gpu\README.md`.
 
 ## Troubleshooting
 

@@ -1,0 +1,22 @@
+# What the GPU image must not carry.
+#
+# Without this, COPY . /app pulled every local environment, the 10 GB checkpoint
+# and the logs into the image: slow to build, huge to push, and on Windows it even
+# copied .venv\Scripts, which cannot work inside the container. The image installs
+# its own environment and downloads the weights at first run instead.
+.venv
+**/.venv
+song_service/models
+**/__pycache__
+**/*.pyc
+build
+logs
+**/logs
+*.log
+.git
+.gitignore
+tools/node
+downloader_service/data
+node_modules
+*.egg-info
+__pycache__

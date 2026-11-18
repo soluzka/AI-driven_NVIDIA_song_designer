@@ -30,6 +30,28 @@ The variables it reads: `TUNNEL_TOKEN` (+ `TUNNEL_HOSTNAME`) for a named tunnel,
 `QUICK_TUNNEL=1` for a throwaway address, `SONG_ENDPOINT_KEY` so this machine
 publishes its address to the site, and `SITE_URL` if you deployed your own copy.
 
+## 0b. Start at boot, with no terminal and nobody logged in
+
+After `install.sh` has filled the environment, one command makes the machine serve
+the site from power-on:
+
+```bash
+sudo ./deploy/gpu/install_service.sh
+sudo systemctl status song-stack
+sudo journalctl -u song-stack -f
+```
+
+It writes `/etc/systemd/system/song-stack.service` from the unit beside it, writes
+`/etc/song-stack.env` (root-only, 600) for `TUNNEL_TOKEN`, `TUNNEL_HOSTNAME`,
+`SONG_ENDPOINT_KEY` and `SITE_URL`, enables the unit and starts it. From then on
+the stack comes back after every reboot by itself, and each start publishes the
+machine's address to the Worker — click the site anywhere, no command prompt.
+
+On Windows the equivalent is `install.cmd`, which installs, starts and registers
+the logon entry (HKCU Run key + Startup folder, plus a watchdog that restarts
+whichever service has gone away). Task Scheduler is not used: registering a task
+returns Access denied for a non-administrator on that machine.
+
 ## 1. Or in a container
 
 ```bash

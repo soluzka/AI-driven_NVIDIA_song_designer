@@ -26,6 +26,10 @@
 .PARAMETER Start
     Start the services and the tunnel when the install finishes.
 
+.PARAMETER Autostart
+    Register the logon entry (tools\install_autostart.ps1), so the services come
+    back after a reboot with nobody touching a terminal.
+
 .EXAMPLE
     .\install_all.ps1 -Check
     .\install_all.ps1
@@ -35,7 +39,8 @@
 param(
     [switch]$Check,
     [switch]$NoWeights,
-    [switch]$Start
+    [switch]$Start,
+    [switch]$Autostart
 )
 
 # 'Continue', not 'Stop': pip, uv and the weight downloader all write progress to
@@ -200,9 +205,16 @@ Say ''
 Say "wrote $marker"
 Say ''
 Say 'Next:'
-Say '  .\install_all.ps1 -Start       installs, then starts the services and the tunnel'
+Say '  install.cmd                    double-click: install, start, and keep it running'
+Say '  .\install_all.ps1 -Start -Autostart   the same thing from a shell'
 Say '  .\tools\start_services.ps1     starts all three from this environment'
 Say '  .\install_all.ps1 -Check       re-reports at any time'
+
+if ($Autostart) {
+    Say ''
+    Say 'registering the logon entry: the services return by themselves after a reboot'
+    & (Join-Path $root 'tools\install_autostart.ps1')
+}
 
 if ($Start) {
     Say ''

@@ -4381,6 +4381,31 @@
                 return;
             }
             lastGoodAt = Date.now();
+            // The pool is joined from here, not from the launcher. When the model that
+            // answered is this computer's own, the page asks the service beside it to
+            // publish the tunnel: the join key stays on the machine and never reaches
+            // the browser, and a machine that nobody opens the page on never joins.
+            if (answeredHere && !window._poolJoinTried) {
+                window._poolJoinTried = true;
+                const joinBase = answeredBy || location.origin;
+                fetchBounded(joinBase + '/api/pool/join', {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: '{}',
+                }, 25000)
+                    .then(r => r.json())
+                    .then(result => {
+                        const poolNow = document.getElementById('poolChip');
+                        if (poolNow) {
+                            poolNow.title = result && result.ok
+                                ? 'This page has just put ' + result.url + ' in the pool for the other machines.'
+                                : 'This page could not add this machine to the pool: '
+                                    + ((result && result.error) || 'no answer');
+                        }
+                        if (typeof refreshPoolBadge === 'function') refreshPoolBadge();
+                    })
+                    .catch(() => {});
+            }
             const onCuda = String(info.device || '').toLowerCase() === 'cuda';
             // Answering is not the same as being ready. Right after a restart the
             // service replies within seconds while ACE-Step is still being loaded

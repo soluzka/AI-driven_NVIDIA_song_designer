@@ -416,14 +416,14 @@ if ($NoTunnel) {
         try { Set-Clipboard -Value $tunnelUrl } catch { }
         Say "tunnel: $tunnelUrl"
 
-        $noPoolFile = Join-Path $root 'build\no_pool.txt'
+        # The pool is joined from the website now, not from here (POST
+        # /api/pool/join on the song service, which the page calls). Starting this
+        # script must never put a machine in the pool by itself, so publishing is
+        # opt-in with build\pool_on.txt rather than opt-out.
+        $poolOnFile = Join-Path $root 'build\pool_on.txt'
         $keyFile = Join-Path $root 'build\song_endpoint.key'
-        if (Test-Path $noPoolFile) {
-            # A marker this install can set so it is not added to the pool on every
-            # start. The pool is what the site renders on when no address has been
-            # pasted, so a machine that joins itself is a machine nobody chose - and
-            # it made the site say "AI ready" to someone who had connected nothing.
-            Say 'tunnel: not published (build\no_pool.txt is set); paste the address above with Connect my model'
+        if (-not (Test-Path $poolOnFile)) {
+            Say 'tunnel: not published here; the page adds this machine to the pool when it loads'
         } elseif (Test-Path $keyFile) {
             $key = (Get-Content $keyFile -Raw).Trim()
             if ($key) {

@@ -1166,6 +1166,68 @@ def health():
     })
 
 
+def _pool_join_key():
+    """The key that lets a machine into the pool, kept on this machine only."""
+    from_env = (os.environ.get('SONG_JOIN_KEY') or '').strip()
+    if from_env:
+        return from_env
+    try:
+        with open(os.path.join(ROOT, 'build', 'song_endpoint.key'), encoding='utf-8',
+                  errors='replace') as handle:
+            return handle.read().strip()
+    except OSError:
+        return ''
+
+
+def _pool_public_url():
+    """This machine's tunnel address, written when the tunnel connected."""
+    for name in ('SONG_PUBLIC_URL', 'PUBLIC_URL'):
+        value = (os.environ.get(name) or '').strip()
+        if value:
+            return value.rstrip('/')
+    try:
+        with open(os.path.join(ROOT, 'build', 'tunnel_url.txt'), encoding='utf-8',
+                  errors='replace') as handle:
+            return handle.read().strip().rstrip('/')
+    except OSError:
+        return ''
+
+
+@app.route('/api/pool/join', methods=['POST', 'OPTIONS'])
+def api_pool_join():
+    """Put this machine in the site's pool because the page asked, not the launcher.
+
+    The launcher used to publish on every start, so a machine turned up in the pool
+    without anyone choosing it, and the site answered "AI ready" to somebody who had
+    connected nothing. Now the website does the connecting: the page asks this
+    service to publish, the key never leaves the machine, and a machine whose page
+    is never opened stays out of the pool.
+    """
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    key = _pool_join_key()
+    if not key:
+        return jsonify({'ok': False, 'error': 'no join key on this machine (build/song_endpoint.key)'}), 400
+    url = _pool_public_url()
+    if not url:
+        return jsonify({'ok': False, 'error': 'no tunnel address yet (build/tunnel_url.txt)'}), 400
+
+    answers = {}
+    body = json.dumps({'url': url}).encode('utf-8')
+    for name, target, header in (
+        ('site', 'https://browser.bpiersing.workers.dev/api/song/endpoint', 'x-song-key'),
+        ('pool', 'https://song-pool.bpiersing.workers.dev/join', 'x-join-key'),
+    ):
+        try:
+            ask = urllib.request.Request(target, data=body, headers={
+                'Content-Type': 'application/json', header: key})
+            with urllib.request.urlopen(ask, timeout=20) as answer:
+                answers[name] = answer.read().decode('utf-8', 'replace')[:300]
+        except Exception as exc:  # noqa: BLE001
+            answers[name] = 'error: %s' % exc
+    return jsonify({'ok': True, 'url': url, **answers})
+
+
 @app.route('/api/song', methods=['POST', 'OPTIONS'])
 def api_song():
     if request.method == 'OPTIONS':

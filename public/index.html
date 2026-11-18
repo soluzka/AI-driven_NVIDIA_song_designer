@@ -927,7 +927,7 @@
              when this browser has not pasted one. Kept separate from the button so
              neither one has to stand in for the other. -->
         <span class="model-base" id="modelBase" data-state="none" title="The base model address">
-            <span class="model-base-label">Base model</span>
+            <span class="model-base-label">Model endpoint</span>
             <span id="modelBaseText">checking…</span>
         </span>
         <div class="conn-chip" id="connChip" data-state="connecting"
@@ -4028,24 +4028,26 @@
         // one. It is the Worker's published address first and a pool machine second,
         // because those are exactly what a song request falls back to. Shown as its
         // own readout so the control and the address are not the same thing.
-        let baseModelCache = { at: 0, address: '' };
+        let baseModelCache = { at: 0, address: '', tunnel: '' };
+        // The model's own endpoint, not the tunnel in front of it. A tunnel is a
+        // proxy that changes name; the endpoint is where the model actually listens,
+        // which is what config.js names for the page and what a song request reaches
+        // first. The published tunnel is kept beside it for the tooltip.
         async function siteBaseModel(force) {
             if (!force && baseModelCache.address && Date.now() - baseModelCache.at < 30000) {
-                return baseModelCache.address;
+                return baseModelCache;
             }
-            // Only the published tunnel. This is the "normal" address the site hands
-            // out, and nothing else belongs in this readout: not a pool member, not
-            // an address pasted into Connect my model, not window.SONG_API.
-            let address = '';
+            const address = String(window.SONG_API || 'http://127.0.0.1:8090').trim().replace(/\/+$/, '');
+            let tunnel = '';
             try {
                 const answer = await fetchBounded('/api/song/endpoint', { cache: 'no-store' }, 8000);
                 if (answer.ok) {
                     const info = await answer.json();
-                    address = String(info.url || '').trim().replace(/\/+$/, '');
+                    tunnel = String(info.url || '').trim().replace(/\/+$/, '');
                 }
             } catch (err) { }
-            baseModelCache = { at: Date.now(), address };
-            return address;
+            baseModelCache = { at: Date.now(), address, tunnel };
+            return baseModelCache;
         }
         async function refreshBaseModel() {
             const chip = document.getElementById('modelBase');
@@ -4056,19 +4058,22 @@
             // address the site itself publishes, which is what a visitor with nothing
             // pasted actually uses. Showing the pasted one here made the two controls
             // say the same thing and hid the default.
-            const base = await siteBaseModel();
+            const info = await siteBaseModel();
+            const base = info && info.address;
             if (!base) {
                 chip.dataset.state = 'none';
-                text.textContent = 'none yet';
-                chip.title = 'No machine has published an address yet, so with nothing pasted the site has nowhere to render.';
+                text.textContent = 'none';
+                chip.title = 'No model endpoint is configured for this page.';
                 return;
             }
             chip.dataset.state = 'ready';
             // The whole address, ellipsised by CSS: "the model location" is the
             // request, and a host alone loses the scheme someone needs to paste.
             text.textContent = base;
-            chip.title = 'The tunnel this site publishes: ' + base
-                + '. Everyone who has not pasted an address of their own renders there.';
+            chip.title = 'The model endpoint this page calls first: ' + base
+                + (info.tunnel && info.tunnel !== base
+                    ? '. The site also publishes the tunnel ' + info.tunnel + ' in front of it.'
+                    : '.');
         }
         refreshBaseModel();
         setInterval(refreshBaseModel, 60000);

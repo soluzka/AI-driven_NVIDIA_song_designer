@@ -142,34 +142,76 @@ else:
 
 # --- the tunnel -------------------------------------------------------------
 say()
-say('downloading cloudflared (40 MB, silent while it downloads) ...')
-binary = os.path.join(WORK, 'cloudflared')
-if not os.path.isfile(binary):
-    urllib.request.urlretrieve(
-        'https://github.com/cloudflare/cloudflared/releases/download/2026.10.7/cloudflared-linux-amd64',
-        binary)
-    os.chmod(binary, 0o755)
-say('starting the tunnel ...')
-TUNNEL_LOG = os.path.join(WORK, 'tunnel.log')
-subprocess.Popen([binary, 'tunnel', '--no-autoupdate', '--url',
-                  'http://127.0.0.1:%d' % PORT, '--logfile', TUNNEL_LOG],
-                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-url = ''
-for attempt in range(30):
+
+
+def tunnel_answers(address, timeout=8):
+    """True when the model service behind that address replies to /health."""
     try:
-        found = re.findall(r'https://[a-z0-9-]+[.]trycloudflare[.]com',
-                           open(TUNNEL_LOG).read())
-        if found:
-            url = found[-1]
-            break
+        with urllib.request.urlopen(address.rstrip('/') + '/health', timeout=timeout) as reply:
+            return reply.status == 200
+    except Exception:
+        return False
+
+
+def logged_url(log_path):
+    """The last address written to the tunnel log, answering or not."""
+    try:
+        found = re.findall(r'https://[a-z0-9-]+[.]trycloudflare[.]com', open(log_path).read())
     except FileNotFoundError:
+        return ''
+    return found[-1] if found else ''
+
+
+binary = os.path.join(WORK, 'cloudflared')
+TUNNEL_LOG = os.path.join(WORK, 'tunnel.log')
+# WORK survives between runs inside one session, so the log can still hold an
+# address whose tunnel died with the run before it. A saved name is reused only
+# while it answers, and a new tunnel starts from an empty log: printing a dead
+# address is what makes the site show a red dot.
+url = ''
+saved = logged_url(TUNNEL_LOG)
+if saved and tunnel_answers(saved):
+    url = saved
+    say('the tunnel already running in this session answers, so there is nothing to wait for')
+else:
+    if saved:
+        say(saved, 'is the last address in the log, and it does not answer any more.')
+        say('starting a new tunnel: a trycloudflare name stops when its process stops')
+    say('downloading cloudflared (40 MB, silent while it downloads) ...')
+    if not os.path.isfile(binary):
+        urllib.request.urlretrieve(
+            'https://github.com/cloudflare/cloudflared/releases/download/2026.10.7/cloudflared-linux-amd64',
+            binary)
+        os.chmod(binary, 0o755)
+    say('starting the tunnel ...')
+    try:
+        open(TUNNEL_LOG, 'w').close()
+    except OSError:
         pass
-    if attempt and attempt % 5 == 0:
-        say('  still waiting for a name ...', str(attempt * 2) + 's')
-    time.sleep(2)
+    subprocess.Popen([binary, 'tunnel', '--no-autoupdate', '--url',
+                      'http://127.0.0.1:%d' % PORT, '--logfile', TUNNEL_LOG],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for attempt in range(30):
+        url = logged_url(TUNNEL_LOG)
+        if url:
+            break
+        if attempt and attempt % 5 == 0:
+            say('  still waiting for a name ...', str(attempt * 2) + 's')
+        time.sleep(2)
+    if url:
+        # A brand new name takes a few seconds to route, so it is probed before
+        # being handed over.
+        for attempt in range(12):
+            if tunnel_answers(url):
+                break
+            time.sleep(5)
 
 say()
 say('=' * 70)
+if url and not tunnel_answers(url):
+    say('the tunnel got', url, 'but /health does not answer through it,')
+    say('so it is not offered: the site would only show a red dot.')
+    raise SystemExit('tunnel address does not answer')
 if not url:
     say('cloudflared did not produce a name. End of ' + TUNNEL_LOG + ':')
     try:

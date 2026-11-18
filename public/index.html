@@ -5346,11 +5346,17 @@
                 let videoSource = url;
                 const videoButton = document.createElement('button');
                 videoButton.textContent = 'Make a lyric video';
-                videoButton.onclick = async (clickEvent) => {
-                    clickEvent.stopPropagation();
-                    if (videoButton.disabled) return;
+                // One recorder, used twice: by the button, and by itself once the model
+                // song lands, so the player can run a video instead of a bare audio bar.
+                const recordLyricVideo = async (options) => {
+                    const intoPlayer = !!(options && options.replacePlayer);
+                    if (videoButton.disabled) return null;
                     videoButton.disabled = true;
                     videoButton.textContent = 'Recording the picture...';
+                    const statusLine = document.getElementById('songStatus');
+                    if (intoPlayer && statusLine) {
+                        statusLine.textContent = 'Recording the lyric video: it takes as long as the song.';
+                    }
                     try {
                         const blob = await makeLyricVideo({
                             audio: videoSource,
@@ -5372,11 +5378,33 @@
                             thumb: sourceThumb
                         });
                         videoButton.textContent = kept ? 'Lyric video saved' : 'Could not store the video';
+                        if (intoPlayer && blob) {
+                            // The player runs the video itself: the words are drawn on the
+                            // picture and the song's own audio is inside the file, so
+                            // picture and voice cannot drift apart.
+                            const played = URL.createObjectURL(blob);
+                            const piece = document.createElement('video');
+                            piece.controls = true;
+                            piece.autoplay = true;
+                            piece.loop = true;
+                            piece.playsInline = true;
+                            piece.className = 'gen-video';
+                            piece.src = played;
+                            stage.innerHTML = '';
+                            stage.appendChild(piece);
+                        }
+                        return blob;
                     } catch (err) {
                         videoButton.textContent = 'Make a lyric video';
-                        videoButton.disabled = false;
                         if (window.showToast) showToast('error', 'Lyric video', err && err.message ? err.message : 'the recording failed');
+                        return null;
+                    } finally {
+                        videoButton.disabled = false;
                     }
+                };
+                videoButton.onclick = (clickEvent) => {
+                    clickEvent.stopPropagation();
+                    recordLyricVideo();
                 };
                 const saveAudio = document.createElement('a');
                 saveAudio.className = 'gen-open';
@@ -5544,6 +5572,10 @@
                         seconds: seconds || 0,
                         thumb: sourceThumb
                     });
+                    // And then the same song with its words on the picture: recorded once,
+                    // stored as its own card, and put where the audio bar was so the
+                    // player plays the video.
+                    recordLyricVideo({ replacePlayer: true });
                 });
             } catch (err) {
                 panel.innerHTML = '';

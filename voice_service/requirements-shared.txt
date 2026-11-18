@@ -1,0 +1,29 @@
+# What the voice service needs, installed into the ONE environment install_all.ps1
+# builds, so a single double-click leaves the whole application (site, downloader,
+# song, voice) ready and nobody installs anything first.
+#
+# install_all.ps1 runs this file with --no-deps, on purpose. chatterbox-tts
+# declares torch==2.6.0, torchaudio==2.6.0, numpy<2, transformers==5.2.0 and
+# diffusers==0.29.0; honouring those pins would replace the CUDA torch the song
+# service needs with the CPU wheel and drag transformers backwards, and the whole
+# install would be worse off. The declared pins are only metadata:
+#
+#   from chatterbox.tts import ChatterboxTTS
+#
+# imports clean on torch 2.14.1+cu126 and numpy 2.4.6, so the code is installed
+# and the pins are left alone. Everything chatterbox imports at load time is
+# listed below, because --no-deps installs nothing on its own behalf.
+
+chatterbox-tts==0.1.7
+# its own small dependencies, which --no-deps would otherwise skip
+resemble-perth
+conformer
+s3tokenizer
+pykakasi
+spacy-pkuseg
+pyloudnorm
+omegaconf
+# s3tokenizer imports onnx, and onnx imports ml_dtypes
+onnx
+onnxruntime
+ml_dtypes

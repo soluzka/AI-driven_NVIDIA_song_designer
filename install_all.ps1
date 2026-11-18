@@ -12,10 +12,11 @@
 
     and then downloads the ~10 GB of ACE-Step weights into song_service\models.
 
-    voice_service is deliberately NOT folded in. chatterbox-tts pins numpy 1.26.4
-    and torch 2.6.0, and the song service needs numpy 2.4.6 and torch 2.14.1+cu126;
-    pip cannot hold both in one environment, and nothing in the singing path calls
-    voice_service any more. It keeps its own venv and its own install.py.
+    voice_service shares that environment too. chatterbox-tts declares
+    torch 2.6.0 + numpy 1.26.4 while the song service needs torch 2.14.1+cu126 and
+    numpy 2.4.6, and pip cannot satisfy both from the metadata; the code itself
+    imports and loads on these versions, so its packages are added with --no-deps
+    (voice_service\requirements-shared.txt). No second venv is created.
 
 .PARAMETER Check
     Report what this environment has and what is missing. Installs nothing.
@@ -247,7 +248,8 @@ if ($Check) {
         @{ name = 'scipy';                   value = (Probe 'scipy' 'scipy.__version__') },
         @{ name = 'demucs';                  value = (Probe 'demucs' "'ok'") },
         @{ name = 'soundfile';               value = (Probe 'soundfile' 'soundfile.__version__') },
-        @{ name = 'numpy';                   value = (Probe 'numpy' 'numpy.__version__') }
+        @{ name = 'numpy';                   value = (Probe 'numpy' 'numpy.__version__') },
+        @{ name = 'chatterbox (voice)';      value = (Probe 'chatterbox.tts' "'ok'") }
     )
     foreach ($row in $rows) {
         $value = if ($row.value) { $row.value } else { 'MISSING' }
@@ -259,7 +261,7 @@ if ($Check) {
     Say ("  {0,-24} {1}" -f 'ACE-Step weights', $(if (Test-Path $weights) { 'present' } else { 'MISSING' }))
     Say ("  {0,-24} {1}" -f 'shared marker', $(if (Test-Path $marker) { 'present (launcher will use this env)' } else { 'absent' }))
     Say ''
-    Say 'Not installed here on purpose: voice_service (numpy 1.x + torch 2.6 conflict).'
+    Say 'The voice service shares this environment (chatterbox, no second venv).'
     Say 'Nothing to change - rerun without -Check to install.'
     return
 }
@@ -307,6 +309,15 @@ Pip @('-r', 'song_service\requirements.txt', '--extra-index-url', $torchIndex)
 # fresh install stopped here. Its runtime dependencies are named in the file
 # above, so the model's code is installed without its dependency list.
 Pip @('--no-deps', 'git+https://github.com/ace-step/ACE-Step.git')
+
+Say ''
+Say 'the voice service (8095): chatterbox, in this same environment'
+# --no-deps is deliberate: chatterbox pins torch 2.6 + numpy 1.x, and letting pip
+# honour that would swap the CUDA torch above for the CPU wheel and drag
+# transformers backwards. Its code imports and loads on the versions installed
+# here, so only the code and the packages it imports are added. See
+# voice_service\requirements-shared.txt.
+Pip @('-r', 'voice_service\requirements-shared.txt', '--no-deps')
 
 # --- 4. the weights ----------------------------------------------------------
 if ($NoWeights) {

@@ -1,4 +1,5 @@
-# One cell for Colab. Paste this whole file into a new notebook cell and run it.
+# One cell for Colab, Kaggle, or any Linux GPU box. Paste this whole file into a
+# new notebook cell and run it (Kaggle: a new notebook, then paste and run).
 #
 # It does what the .ipynb does, without a notebook file to load, so nothing can be
 # lost between GitHub, the notebook importer and the runtime: every line is a
@@ -17,7 +18,11 @@ import sys
 import time
 import urllib.request
 
-REPO = '/content/internet'
+# Colab keeps its session disk at /content, Kaggle uses /kaggle/working, and a
+# plain Linux GPU box uses whatever directory this was started in. Everything is
+# written under WORK, so the same file works on all three without editing paths.
+WORK = '/content' if os.path.isdir('/content') and os.access('/content', os.W_OK) else os.getcwd()
+REPO = os.path.join(WORK, 'internet')
 SERVICE = os.path.join(REPO, 'song_service')
 PORT = 8090
 
@@ -80,7 +85,7 @@ say('packages in place')
 # --- the weights ------------------------------------------------------------
 say()
 say('5/5 the weights: about 10 GB, once per session (bars below are the progress)')
-os.environ['HF_HOME'] = '/content/hf'
+os.environ['HF_HOME'] = os.path.join(WORK, 'hf')
 os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '1'
 run([sys.executable, 'song_service/install.py', '--weights'], cwd=REPO)
 
@@ -88,7 +93,8 @@ run([sys.executable, 'song_service/install.py', '--weights'], cwd=REPO)
 say()
 say('starting the service ...')
 os.environ.update(SONG_PORT=str(PORT), SONG_HOST='0.0.0.0', SONG_WARM='1')
-log = open('/content/song.log', 'w')
+SONG_LOG = os.path.join(WORK, 'song.log')
+log = open(SONG_LOG, 'w')
 proc = subprocess.Popen([sys.executable, 'app.py', '--role', 'song'], cwd=SERVICE,
                         stdout=log, stderr=subprocess.STDOUT)
 health = ''
@@ -104,28 +110,29 @@ for attempt in range(36):
 if health:
     say('service:', health[:300])
 else:
-    say('the service did not answer within 3 minutes. End of /content/song.log:')
-    say(open('/content/song.log').read()[-2000:])
+    say('the service did not answer within 3 minutes. End of ' + SONG_LOG + ':')
+    say(open(SONG_LOG).read()[-2000:])
     raise SystemExit('stopped before the tunnel: the service is not running')
 
 # --- the tunnel -------------------------------------------------------------
 say()
 say('downloading cloudflared (40 MB, silent while it downloads) ...')
-binary = '/usr/local/bin/cloudflared'
+binary = os.path.join(WORK, 'cloudflared')
 if not os.path.isfile(binary):
     urllib.request.urlretrieve(
         'https://github.com/cloudflare/cloudflared/releases/download/2026.10.7/cloudflared-linux-amd64',
         binary)
     os.chmod(binary, 0o755)
 say('starting the tunnel ...')
+TUNNEL_LOG = os.path.join(WORK, 'tunnel.log')
 subprocess.Popen([binary, 'tunnel', '--no-autoupdate', '--url',
-                  'http://127.0.0.1:%d' % PORT, '--logfile', '/content/tunnel.log'],
+                  'http://127.0.0.1:%d' % PORT, '--logfile', TUNNEL_LOG],
                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 url = ''
 for attempt in range(30):
     try:
         found = re.findall(r'https://[a-z0-9-]+[.]trycloudflare[.]com',
-                           open('/content/tunnel.log').read())
+                           open(TUNNEL_LOG).read())
         if found:
             url = found[-1]
             break
@@ -138,9 +145,9 @@ for attempt in range(30):
 say()
 say('=' * 70)
 if not url:
-    say('cloudflared did not produce a name. End of /content/tunnel.log:')
+    say('cloudflared did not produce a name. End of ' + TUNNEL_LOG + ':')
     try:
-        say(open('/content/tunnel.log').read()[-1500:])
+        say(open(TUNNEL_LOG).read()[-1500:])
     except Exception as exc:
         say('no log at all:', exc)
     raise SystemExit('no tunnel address')

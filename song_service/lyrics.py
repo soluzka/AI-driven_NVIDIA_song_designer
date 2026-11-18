@@ -366,6 +366,9 @@ def _clean_line(raw):
     line = line.replace('*', '').replace('_', ' ')
     line = re.sub(r'\s+', ' ', line).strip()
     line = line.strip('"\u2018\u2019\u201c\u201d`\' ')
+    # A line that ends on a comma is a line the model left unfinished; it reads as
+    # a typo once it is on screen, so the hanging punctuation goes.
+    line = re.sub(r'[,\u2013\u2014;\-\u2026]+$', '', line).strip()
     if not line or line.endswith(':'):
         return ''
     # A bare tag written without brackets is a label, not a line.

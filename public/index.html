@@ -962,6 +962,12 @@
             <span class="conn-dot"></span>
             <span id="poolText">Pool…</span>
         </div>
+        <!-- Only shown when the pool is empty: Kaggle is the one free service whose
+             API can boot a GPU without a person, so this asks the site to start one. -->
+        <button class="library-song-btn install-btn" id="startGpuBtn" onclick="startPoolGpu()" hidden
+                title="Starts a free Kaggle GPU that joins the pool by itself">
+            Start a GPU
+        </button>
     </div>
 
     <!-- Search Section -->
@@ -3990,6 +3996,9 @@
                 // pressed for a machine to appear here; the page asks the pool every
                 // minute and uses whatever answers.
                 text.textContent = (count === 1 ? 'Pool · 1 GPU' : 'Pool · ' + count + ' GPUs') + ' · auto';
+                // An empty pool gets the one control that can fill it on its own.
+                const startBtn = document.getElementById('startGpuBtn');
+                if (startBtn) startBtn.hidden = count > 0;
                 if (chip) {
                     // 'live' is the state the stylesheet draws green; 'online' had no
                     // rule, so a pool with machines in it still looked switched off.
@@ -4577,6 +4586,42 @@
             } catch (err) {
                 return false;
             }
+        }
+
+        // Start a GPU from the site. Kaggle's API can boot a free GPU on its own -
+        // Colab's cannot, it needs a person to press Run all - so this asks the
+        // Worker to push and start the same boot the Colab notebook runs: clone the
+        // repo, run the song service, open a tunnel, join this pool.
+        async function startPoolGpu() {
+            const button = document.getElementById('startGpuBtn');
+            if (!button || button.disabled) return;
+            const was = button.textContent;
+            button.disabled = true;
+            button.textContent = 'Asking Kaggle…';
+            try {
+                const answer = await fetchBounded('/api/gpu/start', { method: 'POST' }, 40000);
+                const said = await answer.json().catch(() => ({}));
+                if (answer.ok && said.started) {
+                    button.textContent = 'GPU starting…';
+                    showToast('success', 'A GPU is starting',
+                        'Kaggle is booting a free GPU. It joins the pool by itself once its model is '
+                        + 'loaded, which takes a few minutes on a fresh machine; this page picks it up '
+                        + 'on the next check.');
+                    setTimeout(() => { button.textContent = was; button.disabled = false; }, 20000);
+                } else {
+                    button.textContent = was;
+                    button.disabled = false;
+                    const wait = said.retryInSeconds ? Math.ceil(said.retryInSeconds / 60) + ' minutes' : '';
+                    showToast(answer.status === 429 ? 'info' : 'error', 'No GPU was started',
+                        (said.error || ('the site answered ' + answer.status))
+                        + (wait ? ' Try again in about ' + wait + '.' : ''));
+                }
+            } catch (err) {
+                button.textContent = was;
+                button.disabled = false;
+                showToast('error', 'No GPU was started', (err && err.message) || 'the request failed');
+            }
+            if (typeof refreshPoolBadge === 'function') refreshPoolBadge();
         }
 
         async function wakeLocalAI() {

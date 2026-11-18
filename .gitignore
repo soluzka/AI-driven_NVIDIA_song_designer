@@ -28,6 +28,9 @@ build/tunnel_url.txt
 # The key the launcher uses to publish the tunnel address to the Worker. A
 # secret in a commit is a secret to everyone.
 build/song_endpoint.key
+# The Kaggle token that lets the site start a free GPU. It is a credential: it
+# belongs in the Worker's secret store, never in the repository.
+build/kaggle.json
 build/*.wav
 build/*.mp3
 build/*.json

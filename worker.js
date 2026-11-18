@@ -143,6 +143,10 @@ export default {
       return song(request, env, url);
     }
 
+    if (url.pathname === '/api/gpu/start' || url.pathname === '/api/gpu/status') {
+      return startGpu(request, env, url);
+    }
+
     const asset = await env.ASSETS.fetch(request);
     // The page is what reports whether the model is green, so a stored copy of it
     // keeps reporting the previous behaviour - which is how a page that had just
@@ -162,6 +166,138 @@ export default {
     return asset;
   },
 };
+
+// --- starting a GPU on its own ---------------------------------------------
+// Kaggle's API can start a notebook run on a free GPU; Colab's cannot be started
+// by anything except a person opening it. The kernel pushed here runs this
+// project's own boot - clone the repo, run the song service, open a tunnel, join
+// the pool - so what appears in the pool is this machine's model, not a stranger's.
+const GPU_SLUG = 'song-gpu-pool';
+const GPU_COOLDOWN_MS = 30 * 60 * 1000;
+
+function kaggleAuth(env) {
+  const user = String(env.KAGGLE_USERNAME || '').trim();
+  const key = String(env.KAGGLE_KEY || '').trim();
+  if (!user || !key) return null;
+  return { user, key, header: 'Basic ' + btoa(user + ':' + key) };
+}
+
+// The kernel is a plain script: a few lines that clone the repo and run the same
+// cell the Colab notebook runs, with the join key written in so the card adds
+// itself to the pool without anybody pasting an address.
+function gpuKernelScript(joinKey) {
+  return [
+    'import os, re, subprocess, sys',
+    '',
+    'JOIN_KEY = ' + JSON.stringify(joinKey || ''),
+    "REPO = 'https://github.com/soluzka/AI-driven_NVIDIA_song_designer.git'",
+    '',
+    'def sh(cmd, **kw):',
+    "    print('+', cmd, flush=True)",
+    '    subprocess.check_call(cmd, **kw)',
+    '',
+    "if not os.path.isdir('repo'):",
+    "    sh(['git', 'clone', '--depth', '1', REPO, 'repo'])",
+    "os.chdir('repo')",
+    "cell = os.path.join('public', 'song_gpu_cell.py')",
+    "source = open(cell, encoding='utf-8').read()",
+    "source = re.sub(r'^JOIN_KEY\\s*=\\s*.*$', 'JOIN_KEY = ' + repr(JOIN_KEY), source, count=1, flags=re.M)",
+    "boot = '/kaggle/working/boot.py' if os.path.isdir('/kaggle/working') else 'boot.py'",
+    "open(boot, 'w', encoding='utf-8').write(source)",
+    'print(\'boot: \' + boot + \' (join key \' + (\'set\' if JOIN_KEY else \'empty\') + \')\', flush=True)',
+    "sh([sys.executable, boot])",
+    '',
+  ].join('\n');
+}
+
+async function kaggleStatus(env, auth) {
+  try {
+    const answer = await fetch('https://www.kaggle.com/api/v1/kernels/status/'
+      + encodeURIComponent(auth.user) + '/' + GPU_SLUG, { headers: { authorization: auth.header } });
+    if (!answer.ok) return null;
+    const body = await answer.json();
+    return typeof body === 'string' ? body : (body.status || null);
+  } catch (err) {
+    return null;
+  }
+}
+
+async function startGpu(request, env, url) {
+  const auth = kaggleAuth(env);
+  const state = async () => ({
+    lastStart: Number(await env.STATS.get('gpu:started_at') || 0),
+    status: auth ? await kaggleStatus(env, auth) : null,
+    configured: Boolean(auth),
+  });
+
+  if (request.method === 'OPTIONS') return new Response('', { status: 204 });
+  if (url.pathname === '/api/gpu/status') return json(await state());
+  if (request.method !== 'POST') return json({ error: 'POST only' }, 405);
+
+  if (!auth) {
+    return json({
+      configured: false,
+      error: 'No Kaggle account is set on this deployment yet, so this site cannot start a GPU. '
+        + 'Run tools\\set_kaggle.ps1 with your Kaggle API token, then deploy again.',
+    }, 501);
+  }
+
+  const last = Number(await env.STATS.get('gpu:started_at') || 0);
+  const waited = Date.now() - last;
+  if (last && waited < GPU_COOLDOWN_MS) {
+    return json({
+      configured: true,
+      started: false,
+      retryInSeconds: Math.ceil((GPU_COOLDOWN_MS - waited) / 1000),
+      error: 'A GPU was started ' + Math.round(waited / 60000) + ' minutes ago. Kaggle gives a limited '
+        + 'number of GPU hours a week, so this waits ' + Math.round(GPU_COOLDOWN_MS / 60000)
+        + ' minutes between starts.',
+    }, 429);
+  }
+
+  const body = {
+    slug: auth.user + '/' + GPU_SLUG,
+    newTitle: 'song gpu pool',
+    text: gpuKernelScript(String(env.SONG_JOIN_KEY || '').trim()),
+    language: 'python',
+    kernelType: 'script',
+    isPrivate: true,
+    enableGpu: true,
+    machineShape: 'NvidiaTeslaT4',
+    enableInternet: true,
+    datasetDataSources: [],
+    competitionDataSources: [],
+    kernelDataSources: [],
+    categoryIds: [],
+  };
+
+  let pushed = null;
+  let said = '';
+  try {
+    const answer = await fetch('https://www.kaggle.com/api/v1/kernels/push', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: auth.header },
+      body: JSON.stringify(body),
+    });
+    said = (await answer.text()).slice(0, 400);
+    pushed = answer.ok;
+    if (!answer.ok) {
+      return json({ configured: true, started: false, error: 'Kaggle refused the run: ' + said }, 502);
+    }
+  } catch (err) {
+    return json({ configured: true, started: false, error: 'Could not reach Kaggle: ' + (err && err.message) }, 502);
+  }
+
+  await env.STATS.put('gpu:started_at', String(Date.now()));
+  return json({
+    configured: true,
+    started: Boolean(pushed),
+    url: 'https://www.kaggle.com/code/' + auth.user + '/' + GPU_SLUG,
+    note: 'The GPU boots, runs the song service, opens a tunnel and joins the pool. It shows up here '
+      + 'when it reports the model loaded, which takes a few minutes on a fresh machine.',
+    said,
+  });
+}
 
 // --- the GPU pool ------------------------------------------------------------
 // Every machine that installs the agent publishes its own tunnel address here.

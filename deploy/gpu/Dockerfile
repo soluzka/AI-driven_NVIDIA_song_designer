@@ -37,7 +37,7 @@ COPY . /app
 # build afterwards.
 RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install --upgrade pip wheel "setuptools<81" \
- && /opt/venv/bin/pip install torch==2.14.1+cu126 torchaudio==2.14.1+cu126 \
+ && /opt/venv/bin/pip install torch==2.14.1+cu126 torchaudio==2.11.0+cu126 \
         --index-url https://download.pytorch.org/whl/cu126 \
  && /opt/venv/bin/pip install -r requirements.txt -r downloader_service/requirements.txt \
  && /opt/venv/bin/pip install -r song_service/requirements.txt \

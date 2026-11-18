@@ -275,7 +275,7 @@ Pip @('--upgrade', 'pip', 'wheel', 'setuptools<81')
 # song in hours, so the CUDA wheel comes first and from the CUDA index.
 Say ''
 Say 'torch for the card (CUDA 12.6 wheels)'
-Pip @('torch==2.14.1+cu126', 'torchaudio==2.14.1+cu126', '--index-url', $torchIndex)
+Pip @('torch==2.14.1+cu126', 'torchaudio==2.11.0+cu126', '--index-url', $torchIndex)
 $cudaNow = Probe 'torch' 'torch.cuda.is_available()'
 if ($cudaNow -eq 'False') {
     Say '  torch is installed but sees no card. The AI will run on the processor:'

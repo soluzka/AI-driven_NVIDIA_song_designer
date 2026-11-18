@@ -990,27 +990,28 @@ the site uses it. On a machine with a cloud-init field, paste
 `deploy/gpu/cloud-init.yaml` with the three values filled in: the same thing
 happens with no terminal at all.
 
-### Just the model, without the app (any Windows 10/11 PC)
+### One installer, and what it installs
 
-`song-gpu.cmd` (served at
-`https://browser.bpiersing.workers.dev/song-gpu.cmd`, script at `/song-gpu.ps1`)
-installs **only** the song service. It fetches six files — `app.py`, `lyrics.py`,
-`model_lock.py`, `models.json`, `requirements.txt`, `install.py` — plus the CUDA
-wheels and the ~10 GB of weights. The site, the downloader, the SQLite index and
-the scrapers are never downloaded, and no repository clone is made. Everything
-lives in `%LOCALAPPDATA%\song-gpu`.
+`join.cmd` is the only install the site hands out, and it installs **everything**:
+the site on 5001, the downloader on 8080, the song service on 8090, the CUDA
+wheels and both model checkpoints — the same result as `install.cmd` in this
+repository, from a machine that has cloned nothing. It also writes the join key,
+starts the stack, publishes the tunnel address to the site and to Cloudflare 2,
+and registers the logon entry.
 
-| Machine | What it gets |
+| Step | What happens |
 | --- | --- |
-| NVIDIA card, driver 560+ | CUDA. `torch==2.14.1+cu126` sees the card, ACE-Step and the lyric model run on it, `/health` answers `"device":"cuda"` |
-| AMD, Intel, or no card at all | the same model on the processor. `torch.cuda.is_available()` is false and `/health` says `"device":"cpu"`; there is no CUDA on AMD or Intel graphics, so no install can change that |
-| 32-bit Windows, ARM | not supported: torch has no 32-bit wheel |
+| double-click | `join.cmd` fetches `join.ps1` from the Worker |
+| fetch | the repository zip (~40 MB) is unpacked into `%LOCALAPPDATA%\internet-gpu` |
+| install | `install_all.ps1`: portable uv and git if missing, Python 3.11, torch cu126, every package, ~10 GB of weights |
+| start | the site, the downloader, the song service with `SONG_WARM=1`, and a Quick Tunnel |
+| announce | the tunnel address goes to the site and to the pool with the join key |
+| return | the logon entry brings it all back after a reboot |
 
-The machine prints a tunnel address and is usable two ways: paste it into **Song
-designer → Connect my model**, or give it the join key and it joins the pool and
-announces itself on every start. A logon entry `Song GPU agent` (HKCU, no
-administrator) brings it back after a reboot. `song-gpu.ps1 -Check` reports the
-card, the driver, the disk and what is installed, and changes nothing.
+It takes 20–60 minutes and about 20 GB of disk on a normal connection, and the
+window prints each step, so a slow download looks slow rather than broken. The
+only thing it cannot supply is an NVIDIA card: without one the same models run on
+the processor, which is free and correct, just slow.
 
 ### Free: a Colab T4, one click
 

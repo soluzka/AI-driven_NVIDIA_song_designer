@@ -28,7 +28,7 @@
 param(
     [string]$Target = (Join-Path $env:LOCALAPPDATA 'internet-gpu'),
     [string]$Key = '',
-    [string]$Source = 'https://codeload.github.com/soluzka/internet/zip/refs/heads/main'
+    [string]$Source = 'https://codeload.github.com/soluzka/AI-driven_NVIDIA_song_designer/zip/refs/heads/main'
 )
 
 $ErrorActionPreference = 'Continue'
@@ -51,7 +51,7 @@ if ($smi) {
 }
 
 # --- 2. the application ------------------------------------------------------
-$appDir = Join-Path $Target 'internet-main'
+$appDir = Join-Path $Target 'AI-driven_NVIDIA_song_designer-main'
 if (-not (Test-Path (Join-Path $appDir 'install_all.ps1'))) {
     Say "app:   fetching to $Target"
     New-Item -ItemType Directory -Force -Path $Target | Out-Null
@@ -103,7 +103,10 @@ if ($Key) {
 
 # --- 4. install, start, stay -------------------------------------------------
 Say ''
-Say 'installing: one environment, the CUDA wheels, the models'
+Say 'installing: the whole application in one environment - the site, the downloader,'
+Say 'the song service, the CUDA wheels and about 10 GB of models. This takes 20-60'
+Say 'minutes and about 20 GB of disk. Every step is printed below; leave it running.'
+Say ''
 & (Join-Path $appDir 'install_all.ps1') -Start -Autostart
 
 Say ''

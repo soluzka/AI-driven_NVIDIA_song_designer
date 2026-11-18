@@ -19,8 +19,14 @@
 # seconds.
 
 # The music model. Without the +cu126 wheel this resolves to the CPU build.
+#
+# torchaudio is 2.11.0, not 2.14.1: the cu126 index has torch up to 2.14.1 but
+# torchaudio only to 2.11.0, and pinning them to the same number is what made
+# every install stop at the first pip line with "No matching distribution found
+# for torchaudio==2.14.1+cu126". 2.11.0 beside torch 2.14.1 is what the working
+# environment here runs (imports, CUDA and demucs all fine).
 torch==2.14.1+cu126
-torchaudio==2.14.1+cu126
+torchaudio==2.11.0+cu126
 
 # 5.x needs huggingface-hub 2.x, which the ACE install does not use.
 transformers==4.57.6

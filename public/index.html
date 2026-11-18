@@ -1681,6 +1681,10 @@
         let searchTimeout = null;
         let activeSearchToken = 0;
         async function doSearch() {
+            // A search replaces whatever was in the results area, including the saved
+            // library, so the flag that keeps the library from being overwritten is
+            // cleared here.
+            window._savedViewOpen = false;
             const query = searchInput.value.trim();
             if (!query) return;
             resultsContainer.innerHTML = '';
@@ -4149,6 +4153,10 @@
         // it is the same thing - a list of things you can play - so it is browsed in
         // the same place, with the same summary line above it.
         async function openSavedSongs() {
+            // Tells the page's own "put the last search back" code to leave this view
+            // alone: the library is a search result too, and it stays until another
+            // search replaces it.
+            window._savedViewOpen = true;
             const songs = (await savedList()).sort((a, b) =>
                 String(b.createdAt).localeCompare(String(a.createdAt)));
             const container = document.getElementById('resultsContainer');
@@ -5979,6 +5987,9 @@
         }
 
         function restoreSession() {
+            // The saved library was opened on purpose; putting the last search back
+            // under it would wipe the list a moment after it was asked for.
+            if (window._savedViewOpen) return false;
             let saved = null;
             try {
                 saved = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');

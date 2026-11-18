@@ -9,31 +9,56 @@
 #   song_service\.venv\Scripts\python.exe song_service\install.py --check     report, change nothing
 #
 # This file exists so the package list is readable and machine-consumable without
-# opening models.json, and so a manual install has the pins in one place:
+# opening models.json, and so a manual install has the pins in one place.
 #
-#   uv pip install --python song_service\.venv\Scripts\python.exe --extra-index-url https://download.pytorch.org/whl/cu126 torch==2.14.1+cu126 torchaudio==2.14.1+cu126
-#   uv pip install --python song_service\.venv\Scripts\python.exe -r song_service\requirements.txt
+# ACE-Step itself is NOT in this list and is installed separately with --no-deps
+# by both installers, because of a real conflict:
 #
-# The +cu126 pin matters for the same reason it does in voice_service: PyPI's
-# Windows torch wheel is the CPU build, and a CPU build cannot render a song in
-# seconds.
+#   ace-step 0.2.0 declares transformers==4.50.0
+#   the lyric model here needs the 4.57 line (5.x would pull huggingface-hub 2.x)
+#
+# pip cannot satisfy both, and a clean install stopped with
+# "ResolutionImpossible: The user requested transformers==4.57.6 / ace-step 0.2.0
+# depends on transformers==4.50.0". The environment that works on this machine is
+# ace_step 0.2.0 with transformers 4.57.6, so its pin is the thing left out:
+# install ACE-Step with --no-deps and name its runtime dependencies here instead.
+# Without --no-deps, every fresh install fails at this line.
 
-# The music model. Without the +cu126 wheel this resolves to the CPU build.
+# The music model's runtime. Without the +cu126 wheels this resolves to CPU builds.
 #
 # torchaudio is 2.11.0, not 2.14.1: the cu126 index has torch up to 2.14.1 but
-# torchaudio only to 2.11.0, and pinning them to the same number is what made
-# every install stop at the first pip line with "No matching distribution found
-# for torchaudio==2.14.1+cu126". 2.11.0 beside torch 2.14.1 is what the working
-# environment here runs (imports, CUDA and demucs all fine).
+# torchaudio only to 2.11.0.
 torch==2.14.1+cu126
 torchaudio==2.11.0+cu126
+# Pairs with torch 2.14.1, and ACE-Step imports it (MusicDCAE).
+torchvision==0.29.2
 
 # 5.x needs huggingface-hub 2.x, which the ACE install does not use.
 transformers==4.57.6
 huggingface-hub==0.36.2
 
-# The model's own code; the 7 GB checkpoint is downloaded by install.py.
-git+https://github.com/ace-step/ACE-Step.git
+# ACE-Step's own declared dependencies, minus torch/torchaudio/torchvision (pinned
+# above) and transformers (pinned above). These are what its pipeline and its
+# language segmentation import at runtime.
+accelerate
+click
+cutlet
+datasets
+diffusers
+einops
+fugashi
+gradio
+hangul-romanize
+loguru
+matplotlib
+num2words
+peft
+py3langid
+pypinyin
+pytorch_lightning
+tensorboard
+tensorboardX
+tqdm
 
 flask
 flask-cors

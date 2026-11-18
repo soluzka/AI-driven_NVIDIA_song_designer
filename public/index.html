@@ -882,6 +882,11 @@
                 title="Starts the AI services on this computer and waits until they answer">Start the AI</button>
         <button class="library-song-btn install-btn" id="installBtn" onclick="openInstallPanel()"
                 title="Install the AI on this PC in one double-click, or run it on a free Colab GPU">Get the AI</button>
+        <!-- Any machine's address can be used from here, not only from inside Song
+             designer: a person with a GPU should not have to open a song panel to
+             tell the page where their model is. -->
+        <button class="library-song-btn install-btn" id="modelBtn" onclick="promptConnectModel()"
+                data-state="off" title="Paste the address of a song service to render songs on that machine">Connect my model</button>
         <div class="conn-chip" id="connChip" data-state="connecting"
              title="Checking the connection to the search server">
             <span class="conn-dot"></span>
@@ -971,8 +976,10 @@
                     or newer for the card, and 20–60 minutes depending on the connection; the window
                     keeps printing what it is doing, and closing it stops the install. It asks once
                     for the join key, which whoever runs this site gives out: that key is what adds a
-                    machine to the pool every visitor's song is rendered on. Without it the install
-                    still finishes and the AI runs on this PC for this PC alone.
+                    machine to the pool every visitor's song is rendered on. It is not printed on this
+                    page on purpose — it is a write credential for the pool, so anyone holding it
+                    could point other people's songs at a machine of their own. Without it the
+                    install still finishes and the AI runs on this PC for this PC alone.
                 </div>
                 <a class="fit-act install-act" href="/join.cmd" download>Download join.cmd</a>
             </div>
@@ -3848,6 +3855,50 @@
                 window.prompt('Copy this:', command);
             }
         }
+
+        // Where a render happens, chosen by hand. "Connect my model" lived only
+        // inside Song designer's generate panel, which meant a person with a GPU on
+        // the network had to open a song first to say where it is. The same value
+        // is used here, so the two controls can never disagree: `songApi` wins over
+        // the address the site published, and an empty value forgets it.
+        function currentModelAddress() {
+            let saved = '';
+            try { saved = (localStorage.getItem('songApi') || '').trim().replace(/\/+$/, ''); } catch (err) {}
+            return saved || (window.SONG_API || '').trim().replace(/\/+$/, '');
+        }
+        function reflectModelAddress() {
+            const button = document.getElementById('modelBtn');
+            if (!button) return;
+            const address = currentModelAddress();
+            if (!address) {
+                button.textContent = 'Connect my model';
+                button.dataset.state = 'off';
+                button.title = 'Paste the address of a song service (the tunnel URL it printed) to render songs on that machine';
+                return;
+            }
+            let host = address;
+            try { host = new URL(address).host || address; } catch (err) {}
+            button.textContent = 'Model: ' + host;
+            button.dataset.state = 'ready';
+            button.title = 'Songs render on ' + address + ' (this browser). Press to change or clear it.';
+        }
+        function promptConnectModel() {
+            const address = window.prompt(
+                'Paste the address of a song service - the tunnel URL it printed when it started.\n'
+                + 'Leave it empty to go back to whatever this site finds on its own.',
+                currentModelAddress());
+            if (address === null) return;
+            const clean = address.trim().replace(/\/+$/, '');
+            try {
+                if (clean) localStorage.setItem('songApi', clean);
+                else localStorage.removeItem('songApi');
+            } catch (err) {}
+            reflectModelAddress();
+            // A new address is a new machine, so the badge must not keep saying what
+            // the old one was.
+            if (typeof refreshGpu === 'function') refreshGpu();
+        }
+        reflectModelAddress();
 
         // When the badge last got a real answer. A timeout while the model loads is
         // not the service disappearing, and treating it as such is what made a

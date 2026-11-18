@@ -27,8 +27,32 @@
       "why": "Pinned so transformers and the weight downloader agree."
     },
     {
+      "spec": "accelerate",
+      "index": "https://pypi.org/simple",
+      "why": "ACE-Step's runtime, installed by name because the model itself is installed with --no-deps (see the git entry below)."
+    },
+    { "spec": "click", "index": "https://pypi.org/simple" },
+    { "spec": "cutlet", "index": "https://pypi.org/simple" },
+    { "spec": "datasets", "index": "https://pypi.org/simple" },
+    { "spec": "diffusers", "index": "https://pypi.org/simple" },
+    { "spec": "einops", "index": "https://pypi.org/simple" },
+    { "spec": "fugashi", "index": "https://pypi.org/simple" },
+    { "spec": "gradio", "index": "https://pypi.org/simple" },
+    { "spec": "hangul-romanize", "index": "https://pypi.org/simple" },
+    { "spec": "loguru", "index": "https://pypi.org/simple" },
+    { "spec": "matplotlib", "index": "https://pypi.org/simple" },
+    { "spec": "num2words", "index": "https://pypi.org/simple" },
+    { "spec": "peft", "index": "https://pypi.org/simple" },
+    { "spec": "py3langid", "index": "https://pypi.org/simple" },
+    { "spec": "pypinyin", "index": "https://pypi.org/simple" },
+    { "spec": "pytorch_lightning", "index": "https://pypi.org/simple" },
+    { "spec": "tensorboard", "index": "https://pypi.org/simple" },
+    { "spec": "tensorboardX", "index": "https://pypi.org/simple" },
+    { "spec": "tqdm", "index": "https://pypi.org/simple" },
+    {
       "spec": "git+https://github.com/ace-step/ACE-Step.git",
-      "why": "The music model's code. The 7 GB checkpoint is downloaded separately below."
+      "extra": ["--no-deps"],
+      "why": "The music model's code, installed without its dependency list: ace-step 0.2.0 pins transformers==4.50.0, and the lyric model needs 4.57.6, so a normal install fails with ResolutionImpossible. Its runtime dependencies are the entries above. The 7 GB checkpoint is downloaded separately below."
     },
     {
       "spec": "flask",

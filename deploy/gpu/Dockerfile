@@ -41,7 +41,8 @@ RUN python -m venv /opt/venv \
         --index-url https://download.pytorch.org/whl/cu126 \
  && /opt/venv/bin/pip install -r requirements.txt -r downloader_service/requirements.txt \
  && /opt/venv/bin/pip install -r song_service/requirements.txt \
-        --extra-index-url https://download.pytorch.org/whl/cu126
+        --extra-index-url https://download.pytorch.org/whl/cu126 \
+ && /opt/venv/bin/pip install --no-deps git+https://github.com/ace-step/ACE-Step.git
 
 ENV PATH=/opt/venv/bin:$PATH \
     SONG_PORT=8090 \

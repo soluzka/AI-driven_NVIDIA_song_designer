@@ -302,6 +302,11 @@ if (-not (Ensure-Git)) {
     throw 'git is required for ACE-Step (pip installs it from GitHub) and could not be fetched'
 }
 Pip @('-r', 'song_service\requirements.txt', '--extra-index-url', $torchIndex)
+# ACE-Step's own metadata pins transformers==4.50.0, which cannot coexist with the
+# 4.57.6 the lyric model needs: pip answered "ResolutionImpossible" and every
+# fresh install stopped here. Its runtime dependencies are named in the file
+# above, so the model's code is installed without its dependency list.
+Pip @('--no-deps', 'git+https://github.com/ace-step/ACE-Step.git')
 
 # --- 4. the weights ----------------------------------------------------------
 if ($NoWeights) {

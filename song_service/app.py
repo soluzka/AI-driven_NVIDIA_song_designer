@@ -159,6 +159,11 @@ _pipeline = None
 # page can show "2m 10s so far" rather than a bare loaded: false.
 _warm_started = None
 _warm_failed = None
+# True only while the warm thread is inside the load. "Started and not loaded"
+# was the old test, and it stays true for ever the moment anything releases the
+# model again - the lyric warm-up does exactly that - so health reported
+# "warming, 50 minutes" on a service that had finished loading long ago.
+_warm_active = False
 _pipeline_lock = threading.Lock()
 _gpu_lock = threading.Lock()      # one generation at a time
 _jobs = {}
@@ -219,10 +224,22 @@ def _lyricist():
                     device = 'cuda' if torch.cuda.is_available() else 'cpu'
                 except Exception:  # noqa: BLE001
                     device = 'cpu'
-            if device.startswith('cuda'):
+            if device.startswith('cuda') and _tight_vram():
                 _release_pipeline()
             _lyricist_instance = Lyricist(lyrics_model_id(load_manifest()), device=device)
         return _lyricist_instance
+
+
+def _tight_vram(need_gb=12.0):
+    """Whether this card cannot hold the lyric model beside the song model.
+
+    ACE-Step takes about 8 GB and Qwen about 3 GB, so a free T4 keeps both and
+    serves its first song without a reload. An 8 GB desktop card cannot: there,
+    the song model is dropped for the lyricist, which is what keeps every step
+    from paging. Releasing it unconditionally made a 16 GB card unload the model
+    it had just warmed, so the first song paid for the load anyway.
+    """
+    return (_gpu().get('vram_gb') or 0) < need_gb
 
 
 def _load_pipeline():
@@ -1120,11 +1137,15 @@ def health():
     # How long the warm has been running, so the page can say "2m 10s" instead of
     # leaving someone guessing whether it is working or stuck. This machine needs
     # minutes, not seconds, and being told which is not the same as waiting blind.
-    warming_for = int(time.time() - _warm_started) if (_warm_started and not ready) else None
+    warming_for = int(time.time() - _warm_started) if _warm_active else None
     return jsonify({
         'ok': True,
-        'warming': bool(_warm_started and not ready and not _warm_failed),
+        'warming': bool(_warm_active and not ready),
         'warming_seconds': warming_for,
+        # A warm that finished and whose model was then released (the lyric model
+        # taking the card on a small GPU) is not warming: it is simply not loaded,
+        # and the next song loads it.
+        'warm_done': bool(_warm_started and not _warm_active and not _warm_failed),
         'warm_failed': _warm_failed,
         'model': 'ACE-Step v1 3.5B',
         'checkpoint': CHECKPOINT,
@@ -1505,8 +1526,9 @@ def _warm():
     ready. Off by default, because holding 8 GB of VRAM from the moment a
     service starts is not what every machine wants.
     """
-    global _warm_started, _warm_failed
+    global _warm_started, _warm_failed, _warm_active
     _warm_started = time.time()
+    _warm_active = True
     try:
         info = _gpu()
         print(f'warming on {info["device"]}: {info.get("gpu") or "cpu"}', flush=True)
@@ -1515,6 +1537,8 @@ def _warm():
     except Exception as exc:  # noqa: BLE001
         _warm_failed = str(exc)[:300]
         print(f'warm load failed: {exc}', flush=True)
+    finally:
+        _warm_active = False
 
 
 if __name__ == '__main__':

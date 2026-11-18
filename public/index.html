@@ -4154,6 +4154,9 @@
                     model: info.model || '',
                     query: info.query || '',
                     kind: info.kind || 'audio',
+                    // The words are kept with the song, so a video can be recorded later
+                    // without asking the model for them again.
+                    lyrics: Array.isArray(info.lyrics) ? info.lyrics : [],
                     genres: Array.isArray(info.genres) ? info.genres : [],
                     label: info.label || '',
                     tracks: info.tracks || 0,
@@ -4580,6 +4583,36 @@
                     URL.revokeObjectURL(objectUrl);
                     card.remove();
                 };
+                // A song stored before this change has no video and no words with it;
+                // one that has the words can be recorded here, on the click, which is
+                // also the gesture the browser needs to play the audio for capture.
+                if (!isVideo && Array.isArray(item.lyrics) && item.lyrics.length) {
+                    const record = document.createElement('button');
+                    record.textContent = 'Record the video';
+                    record.onclick = async () => {
+                        record.disabled = true;
+                        record.textContent = 'Recording...';
+                        const source = new Audio(objectUrl);
+                        try {
+                            const blob = await makeLyricVideo({
+                                element: source,
+                                audio: objectUrl,
+                                title: item.title,
+                                line2: (item.genres || []).join(' · '),
+                                genre: (item.genres || [])[0] || '',
+                                lyrics: item.lyrics,
+                                bpm: 0,
+                                seconds: item.seconds || 30
+                            });
+                            const kept = await savedAttachVideo(item.id, blob);
+                            record.textContent = kept ? 'Video saved' : 'Could not store it';
+                        } catch (err) {
+                            record.textContent = 'Record the video';
+                            record.disabled = false;
+                        }
+                    };
+                    actions.appendChild(record);
+                }
                 actions.appendChild(download);
                 actions.appendChild(drop);
                 body.appendChild(title);
@@ -5732,7 +5765,8 @@
                         label: summary.label || '',
                         tracks: summary.total || 0,
                         seconds: seconds || 0,
-                        thumb: sourceThumb
+                        thumb: sourceThumb,
+                        lyrics: lyrics
                     });
                     // And then the same song with its words on the picture: recorded once,
                     // stored as its own card, and put where the audio bar was so the

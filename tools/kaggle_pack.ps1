@@ -207,13 +207,21 @@ if ($Create) {
     # reads that as KAGGLE_API_TOKEN. Passed as KAGGLE_KEY it is rejected and the CLI
     # prints "generate an API token" instead of uploading anything.
     $env:KAGGLE_API_TOKEN = $cred.key
+    # Create the dataset, or add a version if it already exists. A version cannot be
+    # added to a dataset that is not there, which is how one 10.6 GB upload was spent
+    # on nothing: the first create failed, the fallback uploaded anyway, and the
+    # version call was rejected at the end because the dataset had never been made.
+    $existing = (& uv tool run --from kaggle --with six kaggle datasets list -m 2>$null) -join "`n"
     foreach ($pair in @(@($codeDir, 'song-gpu-code'), @($weightsSource, 'song-gpu-weights'))) {
-        $path = $pair[0]; $slug = $pair[1]
-        Say "creating dataset $slug (this uploads; it takes a while) ..."
-        & uv tool run --from kaggle --with six kaggle datasets create -p $path --dir-mode zip
-        if ($LASTEXITCODE -ne 0) {
-            Say "create failed for $slug, trying a new version ..."
+        $path = $pair[0]; $slug = "$Owner/" + $pair[1]
+        $known = $existing -match [regex]::Escape($slug)
+        $verb = if ($known) { 'adding a version to ' } else { 'creating ' }
+        Say ($verb + $slug + ' (this uploads; it takes a while) ...')
+        if ($known) {
             & uv tool run --from kaggle --with six kaggle datasets version -p $path --dir-mode zip -m 'offline pack'
+        } else {
+            & uv tool run --from kaggle --with six kaggle datasets create -p $path --dir-mode zip
         }
+        if ($LASTEXITCODE -ne 0) { throw "the upload of $slug failed with $LASTEXITCODE" }
     }
 }

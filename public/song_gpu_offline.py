@@ -21,6 +21,8 @@ the pushed code never changes when this one does.
 
 import os
 import re
+import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -102,17 +104,28 @@ if not CODE or not os.path.isdir(CODE):
 if not CODE or not os.path.isdir(CODE):
     raise SystemExit('no mounted repository: expected /kaggle/input/<code dataset>/repo or '
                      'repo.zip. Run tools\\kaggle_pack.ps1 and attach song-gpu-code to the kernel.')
-REPO = os.path.dirname(CODE) if os.path.basename(CODE) == 'repo' else CODE
+# /kaggle/input is read-only, and the service writes inside its own tree (the wav it
+# renders, and the weights folder on a machine that has to fetch them), so the
+# repository is copied into the working directory and everything runs from the copy.
+MOUNTED = CODE
+PACKED = os.path.dirname(MOUNTED)
+REPO = os.path.join(WORK, 'repo')
+if os.path.abspath(MOUNTED) != os.path.abspath(REPO):
+    say('copying the repository into', REPO, '...')
+    shutil.copytree(MOUNTED, REPO, dirs_exist_ok=True)
+else:
+    REPO = MOUNTED
 SERVICE = os.path.join(REPO, 'song_service')
-say('repo:', CODE)
+say('repo:', REPO, '(mounted at', MOUNTED + ')')
 
 # --- no network, by design --------------------------------------------------
 # Said out loud because the previous failure was a DNS error 30 seconds in, which
 # says nothing about what is wrong.
+NETWORK = False
 try:
-    import socket
-    socket.create_connection(('pypi.org', 443), timeout=5).close()
-    say('note: this kernel does have internet; it is still using only what is mounted')
+    socket.create_connection(('huggingface.co', 443), timeout=5).close()
+    NETWORK = True
+    say('this kernel does have internet; what is mounted is used first either way')
 except Exception:
     say('no internet in this kernel, which is expected here: everything comes from /kaggle/input')
 
@@ -121,7 +134,6 @@ except Exception:
 # the repo by tools\kaggle_pack.ps1, built for Linux and for this Python, so the
 # kernel only has to put them on sys.path. A pip run would need a local wheel index
 # and would still have to compile anything without a binary; this needs neither.
-PACKED = os.path.dirname(CODE)
 PYLIBS = os.path.join(PACKED, 'pylibs')
 if os.path.isdir(PYLIBS):
     sys.path.insert(0, PYLIBS)
@@ -147,9 +159,22 @@ if not weights and os.path.isdir(weights_mount):
         if name.lower().startswith('ace-step'):
             weights = os.path.join(packed_weights, name)
             break
+if not weights and NETWORK:
+    # Nothing mounted to read, but this kernel can still fetch: the dataset is the
+    # offline path, not the only one. install.py is what a PC runs, so the versions it
+    # resolves are the same ones.
+    say('no mounted weights, and the kernel has internet: fetching them from Hugging Face')
+    os.environ['HF_HOME'] = os.path.join(WORK, 'hf')
+    fetched = subprocess.run([sys.executable, os.path.join(SERVICE, 'install.py'), '--weights'],
+                             cwd=REPO)
+    candidate = os.path.join(SERVICE, 'models', 'ACE-Step-v1-3.5B')
+    if fetched.returncode == 0 and os.path.isdir(candidate):
+        weights = candidate
+    else:
+        say('the download did not finish:', fetched.returncode)
 if not weights:
-    raise SystemExit('no mounted ACE-Step weights: expected '
-                     '/kaggle/input/<weights dataset>/ACE-Step-v1-3.5B (or its .zip)')
+    raise SystemExit('no ACE-Step weights: attach the weights dataset to this kernel, '
+                     'or run it in one that has the internet')
 os.environ['ACE_CHECKPOINT'] = weights
 lyrics = mount('Qwen2.5-1.5B-Instruct')
 if lyrics:

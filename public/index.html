@@ -4205,6 +4205,18 @@
             return lines[Math.max(0, Math.min(lines.length - 1, index))];
         }
 
+        // The arrangement's section names are not words anybody sings. "Chorus" and
+        // "[Bridge]" arrive as lines and used to be drawn as lyrics, so they are taken
+        // out here once, for the card, the player and the recording alike.
+        function lyricWords(lyrics) {
+            const label = /^(?:\[\s*)?(?:intro|verse|pre[- ]?chorus|chorus|bridge|break|drop|build|hook|refrain|middle eight|outro)(?:\s*\d+)?(?:\s*\])?\s*:?$/i;
+            return (lyrics || [])
+                .reduce((all, part) => all.concat(part.lines || []), [])
+                .map(line => String(line).replace(/^\[[^\]]*\]\s*/, '').trim())
+                .filter(line => line && !label.test(line));
+        }
+        window.lyricWords = lyricWords;
+
         function drawLyricFrame(draw, width, height, frame) {
             const palette = REMIX_PALETTES[frame.genre] || REMIX_PALETTE_DEFAULT;
             const pulse = frame.pulse;
@@ -4260,10 +4272,7 @@
             if (!playerAudio || !data || !Array.isArray(data.lyrics) || !data.lyrics.length) {
                 return () => {};
             }
-            const lines = data.lyrics
-                .reduce((all, part) => all.concat(part.lines || []), [])
-                .map(line => String(line).trim())
-                .filter(Boolean);
+            const lines = lyricWords(data.lyrics);
             if (!lines.length) return () => {};
 
             const canvas = document.createElement('canvas');
@@ -4276,8 +4285,10 @@
             const holder = document.createElement('div');
             holder.style.width = '100%';
             holder.appendChild(canvas);
+            // At the top of its card, where a video sits, not under the player where
+            // it was reading as part of the controls.
             if (playerAudio.parentElement) {
-                playerAudio.parentElement.insertBefore(holder, playerAudio);
+                playerAudio.parentElement.insertBefore(holder, playerAudio.parentElement.firstChild);
             }
 
             const beat = data.bpm ? 60 / data.bpm : 0.5;
@@ -4323,6 +4334,8 @@
         async function lyricSchedule(audioUrl, lines, fallbackSeconds) {
             let start = 0;
             let end = fallbackSeconds || 30;
+            let frames = [];
+            let gate = 0;
             try {
                 const bytes = await (await fetch(audioUrl)).arrayBuffer();
                 const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -4330,7 +4343,6 @@
                 const data = decoded.getChannelData(0);
                 const rate = decoded.sampleRate;
                 const step = Math.max(1, Math.floor(rate * 0.05));
-                const frames = [];
                 for (let i = 0; i < data.length; i += step) {
                     let sum = 0;
                     const stop = Math.min(i + step, data.length);
@@ -4338,7 +4350,7 @@
                     frames.push(Math.sqrt(sum / Math.max(1, stop - i)));
                 }
                 const peak = frames.reduce((a, b) => Math.max(a, b), 0) || 1;
-                const gate = Math.max(0.015, peak * 0.16);
+                gate = Math.max(0.015, peak * 0.16);
                 const first = frames.findIndex(value => value > gate);
                 let last = -1;
                 for (let i = frames.length - 1; i >= 0; i -= 1) { if (frames[i] > gate) { last = i; break; } }
@@ -4349,15 +4361,40 @@
                 // Undecodable or unreachable: the fallback window is the whole song.
             }
             end = Math.max(end, start + 1);
+            // Only the parts the singer is actually filling get lines: a line no longer
+            // creeps forward through silence while the band plays on.
+            const runs = [];
+            let runStart = -1;
+            for (let i = 0; i < frames.length; i += 1) {
+                const loud = frames[i] > gate;
+                if (loud && runStart < 0) runStart = i * 0.05;
+                if (!loud && runStart >= 0) {
+                    if (i * 0.05 - runStart > 0.25) runs.push([runStart, i * 0.05]);
+                    runStart = -1;
+                }
+            }
+            if (runStart >= 0) runs.push([runStart, frames.length * 0.05]);
+            const spans = runs.length ? runs : [[start, end]];
+            const voiced = spans.reduce((sum, [from, to]) => sum + (to - from), 0) || (end - start);
             const weights = lines.map(line =>
                 Math.max(1, (String(line).match(/[aeiouy]+/gi) || []).length));
             const total = weights.reduce((a, b) => a + b, 0) || 1;
-            let at = start;
+            // A point on the voiced timeline, ignoring the gaps: the words follow the
+            // singing instead of the wall clock.
+            const atVoiced = position => {
+                let left = position;
+                for (const [from, to] of spans) {
+                    if (left <= to - from) return from + left;
+                    left -= (to - from);
+                }
+                return spans[spans.length - 1][1];
+            };
+            let passed = 0;
             return weights.map(weight => {
-                const span = (end - start) * (weight / total);
-                const entry = { start: at, end: at + span };
-                at += span;
-                return entry;
+                const from = atVoiced((passed / total) * voiced);
+                passed += weight;
+                const to = atVoiced((passed / total) * voiced);
+                return { start: from, end: Math.max(from + 0.05, to) };
             });
         }
         window.lyricSchedule = lyricSchedule;
@@ -4368,10 +4405,7 @@
         async function makeLyricVideo(song) {
             const mime = lyricMimeType();
             if (!mime) throw new Error('this browser cannot record a video');
-            const lines = (song.lyrics || [])
-                .reduce((all, part) => all.concat(part.lines || []), [])
-                .map(line => String(line).trim())
-                .filter(Boolean);
+            const lines = lyricWords(song.lyrics);
             if (!lines.length) throw new Error('there are no lyrics to show');
 
             const canvas = document.createElement('canvas');

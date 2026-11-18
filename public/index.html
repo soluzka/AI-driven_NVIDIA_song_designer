@@ -4282,12 +4282,16 @@
             // Same order the songs use. When a Colab address is set it is the whole
             // list: the header must not report this computer while the page is
             // pointed at the card.
+            // A pasted address first, then this machine's own endpoint, then the pool.
+            // The pool used to come first, which reported "AI ready · Pool" to someone
+            // who had connected nothing to it - the desktop install publishes itself
+            // there on every start, so that count is not a choice anyone made.
             const bases = savedModel
                 ? [savedModel]
                 : [
-                    String(window.remoteSongApi || ''),
+                    String(window.SONG_API || '').replace(/\/+$/, ''),
                     servedLocally ? location.origin : '',
-                    servedLocally ? 'http://127.0.0.1:8090' : '',
+                    String(window.remoteSongApi || ''),
                 ];
             let info = null;
             let answeredBy = '';
@@ -4382,7 +4386,7 @@
                 wakeBtn.title = loaded
                     ? (answeredHere
                         ? 'The AI is running on this machine and the model is on the card.'
-                        : 'A pooled machine is serving songs (' + answeredHost + '). Nothing is running on this computer; press to start it.')
+                        : 'A pooled machine is serving songs (' + answeredHost + ').')
                     : (info.warm_failed
                         ? 'The model failed to load on ' + (info.gpu || 'that machine') + ': ' + info.warm_failed
                         : 'The service is up but the model is still loading (' + (warmSeconds ? clock : 'just started') + '); songs start when it is ready.');

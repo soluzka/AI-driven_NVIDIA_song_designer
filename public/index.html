@@ -917,7 +917,7 @@
         <button class="library-song-btn" id="librarySongBtn" onclick="startLibrarySong()"
                 title="Design one song from the tracks you found">Song designer</button>
         <button class="library-song-btn wake-btn" id="wakeBtn" onclick="wakeLocalAI()"
-                title="Starts the AI services on this computer and waits until they answer">Start the AI</button>
+                title="Nothing is connected yet: starts the AI services on this computer, or paste a tunnel address with Connect my model">Connect the model</button>
         <button class="library-song-btn install-btn" id="installBtn" onclick="openInstallPanel()"
                 title="Install the AI on this PC in one double-click, or run it on a free Colab GPU">Get the AI</button>
         <!-- Any machine's address can be used from here, not only from inside Song
@@ -3877,12 +3877,10 @@
         // next render will use CUDA.
         // Where to ask for lyrics or a song, in the order worth trying.
         //
-        // A saved address ("Connect my model") is remembered per browser and is
-        // the first thing tried, which makes it the most likely thing to be
-        // stale - a tunnel name that died with its last restart. Trusting it cost
-        // the entire timeout before the working address was even reached, and
-        // that looks exactly like the song refusing to start. So it is probed
-        // first and skipped when it does not answer.
+        // A saved address ("Connect my model") is a decision this browser made, so
+        // while it is set it is the only machine asked, and nothing is asked in its
+        // place if it stops answering. Quietly using this PC instead is what made an
+        // ended Colab session look like a song rendered somewhere else.
         async function modelBases(includeEdge) {
             const bases = [];
             const add = (value) => {
@@ -3892,10 +3890,11 @@
             let saved = '';
             try { saved = (localStorage.getItem('songApi') || '').trim().replace(/\/+$/, ''); } catch (err) {}
             if (saved) {
-                try {
-                    const probe = await fetchBounded(saved + '/health', {}, 4000);
-                    if (probe.ok) add(saved);
-                } catch (err) {}
+                // A pasted address is a choice, not a hint: while it is set it is the
+                // only machine songs go to. Falling through to this computer instead
+                // is how an ended Colab session looked like a song from the PC.
+                add(saved);
+                return bases;
             }
             // The Worker answers 501 here: it has no GPU. Once that is seen the
             // page stops asking it, which is where those 501s in the console came
@@ -4276,12 +4275,18 @@
             // (localhost or a LAN address) asks its own origin first, and only a
             // page served from somewhere else falls back to this PC's loopback.
             const servedLocally = /^(127\.|localhost$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
-            const bases = [
-                servedLocally ? location.origin : '',
-                'http://127.0.0.1:8090',
-                String(window.remoteSongApi || ''),
-                String(window.SONG_API || '').replace(/\/+$/, ''),
-            ];
+            let savedModel = '';
+            try { savedModel = (localStorage.getItem('songApi') || '').trim().replace(/\/+$/, ''); } catch (err) {}
+            // Same order the songs use. When a Colab address is set it is the whole
+            // list: the header must not report this computer while the page is
+            // pointed at the card.
+            const bases = savedModel
+                ? [savedModel]
+                : [
+                    String(window.remoteSongApi || ''),
+                    servedLocally ? location.origin : '',
+                    servedLocally ? 'http://127.0.0.1:8090' : '',
+                ];
             let info = null;
             let answeredBy = '';
             for (const base of bases) {
@@ -4301,6 +4306,11 @@
             const answeredHere = !answeredBy || answeredBy === location.origin
                 || /^https?:\/\/(127\.|localhost|\[::1\])/i.test(answeredBy);
             const answeredHost = answeredBy ? String(answeredBy).replace(/^https?:\/\//i, '') : '';
+            // What answered: the address pasted here, a machine the site published,
+            // or this computer. A pasted quick tunnel is somebody's Colab.
+            const answeredWhat = (savedModel && answeredBy === savedModel)
+                ? (/trycloudflare|colab|ngrok|localtunnel/i.test(savedModel) ? 'Colab' : 'your model')
+                : (answeredHere ? 'this PC' : 'Pool');
             // The button follows the same answer, so both devices read the same
             // way: AI ready wherever the model answers, rather than only on the PC
             // that was able to launch it.
@@ -4322,12 +4332,14 @@
                     return;
                 }
                 chip.dataset.state = 'offline';
-                text.textContent = 'AI not connected';
-                chip.title = 'No song model is running on this machine, and none in the pool '
-                    + 'answered. Press Start the AI, or paste a tunnel address with Connect my model.';
+                text.textContent = 'Nothing is running';
+                chip.title = 'Nothing answered on ' + (savedModel || 'the pool or this computer')
+                    + '. Connect the model to this PC, or to a Colab card or pool machine.';
                 if (wakeBtn && !wakeBusy) {
-                    wakeBtn.textContent = 'Start the AI';
+                    wakeBtn.textContent = 'Connect the model';
                     wakeBtn.dataset.state = '';
+                    wakeBtn.title = 'Nothing is running. Press to start the model on this PC, '
+                        + 'or paste a Colab tunnel address with Connect my model.';
                 }
                 return;
             }
@@ -4348,7 +4360,7 @@
             text.textContent = onCuda
                 ? (loaded ? 'CUDA · ' + String(info.gpu || 'GPU').replace(/^NVIDIA\s+/i, '')
                           : 'AI not connected yet · warming ' + (warmSeconds ? clock : 'up'))
-                  + (answeredHere ? ' · this PC' : ' · pool')
+                  + ' · ' + answeredWhat
                 : 'CPU only';
             chip.title = !onCuda
                 ? 'Torch cannot see a CUDA device, so songs and lyrics will be very slow.'
@@ -4362,7 +4374,7 @@
                 // and when the answer came from a pooled machine the label says that
                 // too rather than passing it off as this computer's model.
                 wakeBtn.textContent = loaded
-                    ? (answeredHere ? 'AI ready · this PC' : 'AI ready · pool')
+                    ? 'AI ready · ' + answeredWhat
                     : 'AI not connected yet';
                 wakeBtn.dataset.state = loaded ? 'ready' : 'starting';
                 wakeBtn.title = loaded

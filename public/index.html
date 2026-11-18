@@ -4186,9 +4186,11 @@
             try { savedModelAddress = (localStorage.getItem('songApi') || '').trim().replace(/\/+$/, ''); } catch (err) {}
             const fallbackAddress = String(window.SONG_API || 'http://127.0.0.1:8090').trim().replace(/\/+$/, '');
             const publishedAddress = String(window.remoteSongApi || '').trim().replace(/\/+$/, '');
-            const address = savedModelAddress || publishedAddress || fallbackAddress;
-            const source = savedModelAddress ? 'connected by hand'
-                : (publishedAddress ? 'published by the site' : 'the built-in default');
+            // This chip is the machine's own endpoint unless one was pasted here. The
+            // pool is not "the model endpoint": it is where songs go when no endpoint
+            // of your own is set, and naming it here erased the PC's address.
+            const address = savedModelAddress || fallbackAddress;
+            const source = savedModelAddress ? 'connected by hand' : 'the built-in default';
             let tunnel = '';
             try {
                 const answer = await fetchBounded('/api/song/endpoint', { cache: 'no-store' }, 8000);

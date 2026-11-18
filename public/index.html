@@ -3011,6 +3011,9 @@
             });
         }
 
+        window.applyAILyrics = applyAILyrics;
+        window.libraryLyrics = libraryLyrics;
+
         function rootFromKey(key) {
             const name = String(key || 'A minor').toLowerCase().split(/\s+/)[0];
             const semitone = KEY_TABLE[name] !== undefined ? KEY_TABLE[name] : 9;

@@ -4058,20 +4058,27 @@
             const chip = document.getElementById('modelBase');
             const text = document.getElementById('modelBaseText');
             if (!chip || !text) return;
-            const pasted = currentModelAddress();
+            // Deliberately NOT currentModelAddress(): an address pasted into Connect
+            // my model is this browser's override. This chip is the other thing - the
+            // address the site itself publishes, which is what a visitor with nothing
+            // pasted actually uses. Showing the pasted one here made the two controls
+            // say the same thing and hid the default.
             const base = await siteBaseModel();
-            const shown = pasted || base;
-            if (!shown) {
+            if (!base) {
                 chip.dataset.state = 'none';
                 text.textContent = 'none yet';
-                chip.title = 'No machine has published an address yet. Join one, or paste an address with Connect my model.';
+                chip.title = 'No machine has published an address yet, so with nothing pasted the site has nowhere to render.';
                 return;
             }
             chip.dataset.state = 'ready';
             // The whole address, ellipsised by CSS: "the model location" is the
             // request, and a host alone loses the scheme someone needs to paste.
-            text.textContent = shown;
-            chip.title = shown + (pasted ? ' (set in this browser)' : ' (the site default: no address is set in this browser)');
+            text.textContent = base;
+            const override = currentModelAddress();
+            chip.title = base + ' is the address the site publishes.'
+                + (override && override !== base
+                    ? ' This browser overrides it with ' + override + ' (Connect my model).'
+                    : ' Nothing pasted in this browser, so this is what it uses.');
         }
         refreshBaseModel();
         setInterval(refreshBaseModel, 60000);

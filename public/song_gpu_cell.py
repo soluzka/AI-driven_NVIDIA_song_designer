@@ -73,11 +73,22 @@ say('1/5 system packages ...')
 run(['apt-get', '-qq', 'install', '-y', 'ffmpeg', 'libsndfile1', 'git'], quiet=True)
 
 say('2/5 the code ...')
-if os.path.isdir(SERVICE):
-    say('already at', REPO)
+GIT_URL = 'https://github.com/soluzka/AI-driven_NVIDIA_song_designer.git'
+if os.path.isdir(os.path.join(REPO, '.git')):
+    # A folder left from an earlier run in this session is code from that run.
+    # Reusing it silently means the pins here and the packages there disagree, so
+    # it is moved to main every time and the commit is printed.
+    run(['git', '-C', REPO, 'fetch', '--depth', '1', 'origin', 'main'], quiet=True)
+    run(['git', '-C', REPO, 'reset', '--hard', 'origin/main'], quiet=True)
+    say('updated', REPO)
 else:
-    run(['git', 'clone', '--depth', '1',
-         'https://github.com/soluzka/AI-driven_NVIDIA_song_designer.git', REPO])
+    run(['git', 'clone', '--depth', '1', GIT_URL, REPO])
+try:
+    commit = subprocess.run(['git', '-C', REPO, 'rev-parse', '--short', 'HEAD'],
+                            capture_output=True, text=True).stdout.strip()
+    say('code at commit', commit or 'unknown')
+except Exception:
+    pass
 
 say('3/5 the packages (3-6 minutes; pip prints nothing until it finishes) ...')
 pip = [sys.executable, '-m', 'pip', 'install', '-q']

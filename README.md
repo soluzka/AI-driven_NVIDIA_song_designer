@@ -961,6 +961,42 @@ this PC's agent through `songsvc://`, which is registered per user under
 tooltip says so. That is the only thing anyone clicks: the site already answers
 without it when another machine is in the pool.
 
+### Adding a machine without much work
+
+The site serves the installer for a fresh Linux GPU box, so nothing has to be
+cloned or unpacked by hand:
+
+```
+curl -fsSL https://browser.bpiersing.workers.dev/join.sh | bash -s -- --key <join key>
+```
+
+It installs the environment, the CUDA wheels and the models, installs the boot
+service and starts the stack; the machine then publishes itself to Cloudflare 2 and
+the site uses it. On a rented GPU with a cloud-init field, paste
+`deploy/gpu/cloud-init.yaml` with the three values filled in and start the
+instance: the same thing happens with no terminal at all.
+
+### The 10 GB on Cloudflare
+
+Storage is not the obstacle — execution is. The checkpoint fits in R2 (free
+storage tier, no egress fee), and `pool-worker.js` serves it at
+`/weights/<key>`, streamed, so a machine can download the model from Cloudflare
+instead of Hugging Face. Confirmed live: the route answers
+`501 No R2 bucket is bound…` until a bucket exists.
+
+R2 has to be enabled once in the dashboard; on this account the API currently
+answers `code 10042 Please enable R2 through the Cloudflare Dashboard`. After
+that:
+
+```
+npx wrangler r2 bucket create song-weights
+npx wrangler r2 object put song-weights/ace-step/model.safetensors --file=<path>
+```
+
+and uncomment the `r2_buckets` block in `wrangler.pool.jsonc`. What R2 cannot do
+is run inference: a Worker is a 128 MB isolate with no GPU, so the 10 GB can be
+stored and delivered from Cloudflare, never executed there.
+
 ### Start at boot, before anyone logs in (optional, needs admin once)
 
 The logon Run key needs somebody to sign in first. A Scheduled Task does not:

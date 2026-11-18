@@ -20,6 +20,17 @@
       "id": "41fccf777bca40b19f53d7c62d4598cc"
     }
   ],
+  // Optional: store the ~10 GB checkpoint on Cloudflare and stream it to the GPU
+  // machines from /weights/<key>. R2 has no egress fee; a Worker still cannot run
+  // the model, so this is the download and the versioning, not the compute.
+  //
+  //   npx wrangler r2 bucket create song-weights
+  //   npx wrangler r2 object put song-weights/ace-step/model.safetensors --file=...
+  //
+  // then uncomment:
+  // "r2_buckets": [
+  //   { "binding": "WEIGHTS", "bucket_name": "song-weights" }
+  // ],
   "observability": {
     "enabled": true
   }

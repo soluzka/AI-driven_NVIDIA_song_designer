@@ -36,6 +36,12 @@ const MODEL_ROUTES = [
   /^\/last_song$/i,
 ];
 
+// The checkpoint can live in R2 and be streamed from here: 10 GB is storage, and
+// R2 has no egress fee, so a machine can pull the weights from Cloudflare instead
+// of from Hugging Face. It still cannot be *run* here — that needs CUDA — but the
+// download, the versioning and the caching do fit.
+const WEIGHTS_PREFIX = '/weights/';
+
 const POOL_KEY = 'pool';
 const POOL_LIMIT = 16;
 const POOL_TTL_MS = 7 * 24 * 60 * 60 * 1000;   // a machine silent this long is dropped
@@ -144,6 +150,26 @@ export default {
 
     if (MODEL_ROUTES.some((route) => route.test(url.pathname))) {
       return proxy(request, env, url);
+    }
+
+    if (url.pathname.startsWith(WEIGHTS_PREFIX)) {
+      if (!env.WEIGHTS) {
+        return json({
+          error: 'No R2 bucket is bound to this Worker. Create one and add it to '
+            + 'wrangler.pool.jsonc as a binding named WEIGHTS; the checkpoint is stored, '
+            + 'not run, here: a Worker has no GPU.',
+        }, 501);
+      }
+      const key = decodeURIComponent(url.pathname.slice(WEIGHTS_PREFIX.length));
+      const object = await env.WEIGHTS.get(key);
+      if (!object) return json({ error: 'No such object: ' + key }, 404);
+      const headers = new Headers();
+      headers.set('content-type', (object.httpMetadata && object.httpMetadata.contentType) || 'application/octet-stream');
+      headers.set('content-length', String(object.size));
+      headers.set('cache-control', 'public, max-age=31536000, immutable');
+      headers.set('etag', object.httpEtag || '');
+      headers.set('Access-Control-Allow-Origin', '*');
+      return new Response(object.body, { status: 200, headers });
     }
 
     if (url.pathname === '/join' && request.method === 'POST') {

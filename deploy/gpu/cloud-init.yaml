@@ -1,0 +1,53 @@
+#!cloud-config
+#
+# A rented GPU that joins the pool by itself.
+#
+# On RunPod / Vast / Lambda / any provider that accepts cloud-init, paste this
+# file as the instance's user-data, fill the three values at the bottom, and start
+# the instance. Nothing else is typed: it installs the environment, the models,
+# the boot service, and publishes the machine's address to Cloudflare 2. The site
+# starts using that card within a couple of minutes of the machine coming up.
+#
+# If the provider has no cloud-init field, the same result is one line in its web
+# terminal:
+#
+#   curl -fsSL https://browser.bpiersing.workers.dev/join.sh | \
+#     bash -s -- --key <JOIN_KEY> --token <TUNNEL_TOKEN> --hostname ai.example.com
+#
+package_update: true
+packages:
+  - curl
+  - unzip
+  - ffmpeg
+  - git
+
+write_files:
+  - path: /etc/song-stack.env
+    permissions: '0600'
+    content: |
+      TUNNEL_TOKEN=__TUNNEL_TOKEN__
+      TUNNEL_HOSTNAME=__TUNNEL_HOSTNAME__
+      QUICK_TUNNEL=__QUICK_TUNNEL__
+      SONG_ENDPOINT_KEY=__JOIN_KEY__
+      SITE_URL=https://browser.bpiersing.workers.dev
+      SONG_WARM=1
+
+runcmd:
+  - |
+    export SONG_ENDPOINT_KEY='__JOIN_KEY__'
+    export TUNNEL_TOKEN='__TUNNEL_TOKEN__'
+    export TUNNEL_HOSTNAME='__TUNNEL_HOSTNAME__'
+    export QUICK_TUNNEL='__QUICK_TUNNEL__'
+    curl -fsSL https://browser.bpiersing.workers.dev/join.sh -o /tmp/join.sh
+    bash /tmp/join.sh
+  - systemctl enable --now song-stack.service
+
+final_message: |
+  The GPU is joining the pool. Watch it with: journalctl -u song-stack -f
+  It appears at https://browser.bpiersing.workers.dev/api/song/pool
+#
+# Fill these three before pasting:
+#   __JOIN_KEY__        build\song_endpoint.key on the PC that deploys the site
+#   __TUNNEL_TOKEN__    cloudflared tunnel token song-ai   (empty = quick tunnel)
+#   __TUNNEL_HOSTNAME__ the hostname that token is bound to (empty for quick)
+#   __QUICK_TUNNEL__    1 to use a throwaway trycloudflare.com address

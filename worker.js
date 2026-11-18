@@ -231,7 +231,9 @@ async function kaggleStatus(env, auth) {
     if (!answer.ok) return null;
     const body = await answer.json();
     const mine = Array.isArray(body) ? body.find((k) => String(k.ref || '').endsWith('/' + GPU_SLUG)) : null;
-    return mine ? { ref: mine.ref, lastRunTime: mine.lastRunTime || null } : null;
+    // Deliberately no ref: it is "<handle>/song-gpu-pool", and this route is public.
+    // The account name is not something this site hands out.
+    return mine ? { lastRunTime: mine.lastRunTime || null } : null;
   } catch (err) {
     return null;
   }
@@ -307,7 +309,6 @@ async function startGpu(request, env, url) {
   return json({
     configured: true,
     started: Boolean(pushed),
-    url: 'https://www.kaggle.com/code/' + auth.handle + '/' + GPU_SLUG,
     note: 'The GPU boots, runs the song service, opens a tunnel and joins the pool. It shows up here '
       + 'when it reports the model loaded, which takes a few minutes on a fresh machine.',
     said,

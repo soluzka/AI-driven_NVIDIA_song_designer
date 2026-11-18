@@ -66,8 +66,8 @@ Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
     -Settings $settings -Principal $principal -Force | Out-Null
 
 Write-Host "registered: $taskName (AtStartup, S4U, no window)"
-Write-Host '  Start-ScheduledTask -TaskName ''' + $taskName + '''    to run it now'
-Write-Host '  Get-ScheduledTaskInfo -TaskName ''' + $taskName + '''   to see the last result'
+Write-Host "  Start-ScheduledTask -TaskName '$taskName'    to run it now"
+Write-Host "  Get-ScheduledTaskInfo -TaskName '$taskName'   to see the last result"
 Write-Host ''
 Write-Host 'The logon Run key can stay as a second chance; the task and the watchdog'
 Write-Host 'both check for a running launcher, so only one copy ever runs.'

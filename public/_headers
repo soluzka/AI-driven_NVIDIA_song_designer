@@ -9,3 +9,12 @@
 
 /config.js
   Cache-Control: no-store
+
+# The Colab cell and the notebook are copied into a runtime once and then run;
+# a device or the edge holding yesterday's copy is why a fixed cell looks
+# unchanged. Same reason as above.
+/song_gpu.ipynb
+  Cache-Control: no-store
+
+/song_gpu_cell.py
+  Cache-Control: no-store

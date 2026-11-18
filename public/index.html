@@ -926,33 +926,30 @@
             z-index: 120;
         }
         .offline-banner[hidden] { display: none; }
-        /* The saved songs: kept in this browser, so they open with no connection. */
-        .saved-overlay {
-            position: fixed; inset: 0; z-index: 200;
-            background: rgba(6, 10, 12, 0.72);
-            display: flex; align-items: center; justify-content: center; padding: 20px;
+        /* The saved songs: laid out where search results normally appear, so the
+           library is browsed the same way the rest of the site is. */
+        .saved-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 14px;
+            padding: 4px 0 24px;
         }
-        .saved-panel {
-            width: min(680px, 100%); max-height: 84vh; overflow: auto;
-            background: #11181b; border: 1px solid #243036; border-radius: 14px;
-            padding: 18px 18px 8px; color: #dfe8ea;
-        }
-        .saved-panel h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
-        .saved-panel p.hint { margin: 0 0 12px; font-size: 12px; color: #8b9aa0; }
-        .saved-row {
-            border-top: 1px solid #1e2629; padding: 12px 0;
+        .saved-card {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid #232f34;
+            border-radius: 12px;
+            padding: 12px 13px;
             display: flex; flex-direction: column; gap: 8px;
         }
-        .saved-title { font-size: 13px; line-height: 1.4; }
+        .saved-title { font-size: 13px; line-height: 1.4; color: #dfe8ea; }
         .saved-meta { font-size: 11.5px; color: #8b9aa0; }
-        .saved-row audio { width: 100%; height: 32px; }
+        .saved-card audio { width: 100%; height: 32px; }
         .saved-actions { display: flex; gap: 12px; font-size: 12px; }
         .saved-actions a, .saved-actions button {
             background: none; border: 0; padding: 0; cursor: pointer;
             color: #6fd2c3; font-size: 12px; text-decoration: none;
         }
         .saved-actions .drop { color: #e08585; }
-        .saved-empty { padding: 18px 0 20px; font-size: 13px; color: #8b9aa0; }
         .offline-banner .dot {
             width: 8px; height: 8px; border-radius: 50%;
             background: #ffcf6b; flex: none;
@@ -4129,6 +4126,7 @@
                     id: info.id,
                     title: info.title || 'Untitled song',
                     model: info.model || '',
+                    query: info.query || '',
                     createdAt: new Date().toISOString(),
                     bytes: blob.size,
                     blob: blob
@@ -4143,42 +4141,50 @@
         function savedStamp(item) {
             const when = new Date(item.createdAt || 0);
             const size = item.bytes ? (item.bytes / 1048576).toFixed(1) + ' MB' : '';
-            return [when.toLocaleString(), item.model, size].filter(Boolean).join(' · ');
+            const searched = item.query ? `what was searched: "${item.query}"` : '';
+            return [when.toLocaleString(), item.model, size, searched].filter(Boolean).join(' · ');
         }
 
+        // The library is shown where search results normally appear, not in a modal:
+        // it is the same thing - a list of things you can play - so it is browsed in
+        // the same place, with the same summary line above it.
         async function openSavedSongs() {
             const songs = (await savedList()).sort((a, b) =>
                 String(b.createdAt).localeCompare(String(a.createdAt)));
-            const overlay = document.createElement('div');
-            overlay.className = 'saved-overlay';
-            const panel = document.createElement('div');
-            panel.className = 'saved-panel';
-            const heading = document.createElement('h2');
-            heading.textContent = 'Saved songs';
-            const hint = document.createElement('p');
-            hint.className = 'hint';
-            hint.textContent = songs.length
-                ? songs.length + ' kept in this browser, on this device. They play without a connection.'
-                : 'Nothing saved yet. A song is kept here when the model finishes singing it, never before.';
-            panel.appendChild(heading);
-            panel.appendChild(hint);
-            const close = document.createElement('button');
-            close.className = 'top-btn';
-            close.textContent = 'Close';
-            close.onclick = () => { overlay.remove(); };
-            overlay.onclick = event => { if (event.target === overlay) overlay.remove(); };
+            const container = document.getElementById('resultsContainer');
+            if (!container) return;
+            container.innerHTML = '';
+
+            const summary = document.createElement('div');
+            summary.className = 'results-summary';
+            const count = document.createElement('span');
+            count.className = 'match-count';
+            count.textContent = songs.length
+                ? `${songs.length.toLocaleString()} saved ${songs.length === 1 ? 'song' : 'songs'}`
+                : 'No saved songs yet';
+            const note = document.createElement('span');
+            note.className = 'summary-meta';
+            note.textContent = 'Kept in this browser, on this device: they play with the internet off.';
+            summary.appendChild(count);
+            summary.appendChild(note);
+            container.appendChild(summary);
 
             if (!songs.length) {
                 const empty = document.createElement('div');
-                empty.className = 'saved-empty';
-                empty.textContent = 'Generate a song with the model and it appears here by itself, '
-                    + 'and still plays with the internet off.';
-                panel.appendChild(empty);
+                empty.className = 'empty-state';
+                empty.innerHTML = '<div class="empty-icon">♪</div>'
+                    + '<div class="empty-title">Nothing saved yet</div>'
+                    + '<div class="empty-desc">A song is kept here when the model finishes singing it, never before.</div>';
+                container.appendChild(empty);
+                container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                return;
             }
 
+            const grid = document.createElement('div');
+            grid.className = 'saved-grid';
             songs.forEach(item => {
-                const row = document.createElement('div');
-                row.className = 'saved-row';
+                const card = document.createElement('div');
+                card.className = 'saved-card';
                 const title = document.createElement('div');
                 title.className = 'saved-title';
                 title.textContent = item.title;
@@ -4187,12 +4193,13 @@
                 meta.textContent = savedStamp(item);
                 const player = document.createElement('audio');
                 player.controls = true;
-                // A blob URL per row, made when the panel opens and released when it
-                // closes: keeping them alive would hold every song in memory.
+                player.preload = 'none';
+                // A blob URL per card, made when the list is drawn: the audio itself is
+                // in IndexedDB, so this is the only thing holding it in memory.
                 const objectUrl = URL.createObjectURL(item.blob);
                 player.src = objectUrl;
                 player.addEventListener('play', () => {
-                    document.querySelectorAll('.saved-row audio').forEach(other => {
+                    container.querySelectorAll('.saved-card audio').forEach(other => {
                         if (other !== player) other.pause();
                     });
                 });
@@ -4208,22 +4215,19 @@
                 drop.onclick = async () => {
                     await savedWrite('readwrite', store => store.delete(item.id));
                     URL.revokeObjectURL(objectUrl);
-                    row.remove();
+                    card.remove();
                 };
                 actions.appendChild(download);
                 actions.appendChild(drop);
-                row.appendChild(title);
-                row.appendChild(meta);
-                row.appendChild(player);
-                row.appendChild(actions);
-                panel.appendChild(row);
+                card.appendChild(title);
+                card.appendChild(meta);
+                card.appendChild(player);
+                card.appendChild(actions);
+                grid.appendChild(card);
             });
-
-            panel.appendChild(close);
-            overlay.appendChild(panel);
-            document.body.appendChild(overlay);
+            container.appendChild(grid);
+            container.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
-        window.openSavedSongs = openSavedSongs;
 
         // The pool badge: how many machines can render a song right now, and with
         // no GPU online it is the thing to press — the wake path goes through
@@ -5270,7 +5274,14 @@
                     saveAudio.download = 'library-song.wav';
                     // The only place a song enters the library: the model sang it, the
                     // lyrics are on it, and (when one was fitted) it is in your voice.
-                    saveSongToLibrary(source, { id: songId, title: head.textContent, model: swapped.model || 'the song model' });
+                    saveSongToLibrary(source, {
+                        id: songId,
+                        title: head.textContent,
+                        model: swapped.model || 'the song model',
+                        // What was in the search bar when this song was designed, so the
+                        // library says where each one came from.
+                        query: searchInput ? searchInput.value.trim() : ''
+                    });
                 });
             } catch (err) {
                 panel.innerHTML = '';

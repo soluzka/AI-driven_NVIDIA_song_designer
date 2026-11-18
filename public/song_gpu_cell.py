@@ -71,15 +71,31 @@ else:
 
 say('3/5 the packages (3-6 minutes; pip prints nothing until it finishes) ...')
 pip = [sys.executable, '-m', 'pip', 'install', '-q']
-run(pip + ['flask', 'flask-cors', 'soundfile', 'librosa', 'scipy', 'demucs',
-           'hf_transfer', 'spacy'])
-run(pip + ['transformers==4.57.6', 'huggingface-hub==0.36.2', 'numpy==2.4.6'])
+# The list is the repository's own song_service/requirements.txt, the one the Windows
+# installer uses, so it carries every package ACE-Step imports (loguru, cutlet,
+# fugashi, num2words, pypinyin, hangul-romanize, peft, accelerate, diffusers, ...)
+# and the pins that matter: transformers 4.57.6 with huggingface-hub 0.36.2,
+# diffusers/gradio capped to what that hub allows, py3langid 0.2.2 for the
+# segmenter. Only the torch lines are skipped: they name the +cu126 wheels from a
+# Windows-only index, and Colab/Kaggle already have a CUDA build.
+SKIP = ('torch', 'torchaudio', 'torchvision')
+specs = []
+for line in open(os.path.join(SERVICE, 'requirements.txt')):
+    line = line.split('#')[0].strip()
+    name = re.split(r'[=<>!\[ ]', line, 1)[0].strip().lower() if line else ''
+    if name and name not in SKIP:
+        specs.append(line)
 # ACE-Step's metadata pins transformers==4.50.0 against the 4.57.6 the lyric model
 # needs, so its code is installed without its dependency list.
-run(pip + ['--no-deps', 'git+https://github.com/ace-step/ACE-Step.git'])
+run(pip + specs + ['--no-deps', 'git+https://github.com/ace-step/ACE-Step.git'])
 
 say('4/5 checking the imports ...')
-from acestep.pipeline_ace_step import ACEStepPipeline  # noqa: E402,F401
+try:
+    from acestep.pipeline_ace_step import ACEStepPipeline  # noqa: E402,F401
+except ModuleNotFoundError as missing:
+    say('missing package:', missing.name)
+    say('install it with:', sys.executable, '-m pip install', missing.name)
+    raise
 say('packages in place')
 
 # --- the weights ------------------------------------------------------------

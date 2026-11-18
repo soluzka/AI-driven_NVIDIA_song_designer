@@ -1164,13 +1164,94 @@ does not carry one and `git status` stays quiet about them:
 | `build\song_endpoint.key` | publishes a machine into the pool |
 | `build\kaggle.json` | boots a GPU on your account |
 | `build\tunnel_url.txt` | one session's tunnel address, useless tomorrow |
-| `song_service\models\` | ~10 GB of ACE-Step weights |
+| `song_service\models\` | ~10 GB of ACE-Step weights, and the `dataset-metadata.json` the packer writes there |
+| `build\kaggle_pack\` | 11 GB of repo copy, Linux packages and ACE-Step source, all rebuilt by the packer |
+| `build\kaggle_pack\requirements-offline.txt` | the filtered list (`tokenizers==0.22.1`, no torch, no chatterbox, no cutlet) |
 | `.venv\`, `song_service\.venv\` | the Python environments |
 | `tools\bin\*.exe` | `cloudflared.exe`, a 53 MB binary fetched on first run |
 
 When committing, name the files (`git add worker.js tools/set_kaggle.ps1 README.md`) rather
 than `git add -A`; if a credential is ever committed, revoke it at the provider
 first and treat the old value as burnt.
+
+### The offline datasets (mounting instead of downloading)
+
+A pushed kernel does not always get the network, so the packer builds two private
+datasets that the kernel mounts at `/kaggle/input` and never has to download from:
+
+| Dataset | Contents | Read at |
+| --- | --- | --- |
+| `<handle>/song-gpu-code` | the repo, `pylibs` (Linux packages), `ace-step` source, `cloudflared-linux-amd64` | `/kaggle/input/song-gpu-code/repo` |
+| `<handle>/song-gpu-weights` | `song_service\models` uploaded as it is | `/kaggle/input/song-gpu-weights/ACE-Step-v1-3.5B` |
+
+The weights dataset is `song_service\models` itself, with a `dataset-metadata.json`
+written beside the models. It is gitignored, so the packer never stages an 11 GB copy
+and nothing about it reaches GitHub.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\kaggle_pack.ps1              # repo + ACE-Step + cloudflared
+powershell -ExecutionPolicy Bypass -File tools\kaggle_pack.ps1 -Packages    # + the Linux packages
+powershell -ExecutionPolicy Bypass -File tools\kaggle_pack.ps1 -Weights     # report the weight sizes
+powershell -ExecutionPolicy Bypass -File tools\kaggle_pack.ps1 -Create      # create/update both datasets
+```
+
+`-Create` reads `build\kaggle.json` for the token (written by `tools\set_kaggle.ps1`),
+so the key is never typed into a shell or a file that gets committed.
+
+#### The package target, exactly
+
+The kernel runs **Python 3.13.16** on a **Tesla T4 (15360 MiB)** with **torch 2.11.0+cu130**
+already installed, so the packed packages are built for that interpreter and platform:
+
+```
+uv pip install --target build/kaggle_pack/code/pylibs ^
+    --python-version 3.13 ^
+    --python-platform x86_64-manylinux_2_28 ^
+    --only-binary :all: --no-cache ^
+    -r build/kaggle_pack/requirements-offline.txt
+```
+
+`--only-binary :all:` is what makes the result usable offline: a package that could
+only be built from source would be built for Windows here and fail on Kaggle. When it
+cannot be satisfied, the fix is to pin the version that has a `cp313` `manylinux`
+wheel, not to drop the flag.
+
+Three things are deliberately left out of `requirements-offline.txt`:
+
+| Left out | Why |
+| --- | --- |
+| `torch`, `torchaudio`, `torchvision` | the image already has torch 2.11.0+cu130; the repo pins a CUDA-index build that cannot be reproduced offline |
+| `chatterbox-tts` | it pins `transformers==5.2.0`, ACE-Step needs `4.57.6`, so they can never share an environment; the voice weights also come from the Hub at runtime |
+| `cutlet` | its dependency `mojimoji` is a source-only C extension with no Linux wheel; ACE-Step imports it lazily, for Japanese romanisation only |
+
+Checking which requirement pulls those in:
+
+```
+grep -n -i "cutlet\|mojimoji\|py3langid" song_service/requirements.txt voice_service/requirements-shared.txt
+grep -v -i '^cutlet$' build/kaggle_pack/requirements-offline.txt > /tmp/r2.txt
+```
+
+The second line is how the filtered list was produced after `cutlet` was found at
+`song_service/requirements.txt:45`.
+
+#### The pin that broke the first real run
+
+The first run that reached a worker got as far as importing ACE-Step and stopped at:
+
+```
+ImportError: tokenizers>=0.22.0,<=0.23.0 is required for a normal functioning of this
+module, but found tokenizers==0.23.3.
+```
+
+Kaggle's image carries `tokenizers` 0.23.3, transformers 4.57.6 refuses anything above
+0.23.0, and `pip install transformers` alone will not correct a version that is already
+"satisfied". `tools\kaggle_pack.ps1` therefore appends `tokenizers==0.22.1` to the
+offline list, and the offline boot prefers the mounted `pylibs` directory before
+anything the image ships.
+
+0.22.1 and not 0.23.0, even though that is the ceiling transformers names: PyPI has
+no 0.23.0 release, so asking for it fails the whole resolution with `there is no
+version of tokenizers==0.23.0`.
 
 ### One installer, and what it installs
 

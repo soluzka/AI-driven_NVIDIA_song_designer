@@ -78,3 +78,6 @@ build/no_pool.txt
 
 # The offline Kaggle staging folder: an 11 GB copy of the weights and code.
 build/kaggle_pack/
+
+# Written by tools\kaggle_pack.ps1 next to the models for the weights dataset.
+song_service/models/dataset-metadata.json

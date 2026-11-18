@@ -114,7 +114,7 @@ if ($Check) {
     Say 'What this environment has:'
     $rows = @(
         @{ name = 'flask (site)';            value = (Probe 'flask' 'flask.__version__') },
-        @{ name = 'flask_socketio (site)';   value = (Probe 'flask_socketio' 'flask_socketio.__version__') },
+        @{ name = 'flask_socketio (site)';   value = (Probe 'flask_socketio' "getattr(flask_socketio, '__version__', 'ok')") },
         @{ name = 'yt_dlp (downloader)';     value = (Probe 'yt_dlp.version' 'yt_dlp.version.__version__') },
         @{ name = 'torch';                   value = (Probe 'torch' 'torch.__version__') },
         @{ name = 'cuda usable';             value = (Probe 'torch' "'yes' if torch.cuda.is_available() else 'NO - cpu only'") },

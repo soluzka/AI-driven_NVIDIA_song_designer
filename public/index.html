@@ -3945,23 +3945,16 @@
                 ]);
             }
             const published = String(window.remoteSongApi || '').trim().replace(/\/+$/, '');
-            let publishedAnswers = false;
-            if (published) {
-                try {
-                    const probe = await fetchBounded(published + '/health', {}, 4000);
-                    publishedAnswers = probe.ok;
-                    if (probe.ok) add(published);
-                } catch (err) {}
-            }
+            // Pool first, on this PC as well: the machine that published itself to the
+            // site is what "Connect my model" connects to, so a song goes through the
+            // same address the header names. This PC's own endpoint is the fallback,
+            // not the default. The published address is added whether or not a
+            // four-second probe answered it - a busy tunnel can miss one while still
+            // taking a job, and dropping it here is what left loopback as the only
+            // candidate on a page that is not allowed to reach loopback.
+            add(published);
             if (window.SONG_API) add(window.SONG_API);
-            if (!servedLocally) add('http://127.0.0.1:8090');
-            // A published machine that missed a four-second health check is still
-            // worth asking. The first song's audio is streamed from that same tunnel,
-            // and while megabytes are going through it a health probe can be slow
-            // enough to fail - which dropped the one address that works and left
-            // loopback alone, a thing a public page is not allowed to reach. It is
-            // tried last, but it is tried.
-            if (published && !publishedAnswers) add(published);
+            add('http://127.0.0.1:8090');
             return bases;
         }
 
@@ -4360,12 +4353,16 @@
             // The pool used to come first, which reported "AI ready · Pool" to someone
             // who had connected nothing to it - the desktop install publishes itself
             // there on every start, so that count is not a choice anyone made.
+            // Pool first, then this PC's own endpoint. The header names the machine
+            // that actually answered, and with the pool first that is the pooled
+            // machine - "AI ready · Pool" - instead of this PC claiming the model
+            // even when the pooled one is the one doing the work.
             const bases = savedModel
                 ? [savedModel]
                 : [
+                    String(window.remoteSongApi || ''),
                     String(window.SONG_API || '').replace(/\/+$/, ''),
                     servedLocally ? location.origin : '',
-                    String(window.remoteSongApi || ''),
                 ];
             let info = null;
             let answeredBy = '';
@@ -4428,9 +4425,12 @@
             // answered is this computer's own, the page asks the service beside it to
             // publish the tunnel: the join key stays on the machine and never reaches
             // the browser, and a machine that nobody opens the page on never joins.
-            if (answeredHere && !window._poolJoinTried) {
+            if (!window._poolJoinTried) {
                 window._poolJoinTried = true;
-                const joinBase = answeredBy || location.origin;
+                // The song service on this machine, not whichever machine answered:
+                // only that service has the join key and the tunnel address.
+                const joinBase = String(window.SONG_API || 'http://127.0.0.1:8090')
+                    .trim().replace(/\/+$/, '');
                 fetchBounded(joinBase + '/api/pool/join', {
                     method: 'POST',
                     headers: { 'content-type': 'application/json' },
@@ -4474,10 +4474,17 @@
                     : info.warm_failed
                         ? `${info.gpu} - loading the model failed: ${info.warm_failed}`
                         : `${info.gpu} - the model is still loading onto the card (${clock}); a song waits for it to finish`;
-            if (wakeBtn && !wakeBusy) {
+            if (wakeBtn) {
                 // "Ready" means ready. While the weights are still loading it says so,
                 // and when the answer came from a pooled machine the label says that
                 // too rather than passing it off as this computer's model.
+                //
+                // A press in flight does not hold the green back: a model that says
+                // loaded is green even while wakeLocalAI is still finishing, which is
+                // how a working model ended up sitting under a grey button.
+                if (!loaded && wakeBusy) {
+                    // leave a press alone while it is starting something
+                } else {
                 wakeBtn.textContent = loaded
                     ? 'AI ready · ' + answeredWhat
                     : 'AI not connected yet';
@@ -4489,6 +4496,17 @@
                     : (info.warm_failed
                         ? 'The model failed to load on ' + (info.gpu || 'that machine') + ': ' + info.warm_failed
                         : 'The service is up but the model is still loading (' + (warmSeconds ? clock : 'just started') + '); songs start when it is ready.');
+                }
+            }
+            // One rule so the two can never disagree: "AI ready" is shown only on the
+            // green state, and a green state always says "AI ready".
+            if (wakeBtn) {
+                const saysReady = /^AI ready/.test((wakeBtn.textContent || '').trim());
+                if (saysReady && wakeBtn.dataset.state !== 'ready') {
+                    wakeBtn.dataset.state = 'ready';
+                } else if (!saysReady && wakeBtn.dataset.state === 'ready') {
+                    wakeBtn.textContent = 'AI ready · ' + answeredWhat;
+                }
             }
         }
 

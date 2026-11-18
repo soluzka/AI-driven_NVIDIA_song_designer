@@ -141,6 +141,20 @@ run([sys.executable, 'song_service/install.py', '--weights'], cwd=REPO)
 # --- the service ------------------------------------------------------------
 say()
 say('starting the service ...')
+# A cell that is re-run after a package fix must replace the process that is
+# already holding the old modules. The command line here is "python app.py", so the
+# match is on that, not on a path that never appears in it.
+killed = subprocess.run(['pkill', '-f', 'app.py'], capture_output=True, text=True)
+if killed.returncode == 0:
+    say('stopped the services from the previous run so the installed packages load')
+    time.sleep(2)
+try:
+    version = subprocess.run([sys.executable, '-c',
+                              'import importlib.metadata as m; print(m.version("py3langid"))'],
+                             capture_output=True, text=True).stdout.strip()
+    say('py3langid', version or 'unknown', '(ACE-Step needs 0.2.2)')
+except Exception:
+    pass
 os.environ.update(SONG_PORT=str(PORT), SONG_HOST='0.0.0.0', SONG_WARM='1')
 SONG_LOG = os.path.join(WORK, 'song.log')
 log = open(SONG_LOG, 'w')

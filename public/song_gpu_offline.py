@@ -52,10 +52,56 @@ def mount(name):
     return direct if os.path.exists(direct) else ''
 
 
+def unzip_all(folder, dest, names=None):
+    """Extract every .zip in a mounted dataset into dest, and return dest.
+
+    Uploading with `--dir-mode zip` leaves the dataset as repo.zip / pylibs.zip
+    rather than as directories - Kaggle does not unpack them - so the mount has to be
+    expanded before anything can be imported from it. /kaggle/input is read-only, so
+    the expansion goes to the working directory.
+    """
+    import zipfile
+    os.makedirs(dest, exist_ok=True)
+    if not os.path.isdir(folder):
+        return dest
+    for name in sorted(os.listdir(folder)):
+        if not name.lower().endswith('.zip'):
+            continue
+        if names and not any(part in name.lower() for part in names):
+            continue
+        target = os.path.join(dest, name[:-4])
+        if os.path.isdir(target):
+            continue
+        say('extracting', name, '...')
+        with zipfile.ZipFile(os.path.join(folder, name)) as archive:
+            archive.extractall(target)
+        # A zip of a folder usually carries that folder as its root; lift the
+        # contents up so the paths below are the same either way it was made.
+        entries = os.listdir(target)
+        if len(entries) == 1 and os.path.isdir(os.path.join(target, entries[0])):
+            inner = os.path.join(target, entries[0])
+            for item in os.listdir(inner):
+                os.rename(os.path.join(inner, item), os.path.join(target, item))
+            os.rmdir(inner)
+    return dest
+
+
 CODE = os.environ.get('SONG_CODE') or mount('repo')
 if not CODE or not os.path.isdir(CODE):
-    raise SystemExit('no mounted repository: expected /kaggle/input/<code dataset>/repo. '
-                     'Run tools\\kaggle_pack.ps1 and attach song-gpu-code to the kernel.')
+    # The dataset may be mounted as zips instead of directories, which is what the
+    # first real run hit: the mount existed, repo/ inside it did not.
+    code_mount = os.path.join('/kaggle/input', 'song-gpu-code')
+    if os.path.isdir(code_mount):
+        packed = unzip_all(code_mount, os.path.join(WORK, 'pack'))
+        candidate = os.path.join(packed, 'repo')
+        if os.path.isdir(candidate):
+            CODE = candidate
+        else:
+            say('extracted', packed, 'but there is no repo/ in it:',
+                sorted(os.listdir(packed))[:10])
+if not CODE or not os.path.isdir(CODE):
+    raise SystemExit('no mounted repository: expected /kaggle/input/<code dataset>/repo or '
+                     'repo.zip. Run tools\\kaggle_pack.ps1 and attach song-gpu-code to the kernel.')
 REPO = os.path.dirname(CODE) if os.path.basename(CODE) == 'repo' else CODE
 SERVICE = os.path.join(REPO, 'song_service')
 say('repo:', CODE)
@@ -91,10 +137,19 @@ else:
     raise SystemExit('no ACE-Step source beside the repo: ' + ace)
 
 # --- the weights ------------------------------------------------------------
+weights_mount = os.path.join('/kaggle/input', 'song-gpu-weights')
 weights = mount('ACE-Step-v1-3.5B')
+if not weights and os.path.isdir(weights_mount):
+    # Zipped weights are extracted here too; only the ACE-Step tree is unpacked,
+    # because the lyricist is optional and 7.7 GB already fills the working disk.
+    packed_weights = unzip_all(weights_mount, os.path.join(WORK, 'weights'), names=('ace-step',))
+    for name in sorted(os.listdir(packed_weights)):
+        if name.lower().startswith('ace-step'):
+            weights = os.path.join(packed_weights, name)
+            break
 if not weights:
     raise SystemExit('no mounted ACE-Step weights: expected '
-                     '/kaggle/input/<weights dataset>/ACE-Step-v1-3.5B')
+                     '/kaggle/input/<weights dataset>/ACE-Step-v1-3.5B (or its .zip)')
 os.environ['ACE_CHECKPOINT'] = weights
 lyrics = mount('Qwen2.5-1.5B-Instruct')
 if lyrics:

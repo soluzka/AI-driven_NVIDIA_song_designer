@@ -1014,6 +1014,81 @@ the site uses it. On a machine with a cloud-init field, paste
 `deploy/gpu/cloud-init.yaml` with the three values filled in: the same thing
 happens with no terminal at all.
 
+### Starting a GPU from the site (Kaggle)
+
+When the pool is empty the header shows one more button, **Start a GPU**. It asks
+the site to boot a free Kaggle GPU, which runs this project's own boot, opens a
+tunnel and joins the pool by itself — so `AI ready · Pool` can appear with nobody
+at a keyboard.
+
+Colab is not what happens here, and cannot be: Google gives no API that starts a
+Colab runtime, so a web page can never boot one. Kaggle's token can, which is why
+the button is wired to Kaggle.
+
+**What has to exist on the site**, as Worker secrets (never in the repository):
+
+| Secret | Where it comes from |
+| --- | --- |
+| `KAGGLE_USERNAME` | the `username` field of your `kaggle.json` |
+| `KAGGLE_KEY` | the `key` field of the same file |
+| `SONG_JOIN_KEY` | `build\song_endpoint.key`, so the started card can add itself to the pool |
+
+**Building `build\kaggle.json`, once per machine**
+
+1. Sign in at <https://www.kaggle.com/settings/api> and press **Create New Token**.
+   A `kaggle.json` downloads; it looks like this, and nothing else is needed:
+
+   ```json
+   { "username": "your-kaggle-name", "key": "a long hex string" }
+   ```
+
+2. Put that file in this project as `build\kaggle.json`. A placeholder with
+   `PASTE_…` values is already there: open it in Notepad and replace the two
+   values with the ones from that page, or simply overwrite the file with the
+   downloaded one. It must stay at that path; `build\kaggle.json` is in
+   `.gitignore`, so it cannot be committed.
+
+3. Store the secrets and deploy:
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File tools\set_kaggle.ps1
+   powershell -NoProfile -ExecutionPolicy Bypass -File build\wr.ps1 deploy
+   ```
+
+   The script refuses the placeholder text rather than storing a fake key, feeds
+   each value to wrangler through a temporary file on standard input (never the
+   command line, never the console), and deletes that file afterwards. If wrangler
+   is missing it says to run `build\wr.ps1 deploy` once first.
+
+4. Check it took, without starting anything:
+
+   ```powershell
+   curl.exe -s https://browser.bpiersing.workers.dev/api/gpu/status
+   # {"lastStart":0,"status":null,"configured":true}
+   ```
+
+   `configured: false` means the Worker has no Kaggle secret yet, and the button
+   answers with exactly that instruction. `started` in `POST /api/gpu/start`
+   means Kaggle accepted the run, not that a GPU is on the pool yet: the card has
+   to boot, install, load ~10 GB of weights and publish, which takes minutes.
+
+5. Push the code that makes this work:
+
+   ```powershell
+   git add worker.js tools/set_kaggle.ps1 README.md .gitignore
+   git commit -m "Start a free GPU when the pool is empty"
+   git push
+   ```
+
+   The credential file is deliberately **not** in that list. Never `git add
+   build\kaggle.json` or `git add -A` with it present; if it was ever committed,
+   revoke the token at Kaggle, create a new one, and treat the old key as burnt.
+
+**Limits worth knowing:** one start per thirty minutes (the cooldown lives in KV
+as `gpu:started_at`), the weekly GPU allowance is Kaggle's, the kernel is private
+to your account, and a started card ends when its kernel session ends. The pool
+entry disappears with it, and the header goes back to `Start a GPU`.
+
 ### One installer, and what it installs
 
 `join.cmd` is the only install the site hands out, and it installs **everything**:

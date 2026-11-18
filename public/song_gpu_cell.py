@@ -99,6 +99,18 @@ for line in open(os.path.join(SERVICE, 'requirements.txt')):
 # needs, so its code is installed without its dependency list.
 run(pip + specs + ['--no-deps', 'git+https://github.com/ace-step/ACE-Step.git'])
 
+# The voice (chatterbox) is part of the work this card does: the song service calls
+# it over loopback on 8095, exactly as the Windows install runs it, so the public
+# tunnel keeps pointing at 8090 alone and there is no second public door. --no-deps
+# for the reason its own file documents: its metadata pins torch 2.6 and numpy 1.x,
+# which would replace this runtime's CUDA torch. Everything it imports is listed
+# there, so --no-deps loses nothing.
+say('  the voice (chatterbox) ...')
+voice_specs = [line.split('#')[0].strip()
+               for line in open(os.path.join(REPO, 'voice_service', 'requirements-shared.txt'))
+               if line.split('#')[0].strip()]
+run(pip + ['--no-deps'] + voice_specs)
+
 say('4/5 checking the imports ...')
 try:
     from acestep.pipeline_ace_step import ACEStepPipeline  # noqa: E402,F401
@@ -139,6 +151,39 @@ else:
     say('the service did not answer within 3 minutes. End of ' + SONG_LOG + ':')
     say(open(SONG_LOG).read()[-2000:])
     raise SystemExit('stopped before the tunnel: the service is not running')
+
+# --- the voice service ------------------------------------------------------
+say()
+say('starting the voice service on 8095 ...')
+VOICE_PORT_N = 8095
+os.environ['VOICE_PORT'] = str(VOICE_PORT_N)
+VOICE_LOG = os.path.join(WORK, 'voice.log')
+voice_log = open(VOICE_LOG, 'w')
+voice_proc = subprocess.Popen([sys.executable, 'app.py'],
+                              cwd=os.path.join(REPO, 'voice_service'),
+                              stdout=voice_log, stderr=subprocess.STDOUT)
+# /health answers before the model loads - torch is imported on the first sing - so
+# this only proves the port is up; the song service takes it from there, because
+# song_service reads VOICE_SERVICE (default 127.0.0.1:8095) over loopback.
+voice_health = ''
+for attempt in range(24):
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:%d/health' % VOICE_PORT_N,
+                                    timeout=5) as answer:
+            voice_health = answer.read().decode()
+        break
+    except Exception:
+        if attempt and attempt % 4 == 0:
+            say('  waiting for the voice ...', str(attempt * 5) + 's')
+        time.sleep(5)
+if voice_health:
+    say('voice:', voice_health[:200])
+else:
+    say('the voice service did not answer within 2 minutes. Last lines of ' + VOICE_LOG + ':')
+    try:
+        say(open(VOICE_LOG).read()[-1500:])
+    except Exception:
+        pass
 
 # --- the tunnel -------------------------------------------------------------
 say()

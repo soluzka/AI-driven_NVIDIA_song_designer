@@ -935,6 +935,10 @@
             padding: 4px 0 24px;
         }
         /* The card itself is a .video-card; only the transport and the actions are new. */
+        /* It is not a link and it is taller than a result card, so the two rules that
+           assume otherwise are turned off here. */
+        .saved-card { cursor: default; content-visibility: visible; contain-intrinsic-size: auto; }
+        .saved-card .card-desc { -webkit-line-clamp: 3; }
         .saved-card audio { width: 100%; height: 32px; margin-top: 8px; }
         .saved-card video { width: 100%; border-radius: 8px; margin-top: 8px; background: #000; }
         .saved-actions { display: flex; gap: 12px; font-size: 12px; }
@@ -4384,7 +4388,10 @@
                 meta.className = 'card-desc';
                 meta.textContent = savedStamp(item);
                 const chips = document.createElement('div');
-                chips.className = 'card-footer';
+                // genre-line is the chip row that already exists under a result card;
+                // card-footer is the card's bottom bar and put a second border and its
+                // own padding inside the body, which is what looked wrong.
+                chips.className = 'genre-line';
                 (item.genres || []).forEach(name => {
                     const chip = document.createElement('span');
                     chip.className = 'genre-chip';

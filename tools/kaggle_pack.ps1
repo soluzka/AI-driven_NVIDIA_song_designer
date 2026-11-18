@@ -201,8 +201,12 @@ Say "  powershell -ExecutionPolicy Bypass -File tools\kaggle_pack.ps1 -Packages 
 
 if ($Create) {
     if (-not $Owner) { throw 'no Kaggle owner handle: run tools\set_kaggle.ps1 first' }
-    $env:KAGGLE_USERNAME = (Get-Content (Join-Path $Root 'build\kaggle.json') -Raw | ConvertFrom-Json).username
-    $env:KAGGLE_KEY = (Get-Content (Join-Path $Root 'build\kaggle.json') -Raw | ConvertFrom-Json).key
+    $cred = Get-Content (Join-Path $Root 'build\kaggle.json') -Raw | ConvertFrom-Json
+    $env:KAGGLE_USERNAME = $cred.username
+    # The token Kaggle's settings page issues today is a KGAT_ token, and CLI 2.x only
+    # reads that as KAGGLE_API_TOKEN. Passed as KAGGLE_KEY it is rejected and the CLI
+    # prints "generate an API token" instead of uploading anything.
+    $env:KAGGLE_API_TOKEN = $cred.key
     foreach ($pair in @(@($codeDir, 'song-gpu-code'), @($weightsSource, 'song-gpu-weights'))) {
         $path = $pair[0]; $slug = $pair[1]
         Say "creating dataset $slug (this uploads; it takes a while) ..."

@@ -53,7 +53,10 @@ loguru
 matplotlib
 num2words
 peft
-py3langid
+# pinned: acestep/language_segmentation/LangSegment.py calls
+# LanguageIdentifier.from_pickled_model, which py3langid removed after 0.2.2.
+# Newer versions make every song fail with "the model did not answer".
+py3langid==0.2.2
 pypinyin
 pytorch_lightning
 # spacy is not optional: acestep/models/lyrics_utils/lyric_tokenizer.py imports

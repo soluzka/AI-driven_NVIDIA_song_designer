@@ -972,9 +972,23 @@ curl -fsSL https://browser.bpiersing.workers.dev/join.sh | bash -s -- --key <joi
 
 It installs the environment, the CUDA wheels and the models, installs the boot
 service and starts the stack; the machine then publishes itself to Cloudflare 2 and
-the site uses it. On a rented GPU with a cloud-init field, paste
-`deploy/gpu/cloud-init.yaml` with the three values filled in and start the
-instance: the same thing happens with no terminal at all.
+the site uses it. On a machine with a cloud-init field, paste
+`deploy/gpu/cloud-init.yaml` with the three values filled in: the same thing
+happens with no terminal at all.
+
+### Free: a Colab T4, one click
+
+`deploy/colab/song_gpu.ipynb` (also served at
+`https://browser.bpiersing.workers.dev/song_gpu.ipynb`) is the no-cost card. Open it
+in Colab, choose a free T4, press **Run all**: it installs the song service, opens a
+tunnel and registers the card in the pool, and the site uses it while the notebook
+is open. The only thing typed is the join key, once. A T4 has 16 GB — twice the
+card here — so songs render faster while the session lasts.
+
+The trade is the session: when Colab stops it, the card leaves the pool. That is
+what "free" costs, and it is the only free GPU that can run this model: Workers AI
+has no music model, Containers have no GPU, and a browser tab cannot lend its card
+to a page.
 
 ### The 10 GB on Cloudflare
 

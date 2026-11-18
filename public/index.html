@@ -713,6 +713,7 @@
            "is it on the GPU" is answerable without opening a console. */
         .gpu-chip { margin-left: 0; font-size: 11px; }
         .wake-btn[data-state="ready"] { opacity: 1; border-color: rgba(0, 206, 201, 0.6); }
+        .wake-btn[data-state="dead"] { opacity: 1; color: #f87171; border-color: rgba(248, 113, 113, 0.6); }
         .library-song-btn[disabled] { opacity: 0.55; cursor: default; }
 
         /* Generate: an edited link for the same video, built from its own plan */
@@ -3968,11 +3969,14 @@
                 if (!answer.ok) throw new Error('pool ' + answer.status);
                 const info = await answer.json();
                 const count = Number(info.count || 0);
-                text.textContent = count === 1 ? 'Pool · 1 GPU' : 'Pool · ' + count + ' GPUs';
+                // "auto": this site finds these machines by itself. Nothing has to be
+                // pressed for a machine to appear here; the page asks the pool every
+                // minute and uses whatever answers.
+                text.textContent = (count === 1 ? 'Pool · 1 GPU' : 'Pool · ' + count + ' GPUs') + ' · auto';
                 if (chip) {
                     chip.dataset.state = count ? 'online' : 'offline';
                     chip.title = count
-                        ? 'Machines that can render a song: ' + (info.machines || []).map(m => m.url).join(', ')
+                        ? 'This site connects to these by itself: ' + (info.machines || []).map(m => m.url).join(', ')
                         : 'No machine has joined. Press to start the AI on this PC (songsvc://, no admin), '
                           + 'or run song_gpu.ipynb on a free Colab T4 (no install, no payment).';
                 }
@@ -4144,6 +4148,18 @@
                 currentModelAddress());
             if (address === null) return;
             const clean = address.trim().replace(/\/+$/, '');
+            // Aiming the page at this PC's own model is a different promise from a
+            // tunnel: that endpoint only exists if the full install from join.cmd is
+            // here and running. Asking first is cheaper than a red chip later.
+            const pcEndpoint = String(window.SONG_API || 'http://127.0.0.1:8090').trim().replace(/\/+$/, '');
+            if (!clean || clean === pcEndpoint) {
+                const target = clean || pcEndpoint;
+                const ok = window.confirm('Use ' + target + ' - this PC\'s own model endpoint?\n\n'
+                    + 'That address only answers if the AI is installed here (the one join.cmd installs, '
+                    + 'with the song service on 8090 and the ~10 GB of weights) and running.\n\n'
+                    + (clean ? 'Continue?' : 'Clear the pasted address and fall back to it?'));
+                if (!ok) return;
+            }
             try {
                 if (clean) localStorage.setItem('songApi', clean);
                 else localStorage.removeItem('songApi');
@@ -4343,7 +4359,7 @@
                     + '. Connect the model to this PC, or to a Colab card or pool machine.';
                 if (wakeBtn && !wakeBusy) {
                     wakeBtn.textContent = 'Connect the model';
-                    wakeBtn.dataset.state = '';
+                    wakeBtn.dataset.state = 'dead';
                     wakeBtn.title = 'Nothing is running. Press to start the model on this PC, '
                         + 'or paste a Colab tunnel address with Connect my model.';
                 }

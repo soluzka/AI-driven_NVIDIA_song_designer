@@ -3968,17 +3968,23 @@
         // address that is not loopback is useful: on a phone or a Surface,
         // 127.0.0.1 is that device, which is the whole reason the tunnel exists.
         window.remoteSongApi = '';
-        // The lookup itself, kept so a compose can wait a moment for it instead of
-        // racing it and being left with loopback alone.
-        window.remoteSongApiReady = (async function findRemoteSongApi() {
+        // Looked up again every minute alongside the pool badge, not once at load.
+        // A GPU started from this page gets a new random tunnel host on every run,
+        // so an address read once at load would leave Connect my model showing a
+        // host that had already ended - and the new machine invisible.
+        async function refreshPublishedAddress() {
             try {
                 const response = await fetchBounded('/api/song/endpoint', { cache: 'no-store' }, 6000);
-                if (!response.ok) return;
+                if (!response.ok) return window.remoteSongApi;
                 const info = await response.json();
                 const url = String(info.url || '').replace(/\/+$/, '');
-                if (url && !/(127\.0\.0\.1|localhost)/.test(url)) window.remoteSongApi = url;
+                window.remoteSongApi = (url && !/(127\.0\.0\.1|localhost)/.test(url)) ? url : '';
             } catch (err) {}
-        })();
+            return window.remoteSongApi;
+        }
+        // Kept as a promise too, so a compose can wait a moment for it instead of
+        // racing it and being left with loopback alone.
+        window.remoteSongApiReady = refreshPublishedAddress();
 
         // The pool badge: how many machines can render a song right now, and with
         // no GPU online it is the thing to press — the wake path goes through
@@ -3992,6 +3998,14 @@
                 if (!answer.ok) throw new Error('pool ' + answer.status);
                 const info = await answer.json();
                 const count = Number(info.count || 0);
+                // A machine that joined (or was started) since the page loaded has a
+                // different host; pick it up here so Connect my model and the header
+                // name the one that is live now.
+                const beforeAddress = String(window.remoteSongApi || '');
+                await refreshPublishedAddress();
+                if (String(window.remoteSongApi || '') !== beforeAddress && typeof refreshGpu === 'function') {
+                    refreshGpu();
+                }
                 // "auto": this site finds these machines by itself. Nothing has to be
                 // pressed for a machine to appear here; the page asks the pool every
                 // minute and uses whatever answers.

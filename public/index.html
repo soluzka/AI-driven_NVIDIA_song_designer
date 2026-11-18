@@ -5403,8 +5403,11 @@
                 // The picture starts with the first note, not after the model answers:
                 // the same lyrics over the same palette the recording will use.
                 if (window._liveLyricsStop) window._liveLyricsStop();
+                // Said here in the same words the title below uses, rather than reading
+                // head: that const is declared further down, and touching it at this
+                // point threw and took the whole compose with it.
                 window._liveLyricsStop = attachLiveLyrics(audio, {
-                    title: head.textContent,
+                    title: `Song · ${summary.total.toLocaleString()} tracks · ${bpm} BPM · seed ${seed}`,
                     line2: `${bpm} BPM` + (summary.genres.length ? ' · ' + summary.genres[0].name : ''),
                     genre: summary.genres.length ? summary.genres[0].name : '',
                     lyrics: lyrics,

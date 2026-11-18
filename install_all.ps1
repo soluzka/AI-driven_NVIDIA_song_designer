@@ -286,7 +286,7 @@ if ($cudaNow -eq 'False') {
     Say '  torch sees the card'
 }
 
-# --- 3. the three services ---------------------------------------------------
+# --- 3. the services ---------------------------------------------------------
 Say ''
 Say 'the site (5001)'
 Pip @('-r', 'requirements.txt')
@@ -351,7 +351,7 @@ $info = [ordered]@{
     site       = 5001
     downloader = 8080
     song       = 8090
-    voice      = 'separate venv: numpy 1.x + torch 2.6 cannot share this one'
+    voice      = 8095
 }
 $info | ConvertTo-Json | Set-Content -Path $marker -Encoding utf8
 Say ''
@@ -366,7 +366,7 @@ Say ''
 Say 'Next:'
 Say '  install.cmd                    double-click: install, start, and keep it running'
 Say '  .\install_all.ps1 -Start -Autostart   the same thing from a shell'
-Say '  .\tools\start_services.ps1     starts all three from this environment'
+Say '  .\tools\start_services.ps1     starts all four from this environment'
 Say '  .\install_all.ps1 -Check       re-reports at any time'
 
 if ($Autostart) {

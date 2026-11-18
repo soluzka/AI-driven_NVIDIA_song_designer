@@ -128,6 +128,27 @@ def _allow_private_network(response):
 # weights are paged in and out instead of failing with an out-of-memory error.
 CPU_OFFLOAD = os.environ.get('ACE_CPU_OFFLOAD', '1') != '0'
 DTYPE = os.environ.get('ACE_DTYPE', 'bfloat16')
+
+
+def _effective_dtype():
+    """The dtype this card can actually run, which is not always the one asked for.
+
+    bfloat16 needs Ampere or newer (compute 8.0+). A T4 is 7.5: the model loads there
+    and then the first operator without a bf16 kernel fails with "GET was unable to
+    find an engine to execute this computation" after minutes of work. float16 is the
+    half precision every CUDA card has, so that is what a pre-Ampere card gets.
+    """
+    if DTYPE != 'bfloat16':
+        return DTYPE
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return DTYPE
+        major, _minor = torch.cuda.get_device_capability(0)
+    except Exception:  # noqa: BLE001 - no torch, or no card: nothing to choose
+        return DTYPE
+    return DTYPE if major >= 8 else 'float16'
 DEFAULT_STEPS = int(os.environ.get('ACE_STEPS', '30'))
 # Three minutes: the page asks for 90-180 s depending on the seed, and a cap of
 # 120 quietly truncated every longer request back to two.
@@ -223,7 +244,7 @@ def _load_pipeline():
         from acestep.pipeline_ace_step import ACEStepPipeline
         _pipeline = ACEStepPipeline(
             checkpoint_dir=CHECKPOINT,
-            dtype=DTYPE,
+            dtype=_effective_dtype(),
             torch_compile=False,
             cpu_offload=CPU_OFFLOAD,
         )
@@ -1110,7 +1131,10 @@ def health():
         'checkpoint_present': os.path.isdir(CHECKPOINT),
         'loaded': ready,
         'cpu_offload': CPU_OFFLOAD,
-        'dtype': DTYPE,
+        # The setting, and what the card will really run. They differ on a T4, and
+        # the difference is the whole reason a song died at 217 seconds once.
+        'dtype': _effective_dtype(),
+        'dtype_setting': DTYPE,
         'lyrics_loaded': _lyricist_instance is not None,
         # The exact package the segmenter will use, and whether it still has the
         # method ACE-Step calls. A card that answered "the model did not answer"

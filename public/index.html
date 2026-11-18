@@ -266,6 +266,8 @@
         .model-base-label { font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.7; }
         #modelBaseText { overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
         .model-base[data-state="ready"] { color: #4ade80; border-color: rgba(74, 222, 128, 0.35); }
+        .model-base[data-state="dead"] { color: #f87171; border-color: rgba(248, 113, 113, 0.45); }
+        .model-base[data-state="checking"] { color: #fbbf24; border-color: rgba(251, 191, 36, 0.4); }
         .model-base[data-state="none"] { color: #fbbf24; border-color: rgba(251, 191, 36, 0.35); }
         @media (max-width: 600px) { .model-base { max-width: 190px; font-size: 10px; } }
         .install-panel { max-height: 82vh; overflow-y: auto; }
@@ -4177,7 +4179,17 @@
             if (!force && baseModelCache.address && Date.now() - baseModelCache.at < 30000) {
                 return baseModelCache;
             }
-            const address = String(window.SONG_API || 'http://127.0.0.1:8090').trim().replace(/\/+$/, '');
+            // The address the page really asks first: one pasted here, then the
+            // machine the site publishes, then the built-in default. Showing only the
+            // default described a machine nothing was using - and stayed green while
+            // the machine that was actually serving the songs had gone away.
+            let savedModelAddress = '';
+            try { savedModelAddress = (localStorage.getItem('songApi') || '').trim().replace(/\/+$/, ''); } catch (err) {}
+            const fallbackAddress = String(window.SONG_API || 'http://127.0.0.1:8090').trim().replace(/\/+$/, '');
+            const publishedAddress = String(window.remoteSongApi || '').trim().replace(/\/+$/, '');
+            const address = savedModelAddress || publishedAddress || fallbackAddress;
+            const source = savedModelAddress ? 'connected by hand'
+                : (publishedAddress ? 'published by the site' : 'the built-in default');
             let tunnel = '';
             try {
                 const answer = await fetchBounded('/api/song/endpoint', { cache: 'no-store' }, 8000);
@@ -4186,7 +4198,7 @@
                     tunnel = String(info.url || '').trim().replace(/\/+$/, '');
                 }
             } catch (err) { }
-            baseModelCache = { at: Date.now(), address, tunnel };
+            baseModelCache = { at: Date.now(), address, tunnel, source };
             return baseModelCache;
         }
         async function refreshBaseModel() {
@@ -4209,23 +4221,32 @@
             // The address in config.js is a setting, not a connection. This chip used
             // to go green from it alone, so the header claimed a model endpoint on a
             // machine where nothing was running. Green now means something answered.
+            // Green means it answered, red means it did not, amber means the answer
+            // is still on its way. A chip that cannot go red is a chip that lies.
+            chip.dataset.state = 'checking';
             let answers = false;
             try {
                 const probe = await fetchBounded(base + '/health', { cache: 'no-store' }, 4000);
                 answers = probe.ok;
             } catch (err) {}
-            chip.dataset.state = answers ? 'ready' : '';
+            chip.dataset.state = answers ? 'ready' : 'dead';
             // The whole address, ellipsised by CSS: "the model location" is the
             // request, and a host alone loses the scheme someone needs to paste.
-            text.textContent = base;
+            text.textContent = answers ? base : base + ' · not answering';
             chip.title = 'The model endpoint this page calls first: ' + base
-                + (answers ? ' (it answers)' : ' (nothing answered a health check from this browser)')
+                + ' (' + (info.source || 'configured') + '), '
+                + (answers
+                    ? 'and it answers.'
+                    : 'and nothing answered a health check from this browser. Songs will use the next address in the list.')
                 + (info.tunnel && info.tunnel !== base
-                    ? '. The site also publishes the tunnel ' + info.tunnel + ' in front of it.'
-                    : '.');
+                    ? ' The site also publishes the tunnel ' + info.tunnel + ' in front of it.'
+                    : '');
         }
         refreshBaseModel();
-        setInterval(refreshBaseModel, 60000);
+        // Twenty seconds, not a minute: this chip is the one that says whether the
+        // endpoint answers, and a minute of green after a card's session ended is
+        // exactly the minute someone spends believing it is still connected.
+        setInterval(refreshBaseModel, 20000);
 
         // When the badge last got a real answer. A timeout while the model loads is
         // not the service disappearing, and treating it as such is what made a

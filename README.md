@@ -1089,6 +1089,31 @@ as `gpu:started_at`), the weekly GPU allowance is Kaggle's, the kernel is privat
 to your account, and a started card ends when its kernel session ends. The pool
 entry disappears with it, and the header goes back to `Start a GPU`.
 
+A token that starts with `KGAT` is a bearer token, not a username-and-key pair;
+the Worker sends it as `Authorization: Bearer`, and only falls back to basic auth
+for an older `kaggle.json`. Sending a `KGAT` token as basic auth is answered with
+`401 Unauthorized`. The `username` field may hold a display name such as
+`Bob 21savage`; the API wants the handle (`bob21savage`), so the Worker strips it
+before it is used in a slug.
+
+#### What is never pushed
+
+Every credential and every machine-specific address is gitignored, so a clone
+does not carry one and `git status` stays quiet about them:
+
+| Path | Why it is local |
+| --- | --- |
+| `build\song_endpoint.key` | publishes a machine into the pool |
+| `build\kaggle.json` | boots a GPU on your account |
+| `build\tunnel_url.txt` | one session's tunnel address, useless tomorrow |
+| `song_service\models\` | ~10 GB of ACE-Step weights |
+| `.venv\`, `song_service\.venv\` | the Python environments |
+| `tools\bin\*.exe` | `cloudflared.exe`, a 53 MB binary fetched on first run |
+
+When committing, name the files (`git add worker.js tools/set_kaggle.ps1 README.md`) rather
+than `git add -A`; if a credential is ever committed, revoke it at the provider
+first and treat the old value as burnt.
+
 ### One installer, and what it installs
 
 `join.cmd` is the only install the site hands out, and it installs **everything**:

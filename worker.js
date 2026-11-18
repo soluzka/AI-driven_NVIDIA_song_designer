@@ -143,7 +143,23 @@ export default {
       return song(request, env, url);
     }
 
-    return env.ASSETS.fetch(request);
+    const asset = await env.ASSETS.fetch(request);
+    // The page is what reports whether the model is green, so a stored copy of it
+    // keeps reporting the previous behaviour - which is how a page that had just
+    // been fixed went on saying "ready" in grey for hours. HTML is never stored:
+    // not by the browser, not by the edge.
+    if ((asset.headers.get('content-type') || '').includes('text/html')) {
+      const copy = new Response(asset.body, {
+        status: asset.status,
+        statusText: asset.statusText,
+        headers: asset.headers,
+      });
+      copy.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+      copy.headers.set('CDN-Cache-Control', 'no-store');
+      copy.headers.set('Pragma', 'no-cache');
+      return copy;
+    }
+    return asset;
   },
 };
 

@@ -4051,14 +4051,24 @@
             const button = document.getElementById('modelBtn');
             if (!button) return;
             button.textContent = MODEL_LABEL;
-            const address = currentModelAddress();
+            // Only an address this browser was actually given counts as connected.
+            // The page's built-in default is a fallback for requests, not a
+            // connection anyone made, and reading it here is what turned this
+            // control green on a machine where nothing was running at all.
+            let savedAddress = '';
+            try { savedAddress = (localStorage.getItem('songApi') || '').trim().replace(/\/+$/, ''); } catch (err) {}
+            const address = savedAddress;
             if (!address) {
                 button.dataset.state = 'off';
-                button.title = 'Paste the address of a song service (the tunnel URL it printed) to render songs on that machine';
+                const fallback = (window.SONG_API || '').trim().replace(/\/+$/, '');
+                button.title = 'No model is connected by hand yet. Songs try '
+                    + (fallback || 'the machine this site publishes')
+                    + '; press to paste the tunnel address a machine printed.';
                 return;
             }
-            button.dataset.state = 'ready';
-            button.title = 'Songs render on ' + address + ' in this browser. Press to change or clear it.';
+            // Neither green nor red until it answers.
+            button.dataset.state = '';
+            button.title = 'Checking ' + address + '...';
             // A saved address is not proof anything answers it: a Colab session ends
             // and a Quick Tunnel changes name, both leaving the saved value looking
             // fine. Ask the machine itself, and keep the answer in the colour and
@@ -4196,11 +4206,20 @@
                 chip.title = 'No model endpoint is configured for this page.';
                 return;
             }
-            chip.dataset.state = 'ready';
+            // The address in config.js is a setting, not a connection. This chip used
+            // to go green from it alone, so the header claimed a model endpoint on a
+            // machine where nothing was running. Green now means something answered.
+            let answers = false;
+            try {
+                const probe = await fetchBounded(base + '/health', { cache: 'no-store' }, 4000);
+                answers = probe.ok;
+            } catch (err) {}
+            chip.dataset.state = answers ? 'ready' : '';
             // The whole address, ellipsised by CSS: "the model location" is the
             // request, and a host alone loses the scheme someone needs to paste.
             text.textContent = base;
             chip.title = 'The model endpoint this page calls first: ' + base
+                + (answers ? ' (it answers)' : ' (nothing answered a health check from this browser)')
                 + (info.tunnel && info.tunnel !== base
                     ? '. The site also publishes the tunnel ' + info.tunnel + ' in front of it.'
                     : '.');
@@ -4243,6 +4262,7 @@
                 String(window.SONG_API || '').replace(/\/+$/, ''),
             ];
             let info = null;
+            let answeredBy = '';
             for (const base of bases) {
                 if (!base) continue;
                 try {
@@ -4251,9 +4271,15 @@
                     // counting a slow answer as absent is what left the badge on
                     // "AI off" until the page was reloaded.
                     const response = await fetchBounded(base + '/health', {}, 12000);
-                    if (response.ok) { info = await response.json(); break; }
+                    if (response.ok) { info = await response.json(); answeredBy = base; break; }
                 } catch (err) {}
             }
+            // Which machine answered is part of the truth. A pooled machine is not
+            // this computer's AI, and showing it as this one's is how the header
+            // came to claim a model was connected while nothing ran here.
+            const answeredHere = !answeredBy || answeredBy === location.origin
+                || /^https?:\/\/(127\.|localhost|\[::1\])/i.test(answeredBy);
+            const answeredHost = answeredBy ? String(answeredBy).replace(/^https?:\/\//i, '') : '';
             // The button follows the same answer, so both devices read the same
             // way: AI ready wherever the model answers, rather than only on the PC
             // that was able to launch it.
@@ -4265,18 +4291,19 @@
                 // rather than losing the GPU on every refresh.
                 if (lastGoodAt && Date.now() - lastGoodAt < 4 * 60 * 1000) {
                     chip.dataset.state = 'retrying';
-                    text.textContent = 'CUDA · busy loading';
+                    text.textContent = 'AI not connected yet · busy loading';
                     chip.title = 'The model is being loaded onto the card, so answers time out for a few minutes. It is still running.';
                     if (wakeBtn && !wakeBusy) {
-                        wakeBtn.textContent = 'AI warming…';
+                        wakeBtn.textContent = 'AI not connected yet';
                         wakeBtn.dataset.state = 'starting';
                         wakeBtn.title = 'The model is still loading; songs start when it is ready.';
                     }
                     return;
                 }
                 chip.dataset.state = 'offline';
-                text.textContent = 'AI off';
-                chip.title = 'The song model is not running on this machine. Press Start the AI.';
+                text.textContent = 'AI not connected';
+                chip.title = 'No song model is running on this machine, and none in the pool '
+                    + 'answered. Press Start the AI, or paste a tunnel address with Connect my model.';
                 if (wakeBtn && !wakeBusy) {
                     wakeBtn.textContent = 'Start the AI';
                     wakeBtn.dataset.state = '';
@@ -4299,7 +4326,8 @@
             chip.dataset.state = onCuda && loaded ? 'live' : 'retrying';
             text.textContent = onCuda
                 ? (loaded ? 'CUDA · ' + String(info.gpu || 'GPU').replace(/^NVIDIA\s+/i, '')
-                          : (warmSeconds ? 'CUDA · warming ' + clock : 'CUDA · warming up'))
+                          : 'AI not connected yet · warming ' + (warmSeconds ? clock : 'up'))
+                  + (answeredHere ? '' : ' · pool')
                 : 'CPU only';
             chip.title = !onCuda
                 ? 'Torch cannot see a CUDA device, so songs and lyrics will be very slow.'
@@ -4309,11 +4337,20 @@
                         ? `${info.gpu} - loading the model failed: ${info.warm_failed}`
                         : `${info.gpu} - the model is still loading onto the card (${clock}); a song waits for it to finish`;
             if (wakeBtn && !wakeBusy) {
-                wakeBtn.textContent = loaded ? 'AI ready' : 'AI warming…';
+                // "Ready" means ready. While the weights are still loading it says so,
+                // and when the answer came from a pooled machine the label says that
+                // too rather than passing it off as this computer's model.
+                wakeBtn.textContent = loaded
+                    ? (answeredHere ? 'AI ready' : 'AI ready · pool')
+                    : 'AI not connected yet';
                 wakeBtn.dataset.state = loaded ? 'ready' : 'starting';
                 wakeBtn.title = loaded
-                    ? 'The AI is running and the model is on the card.'
-                    : 'The service is up and the model is still loading; songs start when it is ready.';
+                    ? (answeredHere
+                        ? 'The AI is running on this machine and the model is on the card.'
+                        : 'A pooled machine is serving songs (' + answeredHost + '). Nothing is running on this computer; press to start it.')
+                    : (info.warm_failed
+                        ? 'The model failed to load on ' + (info.gpu || 'that machine') + ': ' + info.warm_failed
+                        : 'The service is up but the model is still loading (' + (warmSeconds ? clock : 'just started') + '); songs start when it is ready.');
             }
         }
 

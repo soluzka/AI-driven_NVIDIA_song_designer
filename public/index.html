@@ -3727,6 +3727,14 @@
             let lastChange = Date.now();
             let lastStatus = '';
             let lastProgress = -1;
+            // The machine can stop answering mid-render: a Colab session ends and
+            // takes its tunnel with it, or the service is killed. This used to
+            // `continue` for the whole three-hour ceiling, so the panel sat on
+            // "Asking the song model..." with no word that nothing would ever
+            // answer. A minute and a half of silence is a dead machine, not a slow
+            // one: the poll itself is a small GET and the job answers it in
+            // milliseconds.
+            let lastAnswer = Date.now();
             while (Date.now() < ceiling) {
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 let response, job;
@@ -3734,8 +3742,13 @@
                     response = await fetchBounded(answer.base + '/api/song/' + token, {}, 20000);
                     job = await response.json();
                 } catch (err) {
+                    if (Date.now() - lastAnswer > 90 * 1000) {
+                        throw new Error('the machine stopped answering: its tunnel or its '
+                            + 'service ended while it was singing');
+                    }
                     continue;
                 }
+                lastAnswer = Date.now();
                 if (!response.ok && !job.status) {
                     // The service forgot the job - a restart while it rendered.
                     // The song is kept on disk after it finishes, so take that
@@ -3776,6 +3789,7 @@
                     };
                     status.textContent = (stageWords[job.status]
                         || 'Composing and singing on this machine') + `... ${percent}% · ${clock}`;
+                    songStatusOwnedAt = Date.now();
                 }
             }
             throw new Error('the model took too long to finish');
@@ -4095,6 +4109,10 @@
         // not the service disappearing, and treating it as such is what made a
         // refresh lose the GPU.
         let lastGoodAt = 0;
+        // The last time the job poll wrote into #songStatus. Until that happens the
+        // panel only has the number it was born with, and a frozen number reads as a
+        // freeze; the ticker below uses this to know when it may keep counting.
+        let songStatusOwnedAt = 0;
         // True only while a press is being handled, so the badge can keep the button
         // current the rest of the time. Reading the button's own state for that was
         // wrong: "warming" and "being pressed" both look like starting, and the
@@ -4506,10 +4524,24 @@
                 liveStatus.style.cssText = 'margin:8px 0;color:#8b9aa0;font-size:13px';
                 liveStatus.textContent = 'Asking the song model... ' + since().toFixed(0) + 's';
                 note.after(liveStatus);
+                // That first number is the age of the press, not a wait, and until
+                // the job reports there is nothing else to say. It used to stay on
+                // that one number, which is indistinguishable from stuck; this keeps
+                // it counting and the poll loop takes the line over as soon as it has
+                // a percentage.
+                const statusTick = setInterval(() => {
+                    if (!document.body.contains(liveStatus)) { clearInterval(statusTick); return; }
+                    if (Date.now() - songStatusOwnedAt < 3000) return;
+                    liveStatus.textContent = 'Asking the song model... ' + since().toFixed(0) + 's';
+                }, 1000);
 
                 // A real model may answer while the band is already playing. When it
                 // does, the sung track replaces the audio and the labels say so.
                 modelPromise.then(async swapped => {
+                    // The wait is over either way, so the ticker stops here: left
+                    // running it would keep overwriting the answer below with the
+                    // same question.
+                    clearInterval(statusTick);
                     if (!swapped || !swapped.audio) {
                         liveStatus.textContent = 'The model did not answer; the browser song above is what is playing.'
                             + (modelError ? ' ' + explainModelError(modelError) + '.' : '');

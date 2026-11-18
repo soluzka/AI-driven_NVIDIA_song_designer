@@ -232,6 +232,9 @@
            by this Worker as plain files; nothing on the page pointed at either, so
            a visitor had no way to find them. */
         .install-btn { margin-left: 0; }
+        /* A tunnel host is long and the header has to stay one line per control. */
+        #modelBtn { max-width: 250px; overflow: hidden; text-overflow: ellipsis; }
+        @media (max-width: 600px) { #modelBtn { max-width: 150px; } }
         .install-panel { max-height: 82vh; overflow-y: auto; }
         .install-list { display: grid; gap: 12px; }
         .install-item { border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
@@ -3885,6 +3888,30 @@
             button.textContent = 'Model: ' + host;
             button.dataset.state = 'ready';
             button.title = 'Songs render on ' + address + ' (this browser). Press to change or clear it.';
+            // The label alone says an address is saved, not that anything answers
+            // it: a Colab session ends and a Quick Tunnel changes name, and both
+            // leave the saved value looking fine. Ask the machine itself.
+            checkModelAddress(address, host);
+        }
+        async function checkModelAddress(address, host) {
+            const button = document.getElementById('modelBtn');
+            if (!button) return;
+            if (!/^https?:\/\//i.test(address)) { button.dataset.state = 'off'; return; }
+            try {
+                const answer = await fetchBounded(address + '/health', { cache: 'no-store' }, 6000);
+                if (!answer.ok) throw new Error('health ' + answer.status);
+                const info = await answer.json();
+                const where = info.device === 'cuda' ? (info.gpu || 'CUDA') : 'CPU';
+                button.textContent = 'Model: ' + host + ' · ' + where;
+                button.dataset.state = 'ready';
+                button.title = 'Songs render on ' + address + ' (' + where + '). Press to change or clear it.';
+            } catch (err) {
+                button.textContent = 'Model: ' + host + ' · no answer';
+                button.dataset.state = 'off';
+                button.title = 'Nothing answered at ' + address + '. The model is not running there now '
+                    + '(a Colab session that ended, or a tunnel that restarted with a new address). '
+                    + 'Press to change or clear it.';
+            }
         }
         function promptConnectModel() {
             const address = window.prompt(
@@ -3898,6 +3925,15 @@
                 else localStorage.removeItem('songApi');
             } catch (err) {}
             reflectModelAddress();
+            if (clean) {
+                showToast('info', 'Model address saved',
+                    'Songs from this browser will be rendered at ' + clean + '. The header shows whether it answers.',
+                    { autoClose: 6000 });
+            } else {
+                showToast('info', 'Model address cleared',
+                    'The page goes back to whatever machine the site finds on its own.',
+                    { autoClose: 5000 });
+            }
             // A new address is a new machine, so the badge must not keep saying what
             // the old one was.
             if (typeof refreshGpu === 'function') refreshGpu();

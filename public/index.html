@@ -712,8 +712,17 @@
         /* Reports the card the render actually uses, straight from /health, so
            "is it on the GPU" is answerable without opening a console. */
         .gpu-chip { margin-left: 0; font-size: 11px; }
-        .wake-btn[data-state="ready"] { opacity: 1; border-color: rgba(0, 206, 201, 0.6); }
+        /* Green is the model's word, not the process's: .ready is only ever set from
+           a health answer that says loaded. Amber while it is still loading, red when
+           nothing answers at all. */
+        .wake-btn[data-state="ready"] {
+            opacity: 1; color: #4ade80; border-color: rgba(74, 222, 128, 0.55);
+            background: rgba(74, 222, 128, 0.10);
+        }
+        .wake-btn[data-state="starting"] { opacity: 1; color: #fbbf24; border-color: rgba(251, 191, 36, 0.5); }
         .wake-btn[data-state="dead"] { opacity: 1; color: #f87171; border-color: rgba(248, 113, 113, 0.6); }
+        #modelBtn[data-state="warming"]::before { background: #fbbf24; }
+        .model-base[data-state="warming"] { color: #fbbf24; border-color: rgba(251, 191, 36, 0.4); }
         .library-song-btn[disabled] { opacity: 0.55; cursor: default; }
 
         /* Generate: an edited link for the same video, built from its own plan */
@@ -4099,11 +4108,29 @@
             const button = document.getElementById('modelBtn');
             if (!button) return;
             const connected = (info) => {
-                const where = info && info.device === 'cuda'
+                // A service that answers is not a model that can render. This is the
+                // button that said "connected" while the song service was up and no
+                // weights were loaded; it is green only when the model itself reports
+                // loaded, amber while it loads, red when it says loading failed.
+                if (!info || info.loaded !== true) {
+                    if (info && info.warm_failed) {
+                        button.dataset.state = 'dead';
+                        button.title = 'The service at ' + address + ' is running, but the model failed to load: '
+                            + info.warm_failed + '. Press to change or clear the address.';
+                        return;
+                    }
+                    const warm = Number(info && info.warming_seconds) || 0;
+                    button.dataset.state = 'warming';
+                    button.title = 'The service at ' + address + ' answers, but its model is not loaded yet'
+                        + (warm ? ' (' + Math.round(warm) + 's of warming so far)' : '')
+                        + '. It turns green when the model reports it is ready.';
+                    return;
+                }
+                const where = info.device === 'cuda'
                     ? (info.gpu || 'CUDA')
-                    : ((info && info.device) || 'answering');
+                    : (info.device || 'answering');
                 button.dataset.state = 'ready';
-                button.title = 'Connected: songs render on ' + address + ' (' + where + '). Press to change or clear it.';
+                button.title = 'Connected: the model is loaded on ' + address + ' (' + where + ') and can render. Press to change or clear it.';
             };
             const failed = (reason) => {
                 button.dataset.state = 'dead';
@@ -4257,19 +4284,35 @@
             // is still on its way. A chip that cannot go red is a chip that lies.
             chip.dataset.state = 'checking';
             let answers = false;
+            let health = null;
             try {
                 const probe = await fetchBounded(base + '/health', { cache: 'no-store' }, 4000);
                 answers = probe.ok;
+                if (answers) health = await probe.json().catch(() => null);
             } catch (err) {}
-            chip.dataset.state = answers ? 'ready' : 'dead';
+            // The endpoint chip used to go green on any HTTP answer, which is how it
+            // read as connected while the service was up with no model in memory. The
+            // model's own report decides: loaded is green, answering-but-loading is
+            // amber, silence is red.
+            const modelReady = !!(answers && health && health.loaded === true);
+            const warmingFor = Number(health && health.warming_seconds) || 0;
+            chip.dataset.state = modelReady ? 'ready' : (answers ? 'warming' : 'dead');
             // The whole address, ellipsised by CSS: "the model location" is the
             // request, and a host alone loses the scheme someone needs to paste.
-            text.textContent = answers ? base : base + ' · not answering';
+            text.textContent = modelReady
+                ? base
+                : (answers
+                    ? base + ' · model not loaded yet'
+                    : base + ' · not answering');
             chip.title = 'The model endpoint this page calls first: ' + base
                 + ' (' + (info.source || 'configured') + '), '
-                + (answers
-                    ? 'and it answers.'
-                    : 'and nothing answered a health check from this browser. Songs will use the next address in the list.')
+                + (modelReady
+                    ? 'and its model reports it is loaded and ready.'
+                    : (answers
+                        ? 'and the service answers, but it says the model is not loaded yet'
+                            + (warmingFor ? ' (' + Math.round(warmingFor) + 's of warming so far)' : '')
+                            + ' - it turns green when the model is ready.'
+                        : 'and nothing answered a health check from this browser. Songs will use the next address in the list.'))
                 + (info.tunnel && info.tunnel !== base
                     ? ' The site also publishes the tunnel ' + info.tunnel + ' in front of it.'
                     : '');

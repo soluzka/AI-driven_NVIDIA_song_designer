@@ -37,6 +37,34 @@ from flask_cors import CORS
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
+
+def _langid_compat():
+    """Keep ACE-Step's segmenter working on a newer py3langid than we pin.
+
+    acestep/language_segmentation/LangSegment.py calls
+    LanguageIdentifier.from_pickled_model, and py3langid renamed that to
+    from_model_file in 0.4. requirements.txt pins 0.2.2 so a fresh install is fine,
+    but a machine that already had a newer one - an older install, a Colab session
+    that resolved before the pin - failed every song with
+    "type object 'LanguageIdentifier' has no attribute 'from_pickled_model'"
+    instead of rendering. The new name is bound to the old one, which is all the
+    segmenter needs.
+    """
+    try:
+        from py3langid.langid import LanguageIdentifier
+    except Exception:
+        return
+    if hasattr(LanguageIdentifier, 'from_pickled_model'):
+        return
+    for name in ('from_model_file', 'from_modelpath'):
+        if hasattr(LanguageIdentifier, name):
+            LanguageIdentifier.from_pickled_model = staticmethod(
+                getattr(LanguageIdentifier, name))
+            return
+
+
+_langid_compat()
+
 # Who owns this port, in a file any starter can read. Importing torch takes about
 # forty seconds before /health answers, and a starter that treats "no answer" as
 # "not running" starts a second copy that then fights this one for the card - one

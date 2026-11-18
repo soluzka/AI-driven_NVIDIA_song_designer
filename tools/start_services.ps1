@@ -380,6 +380,15 @@ if ($NoTunnel) {
                         -H 'Content-Type: application/json' -H "x-song-key: $key" `
                         --data-binary "@$payload"
                     Say "tunnel: published to the site: $answer"
+
+                    # The pool has its own Worker too, and it is asked directly as
+                    # well: if the site side is ever down, this machine is still in
+                    # the list the site reads its GPU addresses from.
+                    $poolUrl = 'https://song-pool.bpiersing.workers.dev/join'
+                    $poolAnswer = & curl.exe -s --max-time 15 -X POST $poolUrl `
+                        -H 'Content-Type: application/json' -H "x-join-key: $key" `
+                        --data-binary "@$payload"
+                    Say "tunnel: joined the pool: $poolAnswer"
                 } finally {
                     Remove-Item $payload -ErrorAction SilentlyContinue
                 }

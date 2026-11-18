@@ -949,9 +949,24 @@ answered `200`; removing it returned the pool to one machine.
 A machine joins by running the agent once (on Windows, `install.cmd`; on Linux,
 `install.sh` with the systemd unit). A browser cannot hand its GPU to a site, and
 WebGPU runs inside the visiting tab, which cannot hold this model — so "joining"
-is that one local step, and after it the machine rejoins by itself at every logon.
-Nothing depends on the owner's PC being switched on: the pool uses whichever
-machines are awake.
+is that one local step. After it, the machine rejoins on its own: every launcher
+run posts its address to the site and to Cloudflare 2 directly, so the pool lists
+every agent that is awake, and nothing depends on the owner's PC.
+
+### Start at boot, before anyone logs in
+
+The logon Run key needs somebody to sign in first. A Scheduled Task does not:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\install_startup_task.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\install_startup_task.ps1 -Remove
+```
+
+That needs administrator rights **once** — a task that runs at startup cannot be
+created otherwise. It registers `AI song services (boot)` with trigger AtStartup,
+principal S4U (the user's profile, no stored password), no window and an unlimited
+run time, so the site, the downloader, the song service and the tunnel are serving
+before the lock screen is answered.
 
 ## Running the whole stack on a GPU host
 

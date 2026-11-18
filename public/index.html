@@ -3991,7 +3991,9 @@
                 // minute and uses whatever answers.
                 text.textContent = (count === 1 ? 'Pool · 1 GPU' : 'Pool · ' + count + ' GPUs') + ' · auto';
                 if (chip) {
-                    chip.dataset.state = count ? 'online' : 'offline';
+                    // 'live' is the state the stylesheet draws green; 'online' had no
+                    // rule, so a pool with machines in it still looked switched off.
+                    chip.dataset.state = count ? 'live' : 'offline';
                     chip.title = count
                         ? 'This site connects to these by itself: ' + (info.machines || []).map(m => m.url).join(', ')
                         : 'No machine has joined. Press to start the AI on this PC (songsvc://, no admin), '
@@ -4177,22 +4179,30 @@
             }
         }
         function promptConnectModel() {
+            // The pool's address is what this button stands for, so it is what the
+            // prompt shows: an address in the box that matches it is the automatic
+            // connection, not a pinned one, and is left to follow the pool.
+            const poolAddress = String(window.remoteSongApi || '').trim().replace(/\/+$/, '');
             const address = window.prompt(
                 'Paste the address of a song service - the tunnel URL it printed when it started.\n'
+                + (poolAddress
+                    ? 'The pool this site connected to is ' + poolAddress + '; leaving that in the box keeps the automatic connection.\n'
+                    : '')
                 + 'Leave it empty to go back to whatever this site finds on its own.',
-                currentModelAddress());
+                poolAddress || currentModelAddress());
             if (address === null) return;
-            const clean = address.trim().replace(/\/+$/, '');
+            let clean = address.trim().replace(/\/+$/, '');
+            if (poolAddress && clean === poolAddress) clean = '';
             // Aiming the page at this PC's own model is a different promise from a
             // tunnel: that endpoint only exists if the full install from join.cmd is
             // here and running. Asking first is cheaper than a red chip later.
             const pcEndpoint = String(window.SONG_API || 'http://127.0.0.1:8090').trim().replace(/\/+$/, '');
-            if (!clean || clean === pcEndpoint) {
-                const target = clean || pcEndpoint;
+            if (clean && clean === pcEndpoint) {
+                const target = clean;
                 const ok = window.confirm('Use ' + target + ' - this PC\'s own model endpoint?\n\n'
                     + 'That address only answers if the AI is installed here (the one join.cmd installs, '
                     + 'with the song service on 8090 and the ~10 GB of weights) and running.\n\n'
-                    + (clean ? 'Continue?' : 'Clear the pasted address and fall back to it?'));
+                    + 'Continue?');
                 if (!ok) return;
             }
             try {
@@ -4367,6 +4377,15 @@
             // The pool used to come first, which reported "AI ready · Pool" to someone
             // who had connected nothing to it - the desktop install publishes itself
             // there on every start, so that count is not a choice anyone made.
+            // The site publishes its address asynchronously. Waiting a moment for it
+            // here is what lets the first paint say "Pool" instead of naming this PC
+            // and correcting itself twenty seconds later.
+            if (!window.remoteSongApi && window.remoteSongApiReady) {
+                await Promise.race([
+                    window.remoteSongApiReady,
+                    new Promise(resolve => setTimeout(resolve, 4000)),
+                ]);
+            }
             // Pool first, then this PC's own endpoint. The header names the machine
             // that actually answered, and with the pool first that is the pooled
             // machine - "AI ready · Pool" - instead of this PC claiming the model
@@ -4522,10 +4541,12 @@
             }
             // The address button says the same thing the header does, so a loaded
             // model is green in both places instead of one of them sitting grey.
+            // The pool's own address, because that is the one the button stands for.
+            const poolAddress = String(window.remoteSongApi || '').trim().replace(/\/+$/, '');
             reflectAutoConnection(loaded ? 'ready' : 'warming', loaded
-                ? 'Connected through this site to ' + (answeredHost || 'the model') + ':'
-                    + ' the model is loaded and can render. Press to paste a different address.'
-                : 'The service at ' + (answeredHost || 'this machine') + ' answers, but its model is still warming;'
+                ? 'Connected through this site to ' + (poolAddress || answeredHost || 'the model') + ':'
+                    + ' the model is loaded and can render. Press to see or change that address.'
+                : 'The service at ' + (poolAddress || answeredHost || 'this machine') + ' answers, but its model is still warming;'
                     + ' it turns green when the model is loaded.');
             // One rule so the two can never disagree: "AI ready" is shown only on the
             // green state, and a green state always says "AI ready".

@@ -58,7 +58,9 @@ SONG_PROMPT = (
     'invent the details - a name, an object, a place, a time - that only this '
     'song has.\n'
     '- Concrete things a person can see, do or lose. No metaphors about music, '
-    'technology, the internet or collections of anything.\n'
+    'technology, the internet or collections of anything, and no brand names, '
+    'product names, websites or years: if the line needs one of those to make '
+    'sense, the line is not finished.\n'
     '- Six lines per verse, six per chorus, four for the bridge: the song runs '
     'up to three minutes and the singing has to reach the end of it. Under '
     'twelve words a line. Do not force rhymes.\n'
@@ -70,12 +72,12 @@ SONG_PROMPT = (
     '{avoid}'
 )
 
-# The model writes "[Repeat Chorus]" and "[chorus x2]" as often as "[chorus]",
-# and an unmatched tag was not skipped: it was cleaned into a lyric line and
-# then sung as one.
-TAG = re.compile(r'^\s*[\[\(]\s*(?:(?:repeat|another|second)\s+)?'
-                 r'(verse\s*\d|chorus|hook|bridge|pre[-\s]?chorus|'
-                 r'intro|outro|refrain)\s*(?:[x×]\s*\d+)?\s*[\]\)]\s*:?\s*$', re.I)
+# The model writes "[chorus]", "[Repeat Chorus]", "[chorus x2]", "[chorusharmonized]",
+# "[chorussung](repeated)" - all of them mean a chorus, and anything that only
+# matched the exact word was not skipped: it was cleaned into a line and sung.
+# So a bracketed line is a tag when what is inside it mentions a section at all.
+TAG = re.compile(r'^\s*[\[\(]\s*([^\]\)]*?)\s*[\]\)]\s*(?:\([^)]*\))?\s*:?\s*$')
+TAG_WORD = re.compile(r'\b(verse|chorus|hook|bridge|intro|outro|refrain)', re.I)
 
 # Lines that describe the collection instead of a life are thrown away rather
 # than shown as lyrics.
@@ -90,50 +92,10 @@ BANNED = re.compile(
     re.I,
 )
 
-# Left to itself the model picks a mood and then fills it with whatever nouns are
-# nearest in its weights - pizza, ghostbusters, a year - which is how a finished
-# song came back as word salad. It needs somewhere specific to stand.
-#
-# The subject is not a list of finished ideas: a place and a moment are drawn
-# separately for each seed, so every song gets a different one and no two come
-# out of a fixed menu. Each half is a phrase that reads correctly next to any
-# half from the other list, so the pair is always grammatical.
-PLACES = [
-    'the last bus home',
-    'a kitchen at the back of the flat',
-    'the stairwell of the building you left',
-    'a supermarket car park',
-    'the laundrette on the corner',
-    'a bridge with the lights off',
-    'the service station at the edge of town',
-    'a hospital corridor',
-    'a record shop that is closing down',
-    'the corner shop before it shuts',
-    'an empty office after everyone has gone',
-    'a hotel lobby at the wrong end of the night',
-]
-MOMENTS = [
-    'an hour after the pubs shut',
-    'on the first cold morning of the year',
-    'the week the heating broke',
-    'the night before you moved out',
-    'on a Tuesday that felt like a Sunday',
-    'the last evening of the summer',
-    'in the hour before the shift starts',
-    'the day the letter finally came',
-    'while it rained without stopping',
-    'after the last train had gone',
-]
-
-
-def random_subject(seed):
-    """A place and a moment for this song, drawn fresh from two short lists."""
-    # Seeded by name, not by an arithmetic hash of the number: multiplying a small
-    # integer by a constant and taking it modulo 2**32 left neighbouring seeds
-    # drawing the same moment, which is how three songs in a row ended up in the
-    # same place on the same evening.
-    picker = random.Random('song-subject-%s' % seed)
-    return '%s, %s' % (picker.choice(PLACES), picker.choice(MOMENTS))
+# No place, moment or subject is handed to the model any more: it chooses what the
+# song is about itself. What it is held to instead is coherence - one situation for
+# the whole song, a chorus that repeats word for word, and no brand names, product
+# names or years - which lint_song() checks after the fact, with retries.
 
 MOODS = [
     'tired and honest, played late',
@@ -246,10 +208,11 @@ class Lyricist:
         theme_hint = ''
         if hint_words and not subject:
             theme_hint = ' If it helps, these are near the mood: ' + ', '.join(hint_words) + '.'
+        # Only a subject a caller actually asked for is passed on. Otherwise the
+        # model picks the song's own subject, in its own words.
         subject = str(subject or '').strip()
-        if not subject:
-            subject = random_subject(seed)
-        theme_hint = ' This song is about ' + subject + '.' + theme_hint
+        if subject:
+            theme_hint = ' This song is about ' + subject + '.' + theme_hint
         avoid = [str(line).strip() for line in (avoid or []) if str(line).strip()][-14:]
         avoid_block = ''
         if avoid:
@@ -461,7 +424,7 @@ def parse_song(text, avoid=None):
     current = None
     for raw in str(text).splitlines():
         tag = TAG.match(raw)
-        if tag:
+        if tag and TAG_WORD.search(tag.group(1)):
             current = {'section': _section_name(tag.group(1)), 'lines': []}
             sections.append(current)
             continue

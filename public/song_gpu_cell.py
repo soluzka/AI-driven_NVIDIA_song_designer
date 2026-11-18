@@ -52,7 +52,17 @@ try:
 except FileNotFoundError:
     say('gpu: no nvidia-smi on this runtime (that means a CPU runtime)')
 
-import torch  # noqa: E402 - after the first print, so a slow import cannot hide it
+try:
+    import torch  # noqa: E402 - after the first print, so a slow import cannot hide it
+except ModuleNotFoundError:
+    # Colab and Kaggle ship a CUDA build, a bare Linux box may not have one at all.
+    # The default Linux wheels bundle the CUDA libraries, so installing them here
+    # is what gets the model onto the card instead of onto the processor.
+    say('torch is not installed on this runtime; installing the default CUDA build ...')
+    run([sys.executable, '-m', 'pip', 'install', '-q', 'torch', 'torchaudio', 'torchvision'])
+    import torch  # noqa: E402
+# A torch that is already here is left exactly as it is: swapping it for another
+# wheel is how a working CUDA build turns into a CPU one.
 say('torch', torch.__version__, 'cuda', torch.cuda.is_available())
 if not torch.cuda.is_available():
     say('warning: no CUDA. The model still runs, on the processor: hours per song.')

@@ -990,6 +990,28 @@ the site uses it. On a machine with a cloud-init field, paste
 `deploy/gpu/cloud-init.yaml` with the three values filled in: the same thing
 happens with no terminal at all.
 
+### Just the model, without the app (any Windows 10/11 PC)
+
+`song-gpu.cmd` (served at
+`https://browser.bpiersing.workers.dev/song-gpu.cmd`, script at `/song-gpu.ps1`)
+installs **only** the song service. It fetches six files — `app.py`, `lyrics.py`,
+`model_lock.py`, `models.json`, `requirements.txt`, `install.py` — plus the CUDA
+wheels and the ~10 GB of weights. The site, the downloader, the SQLite index and
+the scrapers are never downloaded, and no repository clone is made. Everything
+lives in `%LOCALAPPDATA%\song-gpu`.
+
+| Machine | What it gets |
+| --- | --- |
+| NVIDIA card, driver 560+ | CUDA. `torch==2.14.1+cu126` sees the card, ACE-Step and the lyric model run on it, `/health` answers `"device":"cuda"` |
+| AMD, Intel, or no card at all | the same model on the processor. `torch.cuda.is_available()` is false and `/health` says `"device":"cpu"`; there is no CUDA on AMD or Intel graphics, so no install can change that |
+| 32-bit Windows, ARM | not supported: torch has no 32-bit wheel |
+
+The machine prints a tunnel address and is usable two ways: paste it into **Song
+designer → Connect my model**, or give it the join key and it joins the pool and
+announces itself on every start. A logon entry `Song GPU agent` (HKCU, no
+administrator) brings it back after a reboot. `song-gpu.ps1 -Check` reports the
+card, the driver, the disk and what is installed, and changes nothing.
+
 ### Free: a Colab T4, one click
 
 `deploy/colab/song_gpu.ipynb` (also served at

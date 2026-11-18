@@ -961,16 +961,29 @@
         <div class="fit-target" id="installState">Checking the pool…</div>
         <div class="install-list">
             <div class="install-item">
-                <div class="install-name">This PC — Windows, one double-click</div>
+                <div class="install-name">This PC — the whole app, one double-click</div>
                 <div class="install-note">
-                    One file. It fetches its own Python 3.11 and git, installs the CUDA build of
-                    torch, all three services and the ~10 GB of model weights, starts everything
-                    and registers it to come back at every logon. No administrator prompt, nothing
-                    to install first, about 20 GB of disk and an NVIDIA driver 560 or newer.
-                    With no NVIDIA card it still runs, on the processor: minutes to hours a song
-                    instead of seconds.
+                    The site, the downloader and the AI, in one environment. It fetches its own
+                    Python 3.11 and git, installs the CUDA build of torch, all three services and
+                    the ~10 GB of model weights, starts everything and registers it to come back at
+                    every logon. No administrator prompt, nothing to install first, about 20 GB of
+                    disk and an NVIDIA driver 560 or newer. With no NVIDIA card it still runs, on
+                    the processor: minutes to hours a song instead of seconds.
                 </div>
                 <a class="fit-act install-act" href="/join.cmd" download>Download join.cmd</a>
+            </div>
+            <div class="install-item">
+                <div class="install-name">Just this PC's GPU — no app, no site</div>
+                <div class="install-note">
+                    The model only: six Python files, torch, the weights, a tunnel. No site, no
+                    downloader, no search index, no repository clone — nothing of the rest of the
+                    application is downloaded or installed. It prints an address to paste into
+                    <strong>Song designer → Connect my model</strong>, or joins the pool with the
+                    join key. On an NVIDIA card the CUDA build runs on the card; on AMD, Intel or
+                    no card at all the same model runs on the processor, slowly. Windows 10/11,
+                    64-bit, no administrator.
+                </div>
+                <a class="fit-act install-act" href="/song-gpu.cmd" download>Download song-gpu.cmd</a>
             </div>
             <div class="install-item">
                 <div class="install-name">A free GPU — nothing installed here</div>

@@ -3562,18 +3562,26 @@
             }
         }
 
+        // How long a machine gets to accept a job. Accepting one is a small answer:
+        // the service writes the job down and hands back a token immediately. A
+        // machine across a tunnel that cannot manage that in forty seconds is not
+        // going to, and waiting two minutes on it is what made "Asking the song
+        // model..." look like a freeze. This machine's own service keeps the longer
+        // budget, because the desktop app checks its install before it answers.
+        function postBudget(base) {
+            const remote = /^https?:\/\//i.test(base || '')
+                && !/^https?:\/\/(127\.|localhost|\[::1\])/i.test(base || '');
+            return remote ? 40000 : 120000;
+        }
+
         async function postSong(base, payload) {
             let response;
             try {
-                // Queueing a job is normally instant, but a local model may still
-                // be starting: the desktop app launches the service and checks the
-                // install before it answers. Twenty seconds was cutting that off
-                // and quietly falling back to the instrument-only song.
                 response = await fetchBounded(base + '/api/song', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
-                }, 120000);
+                }, postBudget(base));
             } catch (err) {
                 return null;
             }
@@ -3606,7 +3614,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'audio/wav' },
                     body: voice
-                }, 120000);
+                }, postBudget(base));
             } catch (err) {
                 return null;
             }
@@ -3715,6 +3723,8 @@
             const askAll = async (list) => {
             for (const base of list) {
                 if (answer) break;
+                songPhase = 'Sending the song to '
+                    + (base ? String(base).replace(/^https?:\/\//i, '') : 'this site');
                 if (voiced) {
                     try {
                         answer = await postVoiceSong(base, payload, voiceClip);
@@ -3752,8 +3762,9 @@
                 // hands back a render that is already running rather than queueing a
                 // second one - so this either lands or joins the song the first press
                 // started. Nothing is thrown until both asks have failed.
+                songPhase = 'Nothing answered; asking once more';
                 const line = document.getElementById('songStatus');
-                if (line) line.textContent = 'Nothing answered yet; asking once more...';
+                if (line) line.textContent = songPhase + '...';
                 await new Promise(resolve => setTimeout(resolve, 8000));
                 await askAll(await modelBases(false));
             }
@@ -3908,16 +3919,23 @@
                 ]);
             }
             const published = String(window.remoteSongApi || '').trim().replace(/\/+$/, '');
+            let publishedAnswers = false;
             if (published) {
-                // A published tunnel dies with the session that made it, so it is
-                // probed like the pasted address rather than trusted.
                 try {
                     const probe = await fetchBounded(published + '/health', {}, 4000);
+                    publishedAnswers = probe.ok;
                     if (probe.ok) add(published);
                 } catch (err) {}
             }
             if (window.SONG_API) add(window.SONG_API);
             if (!servedLocally) add('http://127.0.0.1:8090');
+            // A published machine that missed a four-second health check is still
+            // worth asking. The first song's audio is streamed from that same tunnel,
+            // and while megabytes are going through it a health probe can be slow
+            // enough to fail - which dropped the one address that works and left
+            // loopback alone, a thing a public page is not allowed to reach. It is
+            // tried last, but it is tried.
+            if (published && !publishedAnswers) add(published);
             return bases;
         }
 
@@ -4198,6 +4216,11 @@
         // panel only has the number it was born with, and a frozen number reads as a
         // freeze; the ticker below uses this to know when it may keep counting.
         let songStatusOwnedAt = 0;
+        // What the wait line says before the machine has said anything. It used to be
+        // one fixed phrase for two very different things: a job being submitted and a
+        // job being watched. Sending is named with the machine it is going to, so a
+        // slow submit reads as a slow submit.
+        let songPhase = 'Asking the song model';
         // True only while a press is being handled, so the badge can keep the button
         // current the rest of the time. Reading the button's own state for that was
         // wrong: "warming" and "being pressed" both look like starting, and the
@@ -4617,7 +4640,7 @@
                 const statusTick = setInterval(() => {
                     if (!document.body.contains(liveStatus)) { clearInterval(statusTick); return; }
                     if (Date.now() - songStatusOwnedAt < 3000) return;
-                    liveStatus.textContent = 'Asking the song model... ' + since().toFixed(0) + 's';
+                    liveStatus.textContent = songPhase + '... ' + since().toFixed(0) + 's';
                 }, 1000);
 
                 // A real model may answer while the band is already playing. When it

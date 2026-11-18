@@ -3685,14 +3685,22 @@
                     break;
                 }
             }
+            // Every candidate is tried, and every refusal is remembered. One base
+            // answering "not here" used to end the loop by throwing, so the machine
+            // that would have rendered the song was never asked at all - and the
+            // panel could only say the model did not answer, with no reason.
+            const tried = [];
+            const why = (base, text) => tried.push((base || 'the site') + ': ' + text);
             for (const base of bases) {
                 if (answer) break;
                 if (voiced) {
                     try {
                         answer = await postVoiceSong(base, payload, voiceClip);
+                        if (!answer) why(base, 'no answer to the voice request');
                     } catch (err) {
                         // The recording was refused: say so, and still come back
                         // with the backing rather than nothing at all.
+                        why(base, 'the voice was refused (' + ((err && err.message) || 'no reason') + ')');
                         window._modelNote = 'The voice service refused the recording ('
                             + ((err && err.message) || 'no reason given')
                             + '), so this is the backing without a vocal.';
@@ -3700,15 +3708,28 @@
                     }
                 }
                 if (!answer) {
-                    answer = await postSong(base, voiced
-                        ? Object.assign({}, payload, {
-                            prompt: payload.prompt + ', instrumental, backing track, no lead vocal',
-                            instrumental: true
-                        })
-                        : payload);
+                    try {
+                        answer = await postSong(base, voiced
+                            ? Object.assign({}, payload, {
+                                prompt: payload.prompt + ', instrumental, backing track, no lead vocal',
+                                instrumental: true
+                            })
+                            : payload);
+                        if (!answer) why(base, 'no answer');
+                    } catch (err) {
+                        why(base, (err && err.message) || 'refused the request');
+                        answer = null;
+                    }
                 }
             }
-            if (!answer) return null;
+            if (!answer) {
+                const loopbackTried = bases.includes('http://127.0.0.1:8090') && !ON_LOCAL_APP;
+                throw new Error('no machine took the song - ' + (tried.join('; ') || 'nothing was asked')
+                    + (loopbackTried
+                        ? '. A page on the public site may need this site\'s local-network permission '
+                          + 'before it can reach 127.0.0.1; the tunnel address in Connect my model does not'
+                        : ''));
+            }
             if (answer.data.audio) return answer.data;
             if (!answer.data.token) return null;
 
@@ -3832,9 +3853,36 @@
             // page stops asking it, which is where those 501s in the console came
             // from on every compose.
             if (includeEdge && window.edgeSongModel !== false && !edgeModelKnownOff()) bases.push('');
-            add('http://127.0.0.1:8090');
-            add(window.remoteSongApi);
+            // A page served from this machine reaches 127.0.0.1 with nothing in
+            // the way, so loopback goes first there. A page served from the public
+            // site is a different animal: browsers now ask permission before a
+            // public page may touch a loopback address, and a denied prompt makes
+            // every such request fail before it is sent - the service sees nothing
+            // and the panel says the model did not answer. So away from home the
+            // published machine is asked first and loopback is only the last try.
+            const servedLocally = ON_LOCAL_APP
+                || /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
+            if (servedLocally) add('http://127.0.0.1:8090');
+            // The site publishes the machine that joined it. It is looked up on
+            // demand: a compose pressed in the first seconds after a load used to
+            // find this still empty, which left loopback as the only candidate.
+            if (!window.remoteSongApi && window.remoteSongApiReady) {
+                await Promise.race([
+                    window.remoteSongApiReady,
+                    new Promise(resolve => setTimeout(resolve, 5000)),
+                ]);
+            }
+            const published = String(window.remoteSongApi || '').trim().replace(/\/+$/, '');
+            if (published) {
+                // A published tunnel dies with the session that made it, so it is
+                // probed like the pasted address rather than trusted.
+                try {
+                    const probe = await fetchBounded(published + '/health', {}, 4000);
+                    if (probe.ok) add(published);
+                } catch (err) {}
+            }
             if (window.SONG_API) add(window.SONG_API);
+            if (!servedLocally) add('http://127.0.0.1:8090');
             return bases;
         }
 
@@ -3842,7 +3890,9 @@
         // address that is not loopback is useful: on a phone or a Surface,
         // 127.0.0.1 is that device, which is the whole reason the tunnel exists.
         window.remoteSongApi = '';
-        (async function findRemoteSongApi() {
+        // The lookup itself, kept so a compose can wait a moment for it instead of
+        // racing it and being left with loopback alone.
+        window.remoteSongApiReady = (async function findRemoteSongApi() {
             try {
                 const response = await fetchBounded('/api/song/endpoint', { cache: 'no-store' }, 6000);
                 if (!response.ok) return;

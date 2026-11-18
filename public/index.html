@@ -1030,10 +1030,13 @@
                 <div class="install-name">A free GPU — nothing installed here</div>
                 <div class="install-note">
                     <a href="https://colab.research.google.com/github/soluzka/AI-driven_NVIDIA_song_designer/blob/main/deploy/colab/song_gpu.ipynb" target="_blank" rel="noopener">Open
-                    song_gpu.ipynb in Colab</a>, choose a free T4, press <strong>Run all</strong>. It
-                    prints an address: press <strong>Connect my model</strong> in the header and paste
-                    it there. Nothing is rented and this computer installs nothing. The card leaves
-                    when the Colab session ends.
+                    song_gpu.ipynb in Colab</a>, choose a free T4, press <strong>Run all</strong>. The
+                    last cell prints one address block: press <strong>Connect my model</strong> in the
+                    header and paste that address there. If no address ever appears, this PC is most
+                    likely already the model: the <strong>Model endpoint</strong> chip in the header
+                    names the machine the site is rendering on, so there is nothing to paste and no
+                    free card is needed. Nothing is rented and this computer installs nothing. The
+                    card leaves when the Colab session ends.
                     <br><br>
                     Open it through that link rather than pasting the file's text into a cell: a
                     notebook is JSON, and Colab executes pasted text as Python —

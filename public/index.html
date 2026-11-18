@@ -2986,20 +2986,28 @@
             // The model wrote a whole song; give each section of the arrangement
             // the part it belongs to, so the chorus is sung where the chorus is
             // and verse two is not just the next four lines.
+            const sections = written.sections || [];
             const byRole = {};
-            (written.sections || []).forEach(part => {
+            sections.forEach(part => {
                 const role = lyricRole(part.section);
                 if (!byRole[role] && part.lines.length) byRole[role] = part.lines;
             });
+            // A model that answered with one line is not a song. This is how a whole
+            // lyric video ended up saying the same sentence start to finish: the
+            // filler below cycled whatever it was given, and it was given one line.
+            const distinct = new Set(sections
+                .reduce((all, part) => all.concat(part.lines || []), [])
+                .map(line => String(line).trim().toLowerCase())
+                .filter(Boolean));
+            if (distinct.size < 6) return lyrics;
             const fallback = byRole.verse1 || byRole.chorus || [];
             return lyrics.map(part => {
-                const source = byRole[lyricRole(part.section)] || fallback;
-                if (!source.length) return part;
-                const lines = [];
-                for (let i = 0; i < part.lines.length; i++) {
-                    lines.push(source[i % source.length]);
-                }
-                return { section: part.section, lines, ai: true };
+                const role = lyricRole(part.section);
+                const source = byRole[role] || fallback;
+                // Also only when there are enough of them: a two-line chorus padded
+                // with repeats reads as a skip, not as a chorus.
+                if (!source.length || source.length < part.lines.length) return part;
+                return { section: part.section, lines: source.slice(0, part.lines.length), ai: true };
             });
         }
 

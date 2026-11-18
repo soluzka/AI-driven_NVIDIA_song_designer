@@ -3650,6 +3650,7 @@
             };
 
             const bases = await modelBases(false);
+            window._warmSeen = false;
 
             // A compose pressed in the minute after a restart used to give up and
             // fall back to a song with no AI in it, because the service was still
@@ -3672,29 +3673,40 @@
                             // so the job is sent and the reason comes back instead.
                             const info = await probe.json().catch(() => ({}));
                             if (info && info.warming && !info.warm_failed) {
+                                // songPhase, not just the line: after the browser song
+                                // appears the panel's own ticker owns that element, and
+                                // a phase set only here was overwritten with "Asking the
+                                // song model", which read as a request that never landed.
+                                window._warmSeen = true;
+                                songPhase = 'The model is loading on that machine'
+                                    + (info.warming_seconds ? ' (' + info.warming_seconds + 's so far)' : '');
                                 const line = document.getElementById('songStatus');
                                 if (line) {
-                                    line.textContent = 'The model is loading on that machine'
-                                        + (info.warming_seconds ? ' (' + info.warming_seconds + 's so far)' : '')
-                                        + '... ' + Math.round((Date.now() - began) / 1000) + 's';
+                                    line.textContent = songPhase + '... '
+                                        + Math.round((Date.now() - began) / 1000) + 's';
                                 }
                                 continue;
                             }
                             return true;
                         } catch (err) {}
                     }
+                    songPhase = 'Waiting for the AI service to come up';
                     const status = document.getElementById('songStatus');
                     if (status && !/loading on that machine/.test(status.textContent || '')) {
-                        status.textContent = 'Waiting for the AI service to come up... '
+                        status.textContent = songPhase + '... '
                             + Math.round((Date.now() - began) / 1000) + 's';
                     }
                     await new Promise(resolve => setTimeout(resolve, 3000));
                 }
                 return false;
             };
-            // Six minutes rather than three: a free card's first load is the slow
-            // one, and giving up on it was another way the first press failed.
-            await waitForService(6 * 60 * 1000);
+            // Thirty minutes, not six. A free card's first load of the song model can
+            // take minutes more than that on a busy runtime, and posting into the
+            // middle of it is what got the submit timed out and reported as "could not
+            // connect" while the header was still counting a warm-up. Waiting here is
+            // bounded by the machine's own answer, not by a guess: it is left as soon
+            // as health stops saying warming.
+            await waitForService(30 * 60 * 1000);
 
             let answer = null;
             window._modelNote = '';
@@ -3774,6 +3786,9 @@
             if (!answer) {
                 const loopbackTried = bases.includes('http://127.0.0.1:8090') && !ON_LOCAL_APP;
                 throw new Error('no machine took the song - ' + (tried.join('; ') || 'nothing was asked')
+                    + (window._warmSeen
+                        ? '. That machine was still loading the song model, so it could not take a job yet'
+                        : '')
                     + (loopbackTried
                         ? '. A page on the public site may need this site\'s local-network permission '
                           + 'before it can reach 127.0.0.1; the tunnel address in Connect my model does not'

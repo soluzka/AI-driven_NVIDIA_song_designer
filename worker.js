@@ -170,7 +170,7 @@ async function readPool(env) {
         const list = (info.machines || [])
           .map((machine) => ({ url: String(machine.url || '').replace(/\/+$/, ''), seen: machine.seen || Date.now() }))
           .filter((machine) => machine.url);
-        if (list.length) return list;
+        if (list.length) return livePool(list);
       }
     } catch (err) {}
   }
@@ -190,7 +190,41 @@ async function readPool(env) {
   if (legacy && !pool.some((entry) => entry.url === legacy)) {
     pool.push({ url: legacy, seen: Date.now(), legacy: true });
   }
-  return pool;
+  return livePool(pool);
+}
+
+// --- which of those addresses answers ----------------------------------------
+// A Quick Tunnel name dies with the session that made it, but its entry stays in
+// the list for seven days. The header counted those dead machines as GPUs, and a
+// render picked one of them at random, so every so often a song failed and had to
+// be retried. Each list is probed before it is handed out, and the answer is kept
+// for POOL_PROBE_MS so a page that asks twice does not probe twice.
+const POOL_PROBE_MS = 15000;
+let poolProbeCache = { at: 0, key: '', live: [] };
+
+async function poolAnswers(address) {
+  try {
+    const reply = await fetch(String(address).replace(/\/+$/, '') + '/health', {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(4000),
+    });
+    return reply.ok;
+  } catch (err) {
+    return false;
+  }
+}
+
+async function livePool(list) {
+  if (!Array.isArray(list) || !list.length) return [];
+  const key = list.map((entry) => entry.url).join(' ');
+  if (poolProbeCache.key === key && Date.now() - poolProbeCache.at < POOL_PROBE_MS) {
+    return poolProbeCache.live;
+  }
+  const verdicts = await Promise.all(
+    list.map(async (entry) => ({ entry, alive: await poolAnswers(entry.url) })));
+  const live = verdicts.filter((item) => item.alive).map((item) => item.entry);
+  poolProbeCache = { at: Date.now(), key, live };
+  return live;
 }
 
 async function writePool(env, pool) {

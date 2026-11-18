@@ -724,6 +724,26 @@ singer**: see `voice_service/README.md`. Only **8090** is ever published.
 
 ## Building the environments
 
+### One script, one environment (the whole application)
+
+`install_all.ps1` fills the single `.venv` at the root with everything the three
+running services need — the site, the downloader and the song service — and then
+downloads the ACE-Step weights. `tools\start_services.ps1` picks that one
+environment up on its own once the script has written its marker:
+
+```
+.\install_all.ps1 -Check      # what is installed, what is missing; changes nothing
+.\install_all.ps1             # packages + ~10 GB of weights
+.\install_all.ps1 -NoWeights  # packages only
+```
+
+`voice_service` is not folded in: chatterbox pins `numpy==1.26.4` and
+torch 2.6.0, which pip cannot hold beside the song service's `numpy==2.4.6` and
+torch 2.14.1+cu126, and nothing in the singing path calls it any more. It keeps
+its own environment, described below.
+
+### The per-service environments (fallback, and what the launcher used to do)
+
 There are three Python environments, not one, one per service. A clone contains
 **none** of them: `.venv`, `song_service\.venv` and `downloader_service\.venv` are
 all gitignored, as are the model weights.
@@ -886,6 +906,32 @@ here changed from `bpier` to `soluzka_3eenj0v`, all three venvs still pointed at
 `C:\Users\bpier\AppData\…\Python311`, which no longer existed, and every service
 failed to start until those paths were repointed. Recreate the environments on the
 new machine rather than copying the folder.
+
+## Running the whole stack on a GPU host
+
+Cloudflare cannot run these models: a Worker is a 128 MB isolate with no GPU,
+Containers stop at 4 vCPU / 12 GiB and have no GPU, and Workers AI's catalog of
+73 models has no music model. The GPU is a machine — this one, or a rented one.
+
+`deploy\gpu\` runs **everything** in one container from one environment: the site
+(5001), the downloader (8080), the song service (8090) and `cloudflared`, so no
+inbound port has to be opened on the host:
+
+```
+docker compose -f deploy\gpu\compose.yaml up -d --build
+docker compose -f deploy\gpu\compose.yaml logs -f
+```
+
+A named tunnel gives it one permanent hostname, and `cloudflared tunnel token
+song-ai` goes into `deploy\gpu\.env` as `TUNNEL_TOKEN`. Then point the Worker at
+that hostname once and the page talks to its own origin for the model:
+
+```
+npx wrangler deploy --var SONG_API:https://ai.example.com
+```
+
+The full walkthrough — tunnel commands, GPU reservation, what the image contains —
+is in `deploy\gpu\README.md`.
 
 ## Troubleshooting
 

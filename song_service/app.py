@@ -1448,10 +1448,14 @@ if __name__ == '__main__':
     # The page looks for this service on 8090, so an empty or zero PORT from the
     # environment must not turn into a random port.
     port = int(os.environ.get('SONG_PORT') or os.environ.get('PORT') or 8090)
+    # Loopback by default: on a desktop the tunnel runs on the same machine. A
+    # container has to answer on its own interface instead, which is what
+    # deploy/gpu sets SONG_HOST for.
+    host = os.environ.get('SONG_HOST') or '127.0.0.1'
     if not port:
         port = 8090
     if os.environ.get('SONG_WARM', '0') not in ('0', '', 'false', 'False'):
         threading.Thread(target=_warm, daemon=True).start()
     # Otherwise loading happens on the first request so the service answers
     # health immediately.
-    app.run(host='127.0.0.1', port=port, threaded=True)
+    app.run(host=host, port=port, threaded=True)

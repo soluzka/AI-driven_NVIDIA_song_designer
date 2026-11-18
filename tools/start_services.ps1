@@ -42,6 +42,14 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
+# One environment for every role that needs the card. install_all.ps1 fills .venv
+# with the site, the downloader and the song service and leaves this marker; when
+# it is there those roles run from it instead of building a venv each. The voice
+# service is the exception and keeps its own: chatterbox pins numpy 1.x and torch
+# 2.6, which cannot live beside numpy 2.4.6 and torch 2.14.
+$sharedPython = Join-Path $root '.venv\Scripts\python.exe'
+$useShared = (Test-Path (Join-Path $root '.venv\all_services.json')) -and (Test-Path $sharedPython)
+
 # A logon run has no console to read afterwards, so everything this run prints
 # is also written to a file: "an error flashed up" is not diagnosable. A second
 # run cannot take the same transcript, so failure here is not fatal.
@@ -133,7 +141,9 @@ if (Answers $DownloadPort) {
     Say 'downloader is still starting, leaving it alone'
 } else {
     $service = Join-Path $root 'downloader_service'
-    $python = Join-Path $service '.venv\Scripts\python.exe'
+    # install_all.ps1's one environment, when it has been run; otherwise the
+    # service's own venv is created below as before.
+    $python = if ($useShared) { $sharedPython } else { Join-Path $service '.venv\Scripts\python.exe' }
     if (-not (Test-Path $python)) {
         Say 'downloader: creating its environment (a minute or two)'
         $venvDir = Join-Path $service '.venv'
@@ -200,7 +210,9 @@ if (Answers $SongPort) {
     Say 'song service is still starting (torch import takes about 40 s), leaving it alone'
 } else {
     $service = Join-Path $root 'song_service'
-    $python = Join-Path $service '.venv\Scripts\python.exe'
+    # install_all.ps1's one environment, when it has been run; otherwise the
+    # service's own venv is created below as before.
+    $python = if ($useShared) { $sharedPython } else { Join-Path $service '.venv\Scripts\python.exe' }
     if (-not (Test-Path $python)) {
         Say 'song service: run song_service\install.py first (it installs the CUDA torch)'
         exit 1

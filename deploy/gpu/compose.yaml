@@ -1,0 +1,40 @@
+# The whole stack on one GPU host.
+#
+#   docker compose -f deploy/gpu/compose.yaml up -d --build
+#
+# The GPU is reserved explicitly: without it torch sees no card, installs happily,
+# and every song renders on the CPU in hours instead of minutes.
+services:
+  stack:
+    build:
+      context: ../..
+      dockerfile: deploy/gpu/Dockerfile
+    image: video-song-stack:gpu
+    container_name: video-song-stack
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SONG_PORT: 8090
+      SONG_HOST: 0.0.0.0
+      SITE_PORT: 5001
+      DOWNLOAD_PORT: 8080
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      # The ~10 GB checkpoint and the Hugging Face caches survive rebuilds here.
+      - ./data:/data
+      - ../../song_service/models:/app/song_service/models
+    ports:
+      # Only the song service is published: it is the address the Worker proxies
+      # to, and it is what a browser on the host itself can use.
+      - "8090:8090"
+    shm_size: "2gb"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -162,7 +162,16 @@ async function songEndpoint(request, env) {
 
 
 async function song(request, env, url) {
-  const base = String(env.SONG_API || '').trim().replace(/\/+$/, '');
+  // SONG_API wins when it is set; otherwise the address the machine published to
+  // KV is the one to use. Reading only SONG_API made /api/song/endpoint report a
+  // live address that the proxy then ignored, so every model call through
+  // Cloudflare answered 501 while the page quietly fell back to loopback.
+  let base = String(env.SONG_API || '').trim().replace(/\/+$/, '');
+  if (!base && env.STATS) {
+    try {
+      base = String((await env.STATS.get('song_api')) || '').trim().replace(/\/+$/, '');
+    } catch (err) {}
+  }
   if (!base) {
     return json({
       error: 'The music model runs on the computer that has the GPU. Start the desktop app '

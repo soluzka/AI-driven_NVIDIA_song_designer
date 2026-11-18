@@ -1063,6 +1063,22 @@ def api_lyrics():
                     'model': lyrics_model_id(load_manifest())})
 
 
+def _langid_state():
+    """The installed py3langid and whether it can do what ACE-Step asks."""
+    state = {'version': None, 'from_pickled_model': None}
+    try:
+        from importlib.metadata import version as package_version
+        state['version'] = package_version('py3langid')
+    except Exception:  # noqa: BLE001 - the field is a report, never a failure
+        pass
+    try:
+        from py3langid.langid import LanguageIdentifier
+        state['from_pickled_model'] = hasattr(LanguageIdentifier, 'from_pickled_model')
+    except Exception:  # noqa: BLE001
+        state['from_pickled_model'] = False
+    return state
+
+
 def _gpu():
     """What the render will run on, so /health can say cuda instead of guessing."""
     try:
@@ -1096,6 +1112,11 @@ def health():
         'cpu_offload': CPU_OFFLOAD,
         'dtype': DTYPE,
         'lyrics_loaded': _lyricist_instance is not None,
+        # The exact package the segmenter will use, and whether it still has the
+        # method ACE-Step calls. A card that answered "the model did not answer"
+        # with no way to tell why is why these two fields exist: one request to
+        # /health now says whether the environment or the model is the problem.
+        'langid': _langid_state(),
         **_gpu(),
     })
 

@@ -416,8 +416,15 @@ if ($NoTunnel) {
         try { Set-Clipboard -Value $tunnelUrl } catch { }
         Say "tunnel: $tunnelUrl"
 
+        $noPoolFile = Join-Path $root 'build\no_pool.txt'
         $keyFile = Join-Path $root 'build\song_endpoint.key'
-        if (Test-Path $keyFile) {
+        if (Test-Path $noPoolFile) {
+            # A marker this install can set so it is not added to the pool on every
+            # start. The pool is what the site renders on when no address has been
+            # pasted, so a machine that joins itself is a machine nobody chose - and
+            # it made the site say "AI ready" to someone who had connected nothing.
+            Say 'tunnel: not published (build\no_pool.txt is set); paste the address above with Connect my model'
+        } elseif (Test-Path $keyFile) {
             $key = (Get-Content $keyFile -Raw).Trim()
             if ($key) {
                 # The JSON goes through a file: curl.exe on Windows mangles quotes

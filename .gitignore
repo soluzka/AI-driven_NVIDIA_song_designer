@@ -69,3 +69,6 @@ tools/node/
 # Environment secrets
 .env
 .env.*
+
+# A local marker: while it exists this install does not add itself to the pool.
+build/no_pool.txt

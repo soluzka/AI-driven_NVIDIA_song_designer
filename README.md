@@ -913,6 +913,23 @@ here changed from `bpier` to `soluzka_3eenj0v`, all three venvs still pointed at
 failed to start until those paths were repointed. Recreate the environments on the
 new machine rather than copying the folder.
 
+## Sharing cards between PCs
+
+The site keeps a **pool** of GPUs, not one address. Any PC that runs `install.cmd`
+(or downloads `join.cmd` from the site and double-clicks it) publishes its own
+tunnel address to the Worker; a model call then goes to a member chosen at
+random, and the next member is tried when one does not answer. `GET
+/api/song/pool` lists who is in, and the launcher's key (`SONG_ENDPOINT_KEY`, read
+from `build\song_endpoint.key`) is what lets a machine publish itself.
+
+Measured against the live site with a dead address first in the pool: 4 of 4
+requests to `/last_song` still answered `200` with the 34,542,420-byte song, and
+the dead entry was removed with `{"remove": "..."}`.
+
+Each machine keeps rejoining by itself: the Windows agents use the logon Run key
+plus a watchdog, the Linux one uses the systemd unit, so nothing depends on the
+owner being at a keyboard when a visitor clicks.
+
 ## Running the whole stack on a GPU host
 
 Cloudflare cannot run these models: a Worker is a 128 MB isolate with no GPU,

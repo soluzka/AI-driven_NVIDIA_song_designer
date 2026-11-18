@@ -1,0 +1,111 @@
+<#
+.SYNOPSIS
+    Joins this PC's NVIDIA card to the song site's GPU pool.
+
+.DESCRIPTION
+    Downloaded and run by join.cmd, so nobody types a command:
+
+      1. checks the card
+      2. fetches this application (a zip of the repository)
+      3. installs it into one environment, with the CUDA wheels and the models
+      4. asks once for the join key and stores it where the launcher publishes from
+      5. starts the services and registers the logon entry
+
+    After that the PC is in the pool: the site picks it up on the next click, and a
+    reboot rejoins by itself.
+
+.PARAMETER Target
+    Where to unpack the app. Defaults to %LOCALAPPDATA%\internet-gpu.
+
+.PARAMETER Key
+    The join key. Without it the script asks, hidden, once. The key is what lets a
+    machine publish its address; it is not the model, and it is not an account.
+
+.PARAMETER Source
+    The app archive. Defaults to the public repository zip.
+#>
+[CmdletBinding()]
+param(
+    [string]$Target = (Join-Path $env:LOCALAPPDATA 'internet-gpu'),
+    [string]$Key = '',
+    [string]$Source = 'https://codeload.github.com/soluzka/internet/zip/refs/heads/main'
+)
+
+$ErrorActionPreference = 'Continue'
+$ProgressPreference = 'SilentlyContinue'
+
+function Say([string]$text) { Write-Host $text }
+
+Say 'Joining this PC''s GPU to the song site'
+Say '------------------------------------'
+
+# --- 1. the card -------------------------------------------------------------
+$smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+if ($smi) {
+    $gpu = & $smi.Source --query-gpu=name,memory.total --format=csv,noheader 2>$null | Select-Object -First 1
+    Say "gpu:   $gpu"
+} else {
+    Say 'gpu:   no nvidia-smi on PATH'
+    $answer = Read-Host '       Continue anyway? The models will run on the CPU (hours per song) [y/N]'
+    if ($answer -notmatch '^[Yy]') { Say 'stopped'; exit 1 }
+}
+
+# --- 2. the application ------------------------------------------------------
+$appDir = Join-Path $Target 'internet-main'
+if (-not (Test-Path (Join-Path $appDir 'install_all.ps1'))) {
+    Say "app:   fetching to $Target"
+    New-Item -ItemType Directory -Force -Path $Target | Out-Null
+    $zip = Join-Path $Target 'internet.zip'
+    try {
+        Invoke-WebRequest -UseBasicParsing -Uri $Source -OutFile $zip
+    } catch {
+        Say "app:   could not download the archive ($($_.Exception.Message))"
+        Say '       ask for the project folder and run install.cmd inside it'
+        exit 1
+    }
+    Expand-Archive -Path $zip -DestinationPath $Target -Force
+    Remove-Item $zip -ErrorAction SilentlyContinue
+    if (-not (Test-Path (Join-Path $appDir 'install_all.ps1'))) {
+        # A zip whose root folder is named differently (a release, a branch rename).
+        $found = Get-ChildItem -Path $Target -Directory |
+            Where-Object { Test-Path (Join-Path $_.FullName 'install_all.ps1') } |
+            Select-Object -First 1
+        if ($found) { $appDir = $found.FullName }
+    }
+}
+if (-not (Test-Path (Join-Path $appDir 'install_all.ps1'))) {
+    Say "app:   no install_all.ps1 under $Target"
+    exit 1
+}
+Say "app:   $appDir"
+
+# --- 3. the join key ---------------------------------------------------------
+# It is stored where the launcher already publishes from, so nothing else needs to
+# know about it. Read-Host -AsSecureString keeps it off the screen; the plain value
+# only ever exists in this process and in that 64-byte file.
+$keyFile = Join-Path $appDir 'build\song_endpoint.key'
+if ($Key) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $keyFile) | Out-Null
+    Set-Content -Path $keyFile -Value $Key -Encoding ascii -NoNewline
+} elseif (-not (Test-Path $keyFile)) {
+    Say ''
+    Say 'The join key is one string from the site owner. It lets this machine publish'
+    Say 'its address; it is not a password to anything else.'
+    $secure = Read-Host 'Paste the join key (input hidden)' -AsSecureString
+    $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
+    if (-not $plain) { Say 'no key given: this PC will run the AI for itself, not for the site' }
+    else {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $keyFile) | Out-Null
+        Set-Content -Path $keyFile -Value $plain -Encoding ascii -NoNewline
+    }
+}
+
+# --- 4. install, start, stay -------------------------------------------------
+Say ''
+Say 'installing: one environment, the CUDA wheels, the models'
+& (Join-Path $appDir 'install_all.ps1') -Start -Autostart
+
+Say ''
+Say 'This PC is in the pool. The site finds it on the next click, and it rejoins'
+Say 'at every logon without anyone touching this window.'

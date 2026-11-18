@@ -62,6 +62,10 @@ const SYNC_ROUTE = /^\/api\/sync$/i;
 // launcher holds in build\song_endpoint.key.
 const ENDPOINT_ROUTE = /^\/api\/song\/endpoint$/i;
 
+// The pool, as the site and its owner can see it: which machines have joined and
+// when each last published. Answers from KV, never proxied to a GPU.
+const POOL_ROUTE = /^\/api\/song\/pool$/i;
+
 const SONG_ROUTES = [
   /^\/api\/lyrics$/i,
   /^\/api\/song$/i,
@@ -123,6 +127,14 @@ export default {
       return songEndpoint(request, env);
     }
 
+    if (POOL_ROUTE.test(url.pathname)) {
+      const pool = await readPool(env);
+      return json({
+        count: pool.length,
+        machines: pool.map((entry) => ({ url: entry.url, seen: entry.seen })),
+      });
+    }
+
     if (SONG_ROUTES.some((route) => route.test(url.pathname))) {
       return song(request, env, url);
     }
@@ -130,6 +142,40 @@ export default {
     return env.ASSETS.fetch(request);
   },
 };
+
+// --- the GPU pool ------------------------------------------------------------
+// Every machine that installs the agent publishes its own tunnel address here.
+// The KV entry is a list, not one string: with several GPUs online a model call
+// goes to a machine chosen at random and the next one is tried when it does not
+// answer, so the site keeps working whichever PC is awake.
+const POOL_KEY = 'song_pool';
+const POOL_LIMIT = 8;                                  // machines kept
+const POOL_TTL_MS = 7 * 24 * 60 * 60 * 1000;           // forgotten after a week
+
+async function readPool(env) {
+  if (!env.STATS) return [];
+  let entries = [];
+  try {
+    const raw = await env.STATS.get(POOL_KEY);
+    entries = raw ? JSON.parse(raw) : [];
+  } catch (err) {
+    entries = [];
+  }
+  const cutoff = Date.now() - POOL_TTL_MS;
+  const pool = (Array.isArray(entries) ? entries : [])
+    .filter((entry) => entry && typeof entry.url === 'string' && (entry.seen || 0) > cutoff);
+  // The single address older pages still read.
+  const legacy = await env.STATS.get('song_api');
+  if (legacy && !pool.some((entry) => entry.url === legacy)) {
+    pool.push({ url: legacy, seen: Date.now(), legacy: true });
+  }
+  return pool;
+}
+
+async function writePool(env, pool) {
+  await env.STATS.put(POOL_KEY, JSON.stringify(pool.slice(0, POOL_LIMIT)));
+  if (pool.length) await env.STATS.put('song_api', pool[0].url);
+}
 
 async function songEndpoint(request, env) {
   if (request.method === 'POST') {
@@ -151,13 +197,32 @@ async function songEndpoint(request, env) {
     if (value && !/^https?:\/\/[^\s]+$/i.test(value)) {
       return json({ error: 'Not an http(s) address.' }, 400);
     }
-    if (value) await env.STATS.put('song_api', value);
-    else await env.STATS.delete('song_api');
-    return json({ ok: true, url: value });
+    let pool = await readPool(env);
+    // {remove: "https://..."} leaves the pool: a machine that was re-installed on
+    // a new address, or one that should no longer receive songs.
+    const remove = String((body && body.remove) || '').trim().replace(/\/+$/, '');
+    if (remove) {
+      pool = pool.filter((entry) => entry.url !== remove);
+      await writePool(env, pool);
+      return json({ ok: true, removed: remove, pool: pool.map((entry) => entry.url) });
+    }
+    if (!value) {
+      return json({ ok: true, url: '', pool: pool.map((entry) => entry.url) });
+    }
+    const now = Date.now();
+    const known = pool.find((entry) => entry.url === value);
+    if (known) known.seen = now;
+    else pool.unshift({ url: value, seen: now });
+    await writePool(env, pool);
+    return json({ ok: true, url: value, pool: pool.map((entry) => entry.url) });
   }
 
-  const stored = env.STATS ? await env.STATS.get('song_api') : null;
-  return json({ url: stored || env.SONG_API || '' });
+  const pool = await readPool(env);
+  return json({
+    url: pool.length ? pool[0].url : (env.SONG_API || ''),
+    urls: pool.map((entry) => entry.url),
+    machines: pool.map((entry) => ({ url: entry.url, seen: entry.seen })),
+  });
 }
 
 
@@ -166,16 +231,26 @@ async function song(request, env, url) {
   // KV is the one to use. Reading only SONG_API made /api/song/endpoint report a
   // live address that the proxy then ignored, so every model call through
   // Cloudflare answered 501 while the page quietly fell back to loopback.
-  let base = String(env.SONG_API || '').trim().replace(/\/+$/, '');
-  if (!base && env.STATS) {
-    try {
-      base = String((await env.STATS.get('song_api')) || '').trim().replace(/\/+$/, '');
-    } catch (err) {}
+  // SONG_API pins one machine; otherwise every machine that published is a
+  // candidate. The order starts at a random entry so the load spreads over the
+  // pool, and a machine that does not answer is skipped for the next one.
+  let candidates = [];
+  const pinned = String(env.SONG_API || '').trim().replace(/\/+$/, '');
+  if (pinned) {
+    candidates = [pinned];
+  } else {
+    const pool = await readPool(env);
+    candidates = pool.map((entry) => entry.url);
+    if (candidates.length > 1) {
+      const start = Math.floor(Math.random() * candidates.length);
+      candidates = candidates.slice(start).concat(candidates.slice(0, start));
+    }
   }
-  if (!base) {
+  if (!candidates.length) {
     return json({
-      error: 'The music model runs on the computer that has the GPU. Start the desktop app '
-        + 'there so the page can use it, or set SONG_API to an address that reaches it.',
+      error: 'No GPU has joined yet. Run install.cmd on a PC with an NVIDIA card: it '
+        + 'installs, starts and publishes itself, and the site picks it up on the next '
+        + 'click.',
       model: null,
     }, 501);
   }
@@ -187,16 +262,32 @@ async function song(request, env, url) {
     init.body = await request.arrayBuffer();
   }
 
-  try {
-    const upstream = await fetch(base + url.pathname + url.search, init);
-    const headers = new Headers(upstream.headers);
-    headers.delete('access-control-allow-origin');
-    headers.delete('transfer-encoding');
-    headers.delete('connection');
-    return new Response(upstream.body, { status: upstream.status, headers });
-  } catch (err) {
-    return json({ error: 'The song service at that address did not answer.' }, 502);
+  const failures = [];
+  for (let index = 0; index < candidates.length; index++) {
+    const base = candidates[index];
+    try {
+      const upstream = await fetch(base + url.pathname + url.search, init);
+      // A machine that is up but cannot serve the request is not the same as one
+      // that is asleep: only 5xx and network errors move on to the next GPU, and
+      // never past the last candidate (its answer is the one to report).
+      if (upstream.status >= 500 && index < candidates.length - 1) {
+        failures.push({ url: base, status: upstream.status });
+        continue;
+      }
+      const headers = new Headers(upstream.headers);
+      headers.delete('access-control-allow-origin');
+      headers.delete('transfer-encoding');
+      headers.delete('connection');
+      return new Response(upstream.body, { status: upstream.status, headers });
+    } catch (err) {
+      failures.push({ url: base, error: String((err && err.message) || err) });
+    }
   }
+  return json({
+    error: 'No machine in the pool answered. Leave one PC with the agent running, or run '
+      + 'install.cmd on another.',
+    tried: failures,
+  }, 502);
 }
 
 function downloadBase(env) {

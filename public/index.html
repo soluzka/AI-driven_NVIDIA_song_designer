@@ -4156,7 +4156,7 @@
             hint.className = 'hint';
             hint.textContent = songs.length
                 ? songs.length + ' kept in this browser, on this device. They play without a connection.'
-                : 'Nothing saved yet. A song is kept here the moment it finishes rendering.';
+                : 'Nothing saved yet. A song is kept here when the model finishes singing it, never before.';
             panel.appendChild(heading);
             panel.appendChild(hint);
             const close = document.createElement('button');
@@ -4168,7 +4168,8 @@
             if (!songs.length) {
                 const empty = document.createElement('div');
                 empty.className = 'saved-empty';
-                empty.textContent = 'Generate a song and it appears here, even with the internet off afterwards.';
+                empty.textContent = 'Generate a song with the model and it appears here by itself, '
+                    + 'and still plays with the internet off.';
                 panel.appendChild(empty);
             }
 
@@ -5087,7 +5088,10 @@
                 const head = document.createElement('div');
                 head.className = 'gen-title';
                 head.textContent = `Song · ${summary.total.toLocaleString()} tracks · ${bpm} BPM${seconds ? ' · ' + Math.round(seconds) + 's' : ''} · seed ${seed}`;
-                saveSongToLibrary(url, { id: songId, title: head.textContent, model: 'the browser synthesiser' });
+                // Deliberately NOT saved here: this is the browser's instrumental, and
+                // the library is for finished songs. It is written once, when the model
+                // version lands below; until then nothing is stored, so the library can
+                // never hold a backing track with nobody singing on it.
                 const note = document.createElement('div');
                 note.textContent = (summary.genres.length
                     ? `Built from ${summary.label}, shaped by what dominates it: ${summary.genres.map(genre => `${genre.name} (${genre.count})`).join(', ')}. `
@@ -5261,8 +5265,8 @@
                     saveAudio.textContent = withVoice ? 'Save the song with your voice' : 'Save the song';
                     saveAudio.href = source;
                     saveAudio.download = 'library-song.wav';
-                    // Replaces the browser version under the same id, so the library holds
-                    // the song as the model sang it - with your voice, when one was fitted.
+                    // The only place a song enters the library: the model sang it, the
+                    // lyrics are on it, and (when one was fitted) it is in your voice.
                     saveSongToLibrary(source, { id: songId, title: head.textContent, model: swapped.model || 'the song model' });
                 });
             } catch (err) {

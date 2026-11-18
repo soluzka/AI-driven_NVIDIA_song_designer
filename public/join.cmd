@@ -20,25 +20,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 
 rem The voice service is the one part that needs an environment of its own:
 rem chatterbox pins torch 2.6 with numpy 1.x, which cannot live in the shared one.
-rem The installer above builds it too; this repeats the check here so the window
-rem says plainly whether it is there, and repairs it if the install stopped early.
+rem None of the Python handling is done here. install_voice.ps1 fetches uv if the
+rem machine has none, lets uv download a 3.11 interpreter, and builds the venv with
+rem it - so this line works on a PC that has never had Python installed.
 echo.
 echo Voice service:
 set "APP=%LOCALAPPDATA%\internet-gpu\AI-driven_NVIDIA_song_designer-main"
-if not exist "%APP%\voice_service\install.py" goto :novoice
-if exist "%APP%\voice_service\.venv\Scripts\python.exe" (
-    echo   its environment is in place
-    goto :done
-)
-echo   no environment yet: building it now, once. This downloads a few GB.
-"%APP%\.venv\Scripts\python.exe" -m venv "%APP%\voice_service\.venv"
-if errorlevel 1 echo   could not create voice_service\.venv; the rest of the app is installed
-"%APP%\voice_service\.venv\Scripts\python.exe" "%APP%\voice_service\install.py"
-if errorlevel 1 echo   the voice environment did not finish; run this file again to repair it
+if not exist "%APP%\tools\install_voice.ps1" goto :novoice
+powershell -NoProfile -ExecutionPolicy Bypass -File "%APP%\tools\install_voice.ps1" -AppDir "%APP%"
 goto :done
 
 :novoice
-echo   voice_service\install.py is not in %APP%, so there was nothing to build
+echo   tools\install_voice.ps1 is not in %APP%, so there was nothing to build
 
 :done
 echo.

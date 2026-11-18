@@ -909,9 +909,39 @@
         @media (max-width: 430px) {
             .logo-text { display: none; }
         }
+        /* Offline is a state of the page, so it is stated plainly rather than left
+           to be inferred from three red chips. */
+        .offline-banner {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 9px 16px;
+            font-size: 12.5px;
+            line-height: 1.5;
+            color: #ffcf6b;
+            background: rgba(255, 207, 107, 0.10);
+            border-bottom: 1px solid rgba(255, 207, 107, 0.35);
+            position: sticky;
+            top: 0;
+            z-index: 120;
+        }
+        .offline-banner[hidden] { display: none; }
+        .offline-banner .dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            background: #ffcf6b; flex: none;
+            box-shadow: 0 0 0 3px rgba(255, 207, 107, 0.18);
+        }
     </style>
 </head>
 <body>
+    <!-- Shown the moment the browser loses its connection, and again when a request
+         fails with no answer at all: search, downloads and the pool need the
+         network, while a song can still be rendered by a model on this PC. -->
+    <div class="offline-banner" id="offlineBanner" hidden>
+        <span class="dot"></span>
+        <span id="offlineText">You are offline. Search, downloads and the pool need a connection;
+            a song can still render on this PC's model.</span>
+    </div>
     <!-- Header -->
     <div class="header">
         <div class="logo">
@@ -3987,6 +4017,28 @@
         // Kept as a promise too, so a compose can wait a moment for it instead of
         // racing it and being left with loopback alone.
         window.remoteSongApiReady = refreshPublishedAddress();
+
+        // --- is this page online? -------------------------------------------
+        // Said in one line at the top rather than left to be guessed from three red
+        // chips. The page itself is served over the network, so this matters most
+        // when the connection drops while it is open: songs can carry on if this
+        // PC's model is running, everything else needs the way back.
+        function reflectOffline() {
+            const banner = document.getElementById('offlineBanner');
+            const text = document.getElementById('offlineText');
+            if (!banner) return;
+            const offline = navigator.onLine === false;
+            banner.hidden = !offline;
+            if (offline && text) {
+                text.textContent = 'You are offline. Search, downloads and the pool need a connection; '
+                    + 'a song can still render while this PC\'s model is running.';
+            }
+        }
+        window.addEventListener('online', reflectOffline);
+        window.addEventListener('offline', reflectOffline);
+        reflectOffline();
+        // navigator.onLine can lag behind a dropped connection, so it is re-read.
+        setInterval(reflectOffline, 20000);
 
         // The pool badge: how many machines can render a song right now, and with
         // no GPU online it is the thing to press — the wake path goes through

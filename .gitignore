@@ -75,3 +75,6 @@ tools/node/
 
 # A local marker: while it exists this install does not add itself to the pool.
 build/no_pool.txt
+
+# The offline Kaggle staging folder: an 11 GB copy of the weights and code.
+build/kaggle_pack/

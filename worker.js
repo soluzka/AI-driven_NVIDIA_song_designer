@@ -197,7 +197,30 @@ function kaggleAuth(env) {
 // The kernel is a plain script: a few lines that clone the repo and run the same
 // cell the Colab notebook runs, with the join key written in so the card adds
 // itself to the pool without anybody pasting an address.
-function gpuKernelScript(joinKey) {
+function gpuKernelScript(joinKey, codeDataset, weightsDataset) {
+  // The pushed code is a dozen lines: it can never reach the network, so it runs the
+  // boot script from the mounted dataset instead of carrying one. Everything the
+  // run needs - the repository, the Linux packages, the ACE-Step source, the
+  // cloudflared binary and the weights - arrives as dataset sources, which are
+  // mounted at /kaggle/input without any connection.
+  return [
+    'import os, runpy, sys',
+    '',
+    "CODE = '/kaggle/input/" + codeDataset.split('/')[1] + "/repo'",
+    'script = os.path.join(CODE, \'public\', \'song_gpu_offline.py\')',
+    'os.environ[\'SONG_JOIN_KEY\'] = ' + JSON.stringify(joinKey || ''),
+    "print('offline boot:', script, flush=True)",
+    'if not os.path.isfile(script):',
+    "    print('the code dataset is not mounted at', CODE, flush=True)",
+    "    print('attach " + codeDataset + " and " + weightsDataset + " to this kernel', flush=True)",
+    '    sys.exit(2)',
+    'sys.path.insert(0, CODE)',
+    "runpy.run_path(script, run_name='__main__')",
+    '',
+  ].join('\n');
+}
+
+function gpuKernelScriptOnline(joinKey) {
   return [
     'import os, re, socket, subprocess, sys',
     '',
@@ -292,14 +315,22 @@ async function startGpu(request, env, url) {
   const body = {
     slug: auth.handle + '/' + GPU_SLUG,
     newTitle: 'song gpu pool',
-    text: gpuKernelScript(String(env.SONG_JOIN_KEY || '').trim()),
+    text: gpuKernelScript(
+      String(env.SONG_JOIN_KEY || '').trim(),
+      String(env.KAGGLE_CODE_DATASET || (auth.handle + '/song-gpu-code')).trim(),
+      String(env.KAGGLE_WEIGHTS_DATASET || (auth.handle + '/song-gpu-weights')).trim(),
+    ),
     language: 'python',
     kernelType: 'script',
     isPrivate: true,
     enableGpu: true,
     machineShape: 'NvidiaTeslaT4',
     enableInternet: true,
-    datasetDataSources: [],
+    // The datasets are what make an offline run possible at all.
+    datasetDataSources: [
+      String(env.KAGGLE_CODE_DATASET || (auth.handle + '/song-gpu-code')).trim(),
+      String(env.KAGGLE_WEIGHTS_DATASET || (auth.handle + '/song-gpu-weights')).trim(),
+    ],
     competitionDataSources: [],
     kernelDataSources: [],
     categoryIds: [],

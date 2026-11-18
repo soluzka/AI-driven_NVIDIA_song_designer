@@ -173,6 +173,47 @@ The page first tries Socket.IO (the desktop app). If it cannot connect it falls
 back to the bundled index in `public/data/videos.json` and searches in the
 browser, so the site works with no backend at all.
 
+### When the internet is off
+
+The page says so itself: a strip appears above the header the moment the browser
+loses its connection, and disappears when it comes back.
+
+```
+●  You are offline. Search, downloads and the pool need a connection;
+   a song can still render while this PC's model is running.
+```
+
+It is driven by `navigator.onLine`, re-read on the `online`/`offline` events and
+every twenty seconds, because a link that has lost its route can keep reporting
+`true` for a while. Nothing is hidden and nothing is faked: the model chips go to
+their own states (`Nothing is running`, `AI not connected yet · warming`) and
+`Start a GPU` appears only when the pool is empty.
+
+What still works with the cable out:
+
+| Thing | Offline |
+| --- | --- |
+| Loading the deployed page | no - it is served from Cloudflare |
+| The same page from this PC | yes - the desktop app serves it on `127.0.0.1:5001` |
+| Rendering a song on this PC's model | yes - the song service is local on 8090 |
+| Searching the library | yes from the local app (bundled index), no from the Worker (D1) |
+| Downloads, the pool, `Start a GPU`, voice search | no - all of them are remote |
+
+To keep working with no internet, use the local copy:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\start_services.ps1
+# then open http://127.0.0.1:5001  (the site, from public/)
+```
+
+The song service on 8090 keeps its own `/health` answering, so the header still
+shows what the card is doing even though the site itself was loaded from disk.
+
+The same rule applies to a Kaggle kernel started from this site: Kaggle turns the
+network off on API-pushed runs, so the offline boot (`public/song_gpu_offline.py`)
+reads everything from mounted datasets and says `no internet in this kernel, which
+is expected here` instead of failing at the first download.
+
 Deploy after refreshing the index:
 
 ```

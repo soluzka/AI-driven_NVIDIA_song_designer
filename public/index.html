@@ -934,16 +934,8 @@
             gap: 14px;
             padding: 4px 0 24px;
         }
-        .saved-card {
-            background: rgba(255, 255, 255, 0.03);
-            border: 1px solid #232f34;
-            border-radius: 12px;
-            padding: 12px 13px;
-            display: flex; flex-direction: column; gap: 8px;
-        }
-        .saved-title { font-size: 13px; line-height: 1.4; color: #dfe8ea; }
-        .saved-meta { font-size: 11.5px; color: #8b9aa0; }
-        .saved-card audio { width: 100%; height: 32px; }
+        /* The card itself is a .video-card; only the transport and the actions are new. */
+        .saved-card audio { width: 100%; height: 32px; margin-top: 8px; }
         .saved-actions { display: flex; gap: 12px; font-size: 12px; }
         .saved-actions a, .saved-actions button {
             background: none; border: 0; padding: 0; cursor: pointer;
@@ -4131,6 +4123,11 @@
                     title: info.title || 'Untitled song',
                     model: info.model || '',
                     query: info.query || '',
+                    genres: Array.isArray(info.genres) ? info.genres : [],
+                    label: info.label || '',
+                    tracks: info.tracks || 0,
+                    seconds: info.seconds || 0,
+                    thumb: info.thumb || '',
                     createdAt: new Date().toISOString(),
                     bytes: blob.size,
                     blob: blob
@@ -4191,14 +4188,46 @@
             const grid = document.createElement('div');
             grid.className = 'saved-grid';
             songs.forEach(item => {
+                // Same card as a video result: a picture, a title, the tags that shaped
+                // the song, and the transport where a video would have played.
                 const card = document.createElement('div');
-                card.className = 'saved-card';
+                card.className = 'video-card saved-card';
+                const thumb = document.createElement('div');
+                thumb.className = 'thumb-wrapper';
+                if (item.thumb) {
+                    const image = document.createElement('img');
+                    image.src = item.thumb;
+                    image.alt = '';
+                    image.loading = 'lazy';
+                    thumb.appendChild(image);
+                } else {
+                    const placeholder = document.createElement('div');
+                    placeholder.className = 'thumb-placeholder';
+                    placeholder.textContent = '♪';
+                    thumb.appendChild(placeholder);
+                }
+                if (item.seconds) {
+                    const badge = document.createElement('span');
+                    badge.className = 'duration-badge';
+                    badge.textContent = Math.round(item.seconds) + 's';
+                    thumb.appendChild(badge);
+                }
+                const body = document.createElement('div');
+                body.className = 'card-body';
                 const title = document.createElement('div');
-                title.className = 'saved-title';
+                title.className = 'card-title';
                 title.textContent = item.title;
                 const meta = document.createElement('div');
-                meta.className = 'saved-meta';
+                meta.className = 'card-desc';
                 meta.textContent = savedStamp(item);
+                const chips = document.createElement('div');
+                chips.className = 'card-footer';
+                (item.genres || []).forEach(name => {
+                    const chip = document.createElement('span');
+                    chip.className = 'genre-chip';
+                    chip.textContent = name;
+                    chips.appendChild(chip);
+                });
                 const player = document.createElement('audio');
                 player.controls = true;
                 player.preload = 'none';
@@ -4227,10 +4256,13 @@
                 };
                 actions.appendChild(download);
                 actions.appendChild(drop);
-                card.appendChild(title);
-                card.appendChild(meta);
-                card.appendChild(player);
-                card.appendChild(actions);
+                body.appendChild(title);
+                body.appendChild(meta);
+                body.appendChild(chips);
+                body.appendChild(player);
+                body.appendChild(actions);
+                card.appendChild(thumb);
+                card.appendChild(body);
                 grid.appendChild(card);
             });
             container.appendChild(grid);
@@ -5012,6 +5044,9 @@
                 // One id per render: the browser version is stored first and the
                 // model version replaces it under the same key instead of piling up.
                 const songId = 'song-' + Date.now() + '-' + Math.floor(Math.random() * 1000);
+                // The picture on the first result the song grew out of, kept with the
+                // saved song so its card looks like the row it came from.
+                const sourceThumb = (document.querySelector('#resultsContainer .video-card .thumb-wrapper img') || {}).src || '';
                 const seed = (window._nextSongSeed !== undefined)
                     ? window._nextSongSeed
                     : Math.floor(Math.random() * 1000000);
@@ -5288,7 +5323,14 @@
                         model: swapped.model || 'the song model',
                         // What was in the search bar when this song was designed, so the
                         // library says where each one came from.
-                        query: searchInput ? searchInput.value.trim() : ''
+                        query: searchInput ? searchInput.value.trim() : '',
+                        // The same things a result card shows: the tags that shaped the
+                        // song, the length, and the picture it was built from.
+                        genres: (summary.genres || []).map(genre => genre.name).slice(0, 4),
+                        label: summary.label || '',
+                        tracks: summary.total || 0,
+                        seconds: seconds || 0,
+                        thumb: sourceThumb
                     });
                 });
             } catch (err) {

@@ -936,6 +936,7 @@
         }
         /* The card itself is a .video-card; only the transport and the actions are new. */
         .saved-card audio { width: 100%; height: 32px; margin-top: 8px; }
+        .saved-card video { width: 100%; border-radius: 8px; margin-top: 8px; background: #000; }
         .saved-actions { display: flex; gap: 12px; font-size: 12px; }
         .saved-actions a, .saved-actions button {
             background: none; border: 0; padding: 0; cursor: pointer;
@@ -4123,6 +4124,7 @@
                     title: info.title || 'Untitled song',
                     model: info.model || '',
                     query: info.query || '',
+                    kind: info.kind || 'audio',
                     genres: Array.isArray(info.genres) ? info.genres : [],
                     label: info.label || '',
                     tracks: info.tracks || 0,
@@ -4149,6 +4151,167 @@
         // The library is shown where search results normally appear, not in a modal:
         // it is the same thing - a list of things you can play - so it is browsed in
         // the same place, with the same summary line above it.
+        // --- a real lyric video ------------------------------------------------
+        // The canvas that plays with a song, drawn and recorded together with the
+        // audio into one webm, so the picture and the words end up in a file instead
+        // of only on screen. Nothing is uploaded: the recording happens here.
+        function lyricMimeType() {
+            if (!window.MediaRecorder) return '';
+            const options = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+            for (const type of options) {
+                if (MediaRecorder.isTypeSupported(type)) return type;
+            }
+            return '';
+        }
+
+        function lyricLineAt(lines, index) {
+            if (!lines.length) return '';
+            return lines[Math.max(0, Math.min(lines.length - 1, index))];
+        }
+
+        function drawLyricFrame(draw, width, height, frame) {
+            const palette = REMIX_PALETTES[frame.genre] || REMIX_PALETTE_DEFAULT;
+            const pulse = frame.pulse;
+            draw.fillStyle = palette[2];
+            draw.fillRect(0, 0, width, height);
+
+            const glow = draw.createRadialGradient(
+                width * (0.35 + 0.12 * Math.sin(frame.at * 0.5)),
+                height * (0.4 + 0.06 * Math.cos(frame.at * 0.37)), 20,
+                width * 0.5, height * 0.5, width * 0.75);
+            glow.addColorStop(0, palette[0]);
+            glow.addColorStop(1, 'rgba(0,0,0,0)');
+            draw.globalAlpha = 0.26 + pulse * 0.4;
+            draw.fillStyle = glow;
+            draw.fillRect(0, 0, width, height);
+            draw.globalAlpha = 1;
+
+            const bars = 56;
+            for (let i = 0; i < bars; i++) {
+                const wobble = 0.5 + 0.5 * Math.sin(frame.at * 2.4 + i * 0.35);
+                const barHeight = height * (0.03 + 0.10 * wobble * (0.45 + pulse));
+                draw.fillStyle = palette[1];
+                draw.fillRect((i / bars) * width + 3, height - barHeight - 26, (width / bars) - 6, barHeight);
+            }
+
+            draw.fillStyle = 'rgba(255,255,255,0.92)';
+            draw.font = '600 26px system-ui, -apple-system, Segoe UI, sans-serif';
+            draw.fillText(String(frame.title).slice(0, 58), 48, 60);
+            draw.fillStyle = palette[0];
+            draw.font = '600 15px ui-monospace, monospace';
+            draw.fillText(frame.line2, 48, 88);
+
+            // The words: the line being sung is large and bright, the line before and
+            // after stay visible but quiet, so the picture reads like a lyric video.
+            draw.textAlign = 'center';
+            draw.fillStyle = 'rgba(255,255,255,0.34)';
+            draw.font = '500 24px system-ui, sans-serif';
+            draw.fillText(lyricLineAt(frame.lines, frame.current - 1), width / 2, height / 2 - 62);
+            draw.fillStyle = 'rgba(255,255,255,0.98)';
+            draw.font = '700 46px system-ui, -apple-system, Segoe UI, sans-serif';
+            const lyric = lyricLineAt(frame.lines, frame.current);
+            draw.fillText(lyric.length > 34 ? lyric.slice(0, 34) + '…' : lyric, width / 2, height / 2 + 10);
+            draw.fillStyle = 'rgba(255,255,255,0.30)';
+            draw.font = '500 24px system-ui, sans-serif';
+            draw.fillText(lyricLineAt(frame.lines, frame.current + 1), width / 2, height / 2 + 74);
+            draw.textAlign = 'start';
+        }
+
+        // Records the canvas and the song together, in real time: the length of the
+        // recording is the length of the song, because that is how a browser captures
+        // a picture, and pretending otherwise would produce a silent, frozen file.
+        async function makeLyricVideo(song) {
+            const mime = lyricMimeType();
+            if (!mime) throw new Error('this browser cannot record a video');
+            const lines = (song.lyrics || [])
+                .reduce((all, part) => all.concat(part.lines || []), [])
+                .map(line => String(line).trim())
+                .filter(Boolean);
+            if (!lines.length) throw new Error('there are no lyrics to show');
+
+            const canvas = document.createElement('canvas');
+            canvas.width = 1280;
+            canvas.height = 720;
+            const draw = canvas.getContext('2d');
+
+            const audio = new Audio();
+            audio.src = song.audio;
+            audio.preload = 'auto';
+            await new Promise((resolve, reject) => {
+                audio.addEventListener('loadedmetadata', resolve, { once: true });
+                audio.addEventListener('error', () => reject(new Error('the song would not load for recording')), { once: true });
+            });
+            const duration = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : (song.seconds || 30);
+
+            let audioStream = null;
+            try {
+                audioStream = audio.captureStream ? audio.captureStream() : null;
+            } catch (err) { audioStream = null; }
+            if (!audioStream || !audioStream.getAudioTracks().length) {
+                // Safari and some Chrome builds will not give a stream from a media
+                // element; routing it through Web Audio does.
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const source = ctx.createMediaElementSource(audio);
+                const destination = ctx.createMediaStreamDestination();
+                source.connect(destination);
+                source.connect(ctx.destination);
+                audioStream = destination.stream;
+                await ctx.resume();
+            }
+
+            const stream = new MediaStream();
+            canvas.captureStream(30).getVideoTracks().forEach(track => stream.addTrack(track));
+            audioStream.getAudioTracks().forEach(track => stream.addTrack(track));
+
+            const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 2500000 });
+            const chunks = [];
+            recorder.ondataavailable = event => { if (event.data && event.data.size) chunks.push(event.data); };
+            const finished = new Promise(resolve => { recorder.onstop = resolve; });
+
+            const frame = {
+                title: song.title || 'Song',
+                line2: song.line2 || '',
+                genre: song.genre || '',
+                lines: lines,
+                current: 0,
+                at: 0,
+                pulse: 1
+            };
+            const beat = song.bpm ? 60 / song.bpm : 0.5;
+            let running = true;
+            const paint = () => {
+                if (!running) return;
+                const at = audio.currentTime || 0;
+                frame.at = at;
+                frame.pulse = Math.exp(-6 * ((at % beat) / beat));
+                frame.current = Math.min(lines.length - 1, Math.floor((at / duration) * lines.length));
+                drawLyricFrame(draw, canvas.width, canvas.height, frame);
+                requestAnimationFrame(paint);
+            };
+            drawLyricFrame(draw, canvas.width, canvas.height, frame);
+
+            recorder.start(1000);
+            audio.currentTime = 0;
+            await audio.play();
+            requestAnimationFrame(paint);
+
+            await new Promise(resolve => {
+                audio.addEventListener('ended', resolve, { once: true });
+                setTimeout(resolve, (duration + 1.5) * 1000);
+            });
+            running = false;
+            await new Promise(resolve => setTimeout(resolve, 250));
+            if (recorder.state !== 'inactive') recorder.stop();
+            await finished;
+            try { audio.pause(); } catch (err) {}
+            stream.getTracks().forEach(track => track.stop());
+
+            const blob = new Blob(chunks, { type: mime.split(';')[0] });
+            if (!blob.size) throw new Error('the recording came out empty');
+            return blob;
+        }
+        window.makeLyricVideo = makeLyricVideo;
+
         async function openSavedSongs() {
             // Tells the page's own "put the last search back" code to leave this view
             // alone: the library is a search result too, and it stays until another
@@ -4228,15 +4391,18 @@
                     chip.textContent = name;
                     chips.appendChild(chip);
                 });
-                const player = document.createElement('audio');
+                // A lyric video is stored beside the songs and shown in the same card,
+                // in the place a video result would put its player.
+                const player = document.createElement(item.kind === 'video' ? 'video' : 'audio');
                 player.controls = true;
                 player.preload = 'none';
+                if (item.kind === 'video') player.playsInline = true;
                 // A blob URL per card, made when the list is drawn: the audio itself is
                 // in IndexedDB, so this is the only thing holding it in memory.
                 const objectUrl = URL.createObjectURL(item.blob);
                 player.src = objectUrl;
                 player.addEventListener('play', () => {
-                    container.querySelectorAll('.saved-card audio').forEach(other => {
+                    container.querySelectorAll('.saved-card audio, .saved-card video').forEach(other => {
                         if (other !== player) other.pause();
                     });
                 });
@@ -4245,7 +4411,8 @@
                 const download = document.createElement('a');
                 download.textContent = 'Download';
                 download.href = objectUrl;
-                download.download = (item.title || 'song').replace(/[^a-z0-9]+/gi, '-').toLowerCase() + '.wav';
+                download.download = (item.title || 'song').replace(/[^a-z0-9]+/gi, '-').toLowerCase()
+                    + (item.kind === 'video' ? '.webm' : '.wav');
                 const drop = document.createElement('button');
                 drop.className = 'drop';
                 drop.textContent = 'Delete';
@@ -5167,6 +5334,43 @@
 
                 const actions = document.createElement('div');
                 actions.className = 'gen-actions';
+                // What the lyric video records: the song as it is right now, the browser
+                // version first and the model's version once it lands.
+                let videoSource = url;
+                const videoButton = document.createElement('button');
+                videoButton.textContent = 'Make a lyric video';
+                videoButton.onclick = async (clickEvent) => {
+                    clickEvent.stopPropagation();
+                    if (videoButton.disabled) return;
+                    videoButton.disabled = true;
+                    videoButton.textContent = 'Recording the picture...';
+                    try {
+                        const blob = await makeLyricVideo({
+                            audio: videoSource,
+                            title: head.textContent,
+                            line2: `${bpm} BPM` + (summary.genres.length ? ' · ' + summary.genres[0].name : ''),
+                            genre: summary.genres.length ? summary.genres[0].name : '',
+                            lyrics: lyrics,
+                            bpm: bpm,
+                            seconds: seconds
+                        });
+                        const kept = await saveSongToLibrary(blob, {
+                            id: songId + '-video',
+                            kind: 'video',
+                            title: 'Lyric video · ' + head.textContent.replace(/^Song · /, ''),
+                            model: 'the page, recording the picture',
+                            query: searchInput ? searchInput.value.trim() : '',
+                            genres: (summary.genres || []).map(genre => genre.name).slice(0, 4),
+                            seconds: seconds || 0,
+                            thumb: sourceThumb
+                        });
+                        videoButton.textContent = kept ? 'Lyric video saved' : 'Could not store the video';
+                    } catch (err) {
+                        videoButton.textContent = 'Make a lyric video';
+                        videoButton.disabled = false;
+                        if (window.showToast) showToast('error', 'Lyric video', err && err.message ? err.message : 'the recording failed');
+                    }
+                };
                 const saveAudio = document.createElement('a');
                 saveAudio.className = 'gen-open';
                 saveAudio.textContent = 'Save the WAV';
@@ -5188,7 +5392,7 @@
                     window._nextSongSeed = seed;
                     startLibrarySong();
                 };
-                actions.append(saveAudio, saveLyrics, again, replay);
+                actions.append(saveAudio, saveLyrics, videoButton, again, replay);
 
                 // Where the model lives belongs to the browser, not the build.
                 // A tunnel URL changes every time it restarts, so it is pasted
@@ -5312,6 +5516,7 @@
                         + `Composed by ${swapped.model || 'the song model'} from the lyrics below, which it sings.`
                         + ` ${since().toFixed(1)}s from the button press, counting ${loads.join(', ')}.`
                         + (withVoice ? ' Those lyrics are sung by the model, fitted to the pitch and tone measured from your recording.' : '');
+                    videoSource = source;
                     saveAudio.textContent = withVoice ? 'Save the song with your voice' : 'Save the song';
                     saveAudio.href = source;
                     saveAudio.download = 'library-song.wav';

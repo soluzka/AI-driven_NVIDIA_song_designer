@@ -178,8 +178,19 @@ const GPU_COOLDOWN_MS = 30 * 60 * 1000;
 function kaggleAuth(env) {
   const user = String(env.KAGGLE_USERNAME || '').trim();
   const key = String(env.KAGGLE_KEY || '').trim();
-  if (!user || !key) return null;
-  return { user, key, header: 'Basic ' + btoa(user + ':' + key) };
+  if (!key) return null;
+  // Kaggle now issues access tokens that start with KGAT, and those are bearer
+  // tokens; the older username+key pair is basic auth. Sending the new kind as
+  // basic was answered with 401 Unauthorized, which read like a wrong key.
+  const header = /^KGAT/i.test(key)
+    ? 'Bearer ' + key
+    : (user ? 'Basic ' + btoa(user + ':' + key) : null);
+  if (!header) return null;
+  // The username field in kaggle.json can hold a display name ("Bob 21savage");
+  // the API wants the handle ("bob21savage"). Kaggle silently sanitises whatever
+  // is in a slug, which turned the returned address into a different one.
+  const handle = user.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  return { user, key, handle, header };
 }
 
 // The kernel is a plain script: a few lines that clone the repo and run the same
@@ -211,12 +222,15 @@ function gpuKernelScript(joinKey) {
 }
 
 async function kaggleStatus(env, auth) {
+  // /kernels/status/<owner>/<slug> answers 404; the list carries what is actually
+  // available - the kernel's ref and when it last ran - so that is what is read.
   try {
-    const answer = await fetch('https://www.kaggle.com/api/v1/kernels/status/'
-      + encodeURIComponent(auth.user) + '/' + GPU_SLUG, { headers: { authorization: auth.header } });
+    const answer = await fetch('https://www.kaggle.com/api/v1/kernels/list?user='
+      + encodeURIComponent(auth.handle), { headers: { authorization: auth.header } });
     if (!answer.ok) return null;
     const body = await answer.json();
-    return typeof body === 'string' ? body : (body.status || null);
+    const mine = Array.isArray(body) ? body.find((k) => String(k.ref || '').endsWith('/' + GPU_SLUG)) : null;
+    return mine ? { ref: mine.ref, lastRunTime: mine.lastRunTime || null } : null;
   } catch (err) {
     return null;
   }
@@ -234,7 +248,7 @@ async function startGpu(request, env, url) {
   if (url.pathname === '/api/gpu/status') return json(await state());
   if (request.method !== 'POST') return json({ error: 'POST only' }, 405);
 
-  if (!auth) {
+  if (!auth || !auth.user) {
     return json({
       configured: false,
       error: 'No Kaggle account is set on this deployment yet, so this site cannot start a GPU. '
@@ -256,7 +270,7 @@ async function startGpu(request, env, url) {
   }
 
   const body = {
-    slug: auth.user + '/' + GPU_SLUG,
+    slug: auth.handle + '/' + GPU_SLUG,
     newTitle: 'song gpu pool',
     text: gpuKernelScript(String(env.SONG_JOIN_KEY || '').trim()),
     language: 'python',
@@ -292,7 +306,7 @@ async function startGpu(request, env, url) {
   return json({
     configured: true,
     started: Boolean(pushed),
-    url: 'https://www.kaggle.com/code/' + auth.user + '/' + GPU_SLUG,
+    url: 'https://www.kaggle.com/code/' + auth.handle + '/' + GPU_SLUG,
     note: 'The GPU boots, runs the song service, opens a tunnel and joins the pool. It shows up here '
       + 'when it reports the model loaded, which takes a few minutes on a fresh machine.',
     said,

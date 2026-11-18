@@ -56,6 +56,10 @@ peft
 py3langid
 pypinyin
 pytorch_lightning
+# spacy is not optional: acestep/models/lyrics_utils/lyric_tokenizer.py imports
+# spacy.lang.ar at module import time, so the pipeline fails without it even for
+# English lyrics.
+spacy
 tensorboard
 tensorboardX
 tqdm

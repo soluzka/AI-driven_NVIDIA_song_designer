@@ -89,9 +89,12 @@ if ($Key) {
     Set-Content -Path $keyFile -Value $Key -Encoding ascii -NoNewline
 } elseif (-not (Test-Path $keyFile)) {
     Say ''
-    Say 'The join key is one string from the site owner. It lets this machine publish'
-    Say 'its address; it is not a password to anything else.'
-    $secure = Read-Host 'Paste the join key (input hidden)' -AsSecureString
+    Say 'The join key is one string from whoever runs the site. It is the key to the list'
+    Say 'of machines the site is allowed to send songs to, which is why it is handed out'
+    Say 'rather than printed on the page: anyone holding it can put a machine in that list.'
+    Say 'Press Enter to skip. The install still finishes, the model still runs, and the'
+    Say 'address it prints can be pasted into Connect my model on the site by hand.'
+    $secure = Read-Host 'Paste the join key (hidden), or press Enter to skip' -AsSecureString
     $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
         [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
     if (-not $plain) { Say 'no key given: this PC will run the AI for itself, not for the site' }

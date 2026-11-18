@@ -46,6 +46,7 @@
     { "spec": "py3langid", "index": "https://pypi.org/simple" },
     { "spec": "pypinyin", "index": "https://pypi.org/simple" },
     { "spec": "pytorch_lightning", "index": "https://pypi.org/simple" },
+    { "spec": "spacy", "index": "https://pypi.org/simple", "why": "Required at import time by acestep/models/lyrics_utils/lyric_tokenizer.py (spacy.lang.ar), even for English lyrics." },
     { "spec": "tensorboard", "index": "https://pypi.org/simple" },
     { "spec": "tensorboardX", "index": "https://pypi.org/simple" },
     { "spec": "tqdm", "index": "https://pypi.org/simple" },

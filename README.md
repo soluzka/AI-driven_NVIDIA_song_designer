@@ -504,7 +504,7 @@ A named tunnel on a domain you own removes this problem entirely — one hostnam
 that survives restarts — at the cost of a `cloudflared tunnel login` and DNS.
 
 The address is also kept per browser under `songApi` in `localStorage` when
-someone pastes it into **Song designer → Connect my model**. That value is tried
+someone pastes it into **Connect my model** in the header. That value is tried
 before the published one and wins over it; paste an empty value to forget it.
 
 To give the deployed page a default instead, set `SONG_API` on the Worker, in
@@ -1023,7 +1023,7 @@ address. Nothing is installed on your computer and nothing is rented.
 
 That address is usable two ways, and the first needs no key and no permission:
 
-1. open the site → **Song designer** → **Connect my model** and paste it. The page
+1. press **Connect my model** in the site's header and paste it. The page
    then writes lyrics and renders songs on that T4 until the notebook stops;
 2. or paste the join key when the notebook asks, and the card joins the pool, so
    every visitor's click can use it with nothing pasted anywhere.

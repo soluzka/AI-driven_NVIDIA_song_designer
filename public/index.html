@@ -3651,19 +3651,39 @@
                     for (const base of bases) {
                         try {
                             const probe = await fetchBounded(base + '/health', { cache: 'no-store' }, 6000);
-                            if (probe.ok) return true;
+                            if (!probe.ok) continue;
+                            // Answering health is not the same as being ready. A card
+                            // that has just started answers while it loads, and the
+                            // first press then sat through that load with nothing on
+                            // screen saying so - which reads as the model not
+                            // answering. Warming is a wait with a number, so it is
+                            // shown as one. A warm that failed will never be ready,
+                            // so the job is sent and the reason comes back instead.
+                            const info = await probe.json().catch(() => ({}));
+                            if (info && info.warming && !info.warm_failed) {
+                                const line = document.getElementById('songStatus');
+                                if (line) {
+                                    line.textContent = 'The model is loading on that machine'
+                                        + (info.warming_seconds ? ' (' + info.warming_seconds + 's so far)' : '')
+                                        + '... ' + Math.round((Date.now() - began) / 1000) + 's';
+                                }
+                                continue;
+                            }
+                            return true;
                         } catch (err) {}
                     }
                     const status = document.getElementById('songStatus');
-                    if (status) {
-                        status.textContent = 'Waiting for the AI service to come up on this PC... '
+                    if (status && !/loading on that machine/.test(status.textContent || '')) {
+                        status.textContent = 'Waiting for the AI service to come up... '
                             + Math.round((Date.now() - began) / 1000) + 's';
                     }
                     await new Promise(resolve => setTimeout(resolve, 3000));
                 }
                 return false;
             };
-            await waitForService(3 * 60 * 1000);
+            // Six minutes rather than three: a free card's first load is the slow
+            // one, and giving up on it was another way the first press failed.
+            await waitForService(6 * 60 * 1000);
 
             let answer = null;
             window._modelNote = '';
@@ -3679,7 +3699,8 @@
                 } catch (err) {
                     continue;
                 }
-                if (latest && latest.token && /^(queued|loading|generating)$/.test(latest.status || '')) {
+                if (latest && latest.token
+                    && /^(queued|loading|generating|writing|singing|separating|mixing)$/.test(latest.status || '')) {
                     answer = { data: { token: latest.token }, base };
                     window._modelNote = 'Picked up the song that was already rendering on this machine';
                     break;
@@ -3691,7 +3712,8 @@
             // panel could only say the model did not answer, with no reason.
             const tried = [];
             const why = (base, text) => tried.push((base || 'the site') + ': ' + text);
-            for (const base of bases) {
+            const askAll = async (list) => {
+            for (const base of list) {
                 if (answer) break;
                 if (voiced) {
                     try {
@@ -3721,6 +3743,19 @@
                         answer = null;
                     }
                 }
+            }
+            };
+            await askAll(bases);
+            if (!answer) {
+                // One more ask, a few seconds later. A card that has just started can
+                // miss the first request while its services come up, and the service
+                // hands back a render that is already running rather than queueing a
+                // second one - so this either lands or joins the song the first press
+                // started. Nothing is thrown until both asks have failed.
+                const line = document.getElementById('songStatus');
+                if (line) line.textContent = 'Nothing answered yet; asking once more...';
+                await new Promise(resolve => setTimeout(resolve, 8000));
+                await askAll(await modelBases(false));
             }
             if (!answer) {
                 const loopbackTried = bases.includes('http://127.0.0.1:8090') && !ON_LOCAL_APP;

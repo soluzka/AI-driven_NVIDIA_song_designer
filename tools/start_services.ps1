@@ -425,7 +425,7 @@ if ($Watch) {
     }
 
     Trace 'watchdog started'
-    Say 'watching all three services every 2 minutes'
+    Say 'watching all four services every 2 minutes'
 
     while ($true) {
         Start-Sleep -Seconds 120
@@ -438,6 +438,9 @@ if ($Watch) {
         if (-not $NoTunnel -and -not @(Get-Process cloudflared -ErrorAction SilentlyContinue).Count) { $down += 'tunnel' }
         if (-not (Answers $DownloadPort) -and -not (Starting '*--role downloader*')) { $down += 'downloader' }
         if (-not (Answers $SongPort) -and -not (Starting '*--role song*')) { $down += 'song service' }
+        # The voice service is part of the install, so it is watched too: it is the
+        # one that loads torch on first use and can die without saying anything.
+        if (-not (Answers 8095) -and -not (Starting '*--role voice*')) { $down += 'voice service' }
 
         if ($down.Count -gt 0) {
             $which = $down -join ' and '

@@ -175,13 +175,17 @@ function Write-Metadata($path, $slug, $title) {
         isPrivate = $true
         licenses = @(@{ name = 'CC0-1.0' })
     } | ConvertTo-Json -Depth 5
-    Set-Content -Path (Join-Path $path 'dataset-metadata.json') -Value $metadata -Encoding utf8
+    # No BOM. `Set-Content -Encoding utf8` in Windows PowerShell 5.1 prepends one, and
+    # the Kaggle CLI answers a BOM-prefixed metadata file with
+    # "Expecting value: line 1 column 1 (char 0)" and uploads nothing at all.
+    $file = Join-Path $path 'dataset-metadata.json'
+    [System.IO.File]::WriteAllText($file, $metadata, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 if (-not $Owner) {
     if (Test-Path (Join-Path $Root 'build\kaggle.json')) {
         $cred = Get-Content (Join-Path $Root 'build\kaggle.json') -Raw | ConvertFrom-Json
-        $Owner = (String($cred.username)).ToLower() -replace '[^a-z0-9_-]', ''
+        $Owner = ([string]$cred.username).ToLower() -replace '[^a-z0-9_-]', ''
     }
 }
 Say "owner handle: $Owner"

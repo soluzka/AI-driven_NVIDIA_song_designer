@@ -308,6 +308,27 @@ Pip @('-r', 'song_service\requirements.txt', '--extra-index-url', $torchIndex)
 # above, so the model's code is installed without its dependency list.
 Pip @('--no-deps', 'git+https://github.com/ace-step/ACE-Step.git')
 
+# The voice service (8095) gets an environment of its own, and this is the only
+# place that builds it: chatterbox pins torch 2.6 with numpy 1.x, neither of which
+# can share the environment above, and its install.py puts the +cu126 wheels back
+# after pip has installed the CPU build of the same version. Without this step the
+# launcher says "voice service not installed yet" on every start, for ever.
+Say ''
+Say 'the voice service (8095): chatterbox, in an environment of its own'
+$voiceDir = Join-Path $root 'voice_service'
+$voiceVenv = Join-Path $voiceDir '.venv'
+$voicePython = Join-Path $voiceVenv 'Scripts\python.exe'
+if (-not (Test-Path $voicePython)) {
+    Say '  creating voice_service\.venv'
+    & $python -m venv $voiceVenv
+}
+& $voicePython (Join-Path $voiceDir 'install.py')
+if ($LASTEXITCODE -ne 0) {
+    Say '  the voice environment did not finish; run this script again to repair it'
+} else {
+    Say '  voice service installed'
+}
+
 # --- 4. the weights ----------------------------------------------------------
 if ($NoWeights) {
     Say ''

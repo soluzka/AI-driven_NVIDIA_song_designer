@@ -248,7 +248,13 @@ if ($Check) {
         @{ name = 'scipy';                   value = (Probe 'scipy' 'scipy.__version__') },
         @{ name = 'demucs';                  value = (Probe 'demucs' "'ok'") },
         @{ name = 'soundfile';               value = (Probe 'soundfile' 'soundfile.__version__') },
-        @{ name = 'numpy';                   value = (Probe 'numpy' 'numpy.__version__') },
+                @{ name = 'numpy';                  value = (Probe 'numpy' 'numpy.__version__') },
+        @{ name = 'huggingface-hub';         value = (Probe 'huggingface_hub' 'huggingface_hub.__version__') },
+        @{ name = 'diffusers';               value = (Probe 'diffusers' 'diffusers.__version__') },
+        @{ name = 'py3langid';               value = (Probe 'importlib.metadata' "importlib.metadata.version('py3langid')") },
+        # The exact failure that made every song report "the model did not answer":
+        # py3langid dropped from_pickled_model after 0.2.2, and the segmenter calls it.
+        @{ name = 'lang segmenter';          value = (Probe 'py3langid.langid' "'ok' if hasattr(py3langid.langid.LanguageIdentifier, 'from_pickled_model') else 'NO - songs will fail'") },
         @{ name = 'chatterbox (voice)';      value = (Probe 'chatterbox.tts' "'ok'") }
     )
     foreach ($row in $rows) {
@@ -377,6 +383,9 @@ if ($Autostart) {
 
 if ($Start) {
     Say ''
-    Say 'starting the services'
-    & (Join-Path $root 'tools\start_services.ps1')
+    # -Restart: a service that is already answering is still running the code it
+    # loaded at start-up, so it is stopped and started again. Installing new
+    # packages without this is how a fix looks applied and behaves old.
+    Say 'starting the services (restarting any that are already running)'
+    & (Join-Path $root 'tools\start_services.ps1') -Restart
 }

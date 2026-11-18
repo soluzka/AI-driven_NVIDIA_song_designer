@@ -36,7 +36,8 @@ param(
     [switch]$NoWarm,
     [switch]$NoTunnel,
     [switch]$Quiet,
-    [switch]$Watch
+    [switch]$Watch,
+    [switch]$Restart
 )
 
 $ErrorActionPreference = 'Stop'
@@ -49,6 +50,50 @@ $root = Split-Path -Parent $PSScriptRoot
 # metadata only: it loads and sings on the numpy 2.4.6 and torch 2.14.1 here.
 $sharedPython = Join-Path $root '.venv\Scripts\python.exe'
 $useShared = (Test-Path (Join-Path $root '.venv\all_services.json')) -and (Test-Path $sharedPython)
+
+# A service that is already answering keeps the code it loaded at start-up, so a
+# reinstall only takes effect after a restart. install_all.ps1 passes -Restart for
+# exactly that reason: without it a corrected package sits in .venv while the old
+# process keeps serving, which is how the py3langid fix looked like it had never
+# installed. Only processes this launcher would have started are touched.
+if ($Restart) {
+    foreach ($role in @('site', 'downloader', 'song', 'voice')) {
+        $procs = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+            Where-Object { $_.CommandLine -like "*--role $role*" })
+        foreach ($p in $procs) {
+            try {
+                Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop
+                if (-not $Quiet) { Say "stopped $role (pid $($p.ProcessId)) so the installed code loads" }
+            } catch {
+                if (-not $Quiet) {
+                    Say "could not stop $role (pid $($p.ProcessId)): it belongs to another user"
+                    Say '  log off that user, or stop it there, then rerun this launcher'
+                }
+            }
+        }
+    }
+    # A socket frees as soon as the process goes; the card needs a moment to drop
+    # the model before the next process claims it.
+    Start-Sleep -Seconds 5
+    # Command lines are hidden for processes owned by another account, so a role can
+    # survive the loop above without ever appearing in it. A port that still answers
+    # is that case, and saying so is the difference between "updated" and "updated,
+    # but the old code is what is running".
+    foreach ($check in @(@{ port = $WebPort; role = 'site'; path = '/' },
+                         @{ port = $DownloadPort; role = 'downloader'; path = '/health' },
+                         @{ port = $SongPort; role = 'song'; path = '/health' },
+                         @{ port = 8095; role = 'voice'; path = '/health' })) {
+        $code = & curl.exe -s -o NUL -w '%{http_code}' --max-time 20 "http://127.0.0.1:$($check.port)$($check.path)"
+        if ($code -eq '200') {
+            $owner = (Get-NetTCPConnection -LocalPort $check.port -State Listen -ErrorAction SilentlyContinue |
+                      Select-Object -First 1).OwningProcess
+            if (-not $Quiet) {
+                Say "$($check.role) is still answering on $($check.port) (pid $owner): it is running the old code"
+                Say '  stop that process, or log off and back on, for the new packages to load'
+            }
+        }
+    }
+}
 
 # A logon run has no console to read afterwards, so everything this run prints
 # is also written to a file: "an error flashed up" is not diagnosable. A second

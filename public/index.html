@@ -2821,66 +2821,15 @@
         // Used when no language model answers. These are images, not a description
         // of the collection: the seed words come from the listings, the lines are
         // about a night, a road, weather, a person.
-        // A listing word is not an image. These are the ones that turned a verse into
-        // "Christmas in the rain, YouTube on the wire": the site's own name, the brands,
-        // and the words every listing carries.
-        const BRAND_WORD = /\b(netflix|google|reddit|facebook|instagram|tiktok|twitter|spotify|youtube|iphone|android|wifi|internet|online|download\w*|stream\w*)\b/;
-        const LYRIC_FALLBACK = ['neon', 'rain', 'static', 'night', 'concrete', 'signal',
-            'headlights', 'coffee', 'window', 'phone', 'harbour', 'cold air'];
-
-        function libraryLyrics(summary, seed) {
-            // The words offered here are filtered the same way the ones the model is
-            // offered are, so the built-in verses cannot name a website or a product.
-            const usable = (summary.words || [])
-                .map(word => String(word || '').toLowerCase().trim())
-                .filter(word => word.length > 3 && !LYRIC_JUNK.has(word) && !LYRIC_STOP.has(word) && !BRAND_WORD.test(word));
-            const words = usable.length >= 6 ? usable.slice(0, 24) : LYRIC_FALLBACK;
-            const offset = seed % words.length;
-            const word = (index) => words[(index + offset) % words.length];
-            const line = (text) => text.charAt(0).toUpperCase() + text.slice(1);
-            // Six lines a section, not four: the songs run up to three minutes
-            // now, and four lines of singing leaves most of that to the band.
-            const banks = {
-                'Chorus': [
-                    line(`${word(0)} in the rain, ${word(1)} on the wire`),
-                    'I keep the same road turning in my hands',
-                    line(`Say the ${word(2)} again, louder than the engine`),
-                    'Nothing in my pockets but the night',
-                    line(`Hold the ${word(3)} up where the streetlight can find it`),
-                    'I would do it all again for one more hour',
-                ],
-                'Verse 1': [
-                    line(`${word(4)} on the window, ${word(5)} in the hall`),
-                    'You left the door half open and the lights on',
-                    line(`I wore the ${word(6)} jacket till the seams gave out`),
-                    'Counting cracks in the ceiling until the morning came',
-                    line(`A ${word(7)} on the table, still warm, still mine`),
-                    'I told myself the quiet was a kind of answer',
-                ],
-                'Verse 2': [
-                    line(`${word(8)} in the mirror, ${word(9)} in my teeth`),
-                    'The city keeps its promises in ways I cannot read',
-                    line(`Every ${word(10)} sounds like something that I lost`),
-                    'I am learning how to carry what I need',
-                    line(`Down by the ${word(11)} where the buses turn around`),
-                    'I put one foot past the doorway and the year let go',
-                ],
-                'Verse 3': [
-                    line(`Later, ${word(12)} and the floorboards and the rain`),
-                    'What I thought would break me only made the room feel small',
-                    line(`${word(13)} in the sink, ${word(14)} on the stairs`),
-                    'I packed the parts of me that still worked',
-                    line(`The ${word(15)} keeps ticking though nobody winds it`),
-                    'And the morning comes anyway, whether or not I do',
-                ],
-                'Bridge': [
-                    'Strip it back until the room tone is the only sound',
-                    'Hold the quiet, then step out into the cold',
-                    'Everything I could not say is still here, waiting',
-                    'One more bar, then the whole thing opens',
-                ],
-            };
-            return lyricForm(seed).map(name => ({ section: name, lines: banks[name] || banks['Verse 1'] }));
+        // The shape of the arrangement with no words of its own: six lines a section,
+        // four for the bridge. Only words a model wrote for this song fill it - there is
+        // no built-in verse to fall back on, because the built-in verses read like the
+        // listings the search returned ("Christmas in the rain, YouTube on the wire").
+        function lyricSkeleton(seed) {
+            return lyricForm(seed).map(name => ({
+                section: name,
+                lines: new Array(name === 'Bridge' ? 4 : 6).fill('')
+            }));
         }
 
         // Words written for this song by a language model, not assembled from a
@@ -3098,7 +3047,7 @@
         }
 
         window.applyAILyrics = applyAILyrics;
-        window.libraryLyrics = libraryLyrics;
+        window.lyricSkeleton = lyricSkeleton;
 
         function rootFromKey(key) {
             const name = String(key || 'A minor').toLowerCase().split(/\s+/)[0];
@@ -5979,20 +5928,43 @@
                 // genre and different words instead of the same leading rows.
                 window._songSourceTurn = (window._songSourceTurn || 0) + 1;
                 const summary = songSource();
-                let lyrics = libraryLyrics(summary, seed);
-                let lyricSource = 'written by the page';
+                // No fallback: a song is made only from words a model wrote for it. The
+                // built-in verses that used to stand in for a missing lyric read like the
+                // listings, so a missing lyric now stops the song instead.
+                let lyrics = null;
+                let lyricSource = '';
                 // A cold lyric model takes the better part of a minute. That minute is
                 // counted: it is a network load like any other.
                 const lyricAt = performance.now();
                 try {
                     const written = await aiLyrics(summary, seed);
                     if (written) {
-                        lyrics = applyAILyrics(lyrics, written);
-                        lyricSource = 'written by ' + written.model;
+                        // The model's own words, in the arrangement's shape, and only if
+                        // every section it fills really has lines. A partly filled song is
+                        // not used: blanks would be sung as silence.
+                        const filled = applyAILyrics(lyricSkeleton(seed), written);
+                        const complete = Array.isArray(filled) && filled.length && filled.every(part =>
+                            Array.isArray(part.lines) && part.lines.length &&
+                            part.lines.every(line => String(line || '').trim()));
+                        if (complete) {
+                            lyrics = filled;
+                            lyricSource = 'written by ' + written.model;
+                        }
                     }
                 } catch (err) {
                 } finally {
                     loads.push(`lyrics ${((performance.now() - lyricAt) / 1000).toFixed(1)}s`);
+                }
+                if (!lyrics) {
+                    // Said plainly, instead of singing a stand-in: nothing is rendered and
+                    // nothing is saved, because a song without a lyric is not a song.
+                    panel.innerHTML = '';
+                    const missing = document.createElement('div');
+                    missing.textContent = 'No lyric was written, so no song was made. '
+                        + 'The lyric model did not answer: start the song service on the GPU, then compose again.';
+                    panel.appendChild(missing);
+                    if (window.showToast) showToast('error', 'No lyric', 'the lyric model did not answer, so nothing was composed');
+                    return;
                 }
                 // Remembered so the next song avoids these exact lines.
                 window._lastLyricLines = lyrics.reduce((all, part) => all.concat(part.lines), []);

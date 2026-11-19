@@ -7608,8 +7608,10 @@
         // taken out of the page keeps playing its own audio, so the card disappeared and
         // the song carried on with nothing left to pause. Picture and sound stay together
         // in the one file that is on the page, so a stage is retired rather than paused:
-        // paused, its blob address revoked and its source dropped. A paused element left
-        // loaded is the thing that plays sound again with no picture beside it.
+        // paused and its blob address revoked, which is what makes it unplayable again.
+        // The element itself is not unloaded and its source is not dropped - reloading it
+        // says "removed" to a player that is only being replaced, and a revoked blob is
+        // already a promise that nothing can start from it again.
         function silenceStage(stage) {
             if (!stage) return;
             stage.querySelectorAll('video, audio').forEach(el => {
@@ -7619,8 +7621,6 @@
                     // revoking it, so an idle player is the only one that loses its
                     // address here.
                     if (el.src && el.src.startsWith('blob:') && !lyricRecording) URL.revokeObjectURL(el.src);
-                    el.removeAttribute('src');
-                    el.load();
                 } catch (err) { /* already gone */ }
             });
         }

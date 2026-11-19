@@ -37,39 +37,6 @@ $ProgressPreference = 'SilentlyContinue'
 
 function Say([string]$text) { Write-Host $text }
 
-# Names an address as the model endpoint - the one the page shows as "MODEL ENDPOINT" and
-# hands to every device. Only a machine holding the join key may do it, and only an
-# address that answers: a host left over from a session that ended resolves to nothing,
-# and pointing the site at it leaves every device with a model that cannot render.
-function Set-ModelEndpoint([string]$address, [string]$appRoot) {
-    $keyFile = Join-Path $appRoot 'build\song_endpoint.key'
-    if (-not (Test-Path $keyFile)) {
-        Say '       saved. There is no join key on this PC yet, so the site was not told.'
-        Say '       Run reset_join_key.cmd with the key and it names this address.'
-        return
-    }
-    $held = ((Get-Content -Raw -Path $keyFile) -as [string]).Trim()
-    Say '       asking that address to answer ...'
-    $alive = $false
-    try {
-        $probe = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($address + '/health') -TimeoutSec 8
-        $alive = ($probe.StatusCode -eq 200)
-    } catch { $alive = $false }
-    if (-not $alive) {
-        Say '       it did not answer /health, so the site was not pointed at it.'
-        return
-    }
-    try {
-        Invoke-RestMethod -Method Post `
-            -Uri 'https://song-pool.bpiersing.workers.dev/state/site:endpoint' `
-            -Headers @{ 'x-join-key' = $held } -ContentType 'application/json' `
-            -Body (@{ value = $address } | ConvertTo-Json -Compress) -TimeoutSec 25 | Out-Null
-        Say '       the site now names it as the model endpoint, for every device.'
-    } catch {
-        Say "       the site refused it: $($_.Exception.Message)"
-    }
-}
-
 Say 'Joining this PC''s GPU to the song site'
 Say '------------------------------------'
 
@@ -128,19 +95,6 @@ Say "app:   $appDir"
 # know about it. Read-Host -AsSecureString keeps it off the screen; the plain value
 # only ever exists in this process and in that 64-byte file.
 $keyFile = Join-Path $appDir 'build\song_endpoint.key'
-$urlFile = Join-Path $appDir 'build\model_endpoint_url.txt'
-# A pasted address is not a join key: it is the model endpoint, the one the page shows as
-# "MODEL ENDPOINT" and every device is told to use. It goes to its own file, and
-# reset_join_key.cmd makes the site name it. Storing an address in the key file would make
-# a machine that runs perfectly and can never publish or join.
-if ($Key -match '^https?://') {
-    $endpoint = $Key.Trim().TrimEnd('/')
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $urlFile) | Out-Null
-    Set-Content -Path $urlFile -Value $endpoint -Encoding ascii -NoNewline
-    Say "model endpoint: $endpoint"
-    Set-ModelEndpoint $endpoint $appDir
-    $Key = ''
-}
 if ($Key) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $keyFile) | Out-Null
     Set-Content -Path $keyFile -Value $Key -Encoding ascii -NoNewline
@@ -154,16 +108,8 @@ if ($Key) {
     $secure = Read-Host 'Paste the join key (hidden), or press Enter to skip' -AsSecureString
     $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
         [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
-    if (-not $plain) {
-        Say 'no key given: this PC will run the AI for itself, not for the site'
-    } elseif ($plain -match '^https?://') {
-        $endpoint = $plain.Trim().TrimEnd('/')
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $urlFile) | Out-Null
-        Set-Content -Path $urlFile -Value $endpoint -Encoding ascii -NoNewline
-        Say "model endpoint: $endpoint"
-        Say 'that was an address, not a key: nothing was written into the key file.'
-        Set-ModelEndpoint $endpoint $appDir
-    } else {
+    if (-not $plain) { Say 'no key given: this PC will run the AI for itself, not for the site' }
+    else {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $keyFile) | Out-Null
         Set-Content -Path $keyFile -Value $plain -Encoding ascii -NoNewline
     }

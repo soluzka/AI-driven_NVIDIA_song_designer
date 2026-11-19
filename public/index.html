@@ -2868,6 +2868,9 @@
             // browser, so a tunnel URL that changes on every restart never
             // needs a new build: paste it once and keep singing.
             const bases = await modelBases(true);
+            // Said to the page when nothing comes back, so the reason is not guessed:
+            // a service that is writing is not a service that is off.
+            let why = 'no address answered';
 
             for (const base of bases) {
                 // The model on this machine has to wake up and write, which is
@@ -2883,7 +2886,12 @@
                 // stop the moment a song was started.
                 const onOwnOrigin = base === '';
                 const looksLikeEdge = onOwnOrigin && !/^(127\.|localhost$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname);
-                const wait = looksLikeEdge ? 10000 : 150000;
+                // Two and a half minutes was still too short when the lyric model has
+                // to come back onto the card and write a whole song: the page aborted a
+                // request the service was still working on, which reached the tunnel as
+                // "context canceled" and left "No lyric was written". The counter under
+                // the song keeps counting, so the wait is visible rather than blind.
+                const wait = looksLikeEdge ? 10000 : 300000;
                 let response;
                 let ticker = null;
                 try {
@@ -2905,6 +2913,9 @@
                         body: JSON.stringify({ genre, subject, corpus, angle, seed, avoid }),
                     }, wait);
                 } catch (err) {
+                    why = (err && err.name === 'AbortError')
+                        ? 'the lyric model was still writing when the wait ran out'
+                        : 'nothing answered at ' + (base || 'this address');
                     continue;
                 } finally {
                     if (ticker) clearInterval(ticker);
@@ -2912,6 +2923,7 @@
                 const isJson = (response.headers.get('content-type') || '').includes('application/json');
                 if (!response.ok || !isJson) {
                     if (base === '' && response.status === 501) rememberEdgeModelOff();
+                    why = 'the lyric service answered ' + response.status;
                     continue;
                 }
                 const data = await response.json().catch(() => ({}));
@@ -2929,7 +2941,9 @@
                 if (sections.length >= 2 && total >= 8) {
                     return { sections, model: data.model || 'the local lyric model' };
                 }
+                why = 'the lyric service sent back too little text';
             }
+            window._lyricFailure = why;
             return null;
         }
 
@@ -5982,8 +5996,11 @@
                     // nothing is saved, because a song without a lyric is not a song.
                     panel.innerHTML = '';
                     const missing = document.createElement('div');
+                    // The reason is the model's own account, not a guess: "start the
+                    // service" was said even when the service had answered and was
+                    // simply still writing.
                     missing.textContent = 'No lyric was written, so no song was made. '
-                        + 'The lyric model did not answer: start the song service on the GPU, then compose again.';
+                        + (window._lyricFailure || 'the lyric model did not answer') + '; compose again.';
                     panel.appendChild(missing);
                     if (window.showToast) showToast('error', 'No lyric', 'the lyric model did not answer, so nothing was composed');
                     return;

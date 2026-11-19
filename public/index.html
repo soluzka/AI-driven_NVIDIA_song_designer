@@ -5256,6 +5256,28 @@
             // that actually answered, and with the pool first that is the pooled
             // machine - "AI ready · Pool" - instead of this PC claiming the model
             // even when the pooled one is the one doing the work.
+            // The kernel that is running is the machine this page should work from, so
+            // when the site has not published an address yet the pool is asked for one.
+            // This PC runs a model too, and taking loopback first named the local card
+            // while the pooled T4 was the one meant to render. A pooled machine is only
+            // adopted once its model says loaded - a warming card must not displace a
+            // card that can render now.
+            if (!savedModel && !String(window.remoteSongApi || '').trim()) {
+                try {
+                    const pooled = await fetchBounded('/api/song/pool', { cache: 'no-store' }, 8000);
+                    if (pooled.ok) {
+                        const list = await pooled.json();
+                        const first = (list.machines || [])
+                            .map(m => String(m.url || '').replace(/\/+$/, ''))
+                            .filter(u => u && !/^https?:\/\/(127\.|localhost|\[::1\])/i.test(u))[0];
+                        if (first) {
+                            const probe = await fetchBounded(first + '/health', {}, 12000).catch(() => null);
+                            const body = probe && probe.ok ? await probe.json().catch(() => null) : null;
+                            if (body && body.loaded === true) window.remoteSongApi = first;
+                        }
+                    }
+                } catch (err) {}
+            }
             const bases = savedModel
                 ? [savedModel]
                 : [
@@ -5284,17 +5306,22 @@
             const answeredHost = answeredBy ? String(answeredBy).replace(/^https?:\/\//i, '') : '';
             // What answered: the address pasted here, a machine the site published,
             // or this computer. A pasted quick tunnel is somebody's Colab.
+            // The card's own name, so the label says which machine is answering instead
+            // of leaving two green badges to be told apart by guesswork.
+            const shortGpu = String((info && info.gpu) || '').replace(/^NVIDIA\s+/i, '').trim();
+            const here = shortGpu ? 'this PC · ' + shortGpu : 'this PC';
+            const pooledName = shortGpu ? 'pooled ' + shortGpu : 'Pool';
             const answeredWhat = (savedModel && answeredBy === savedModel)
                 ? (/trycloudflare|colab|ngrok|localtunnel/i.test(savedModel)
-                    ? 'Colab'
+                    ? (shortGpu ? 'Colab · ' + shortGpu : 'Colab')
                     // A pasted PC address is this PC, and the label has to say so:
                     // "your model" hid the very change the confirm warns about.
-                    : (/^https?:\/\/(127\.|localhost|\[::1\])/i.test(savedModel) ? 'this PC' : 'your model'))
+                    : (/^https?:\/\/(127\.|localhost|\[::1\])/i.test(savedModel) ? here : 'your model'))
                 // "Pool" when the site publishes an address, because that is the
                 // address songs are sent to first (modelBases puts it ahead of
                 // loopback). Saying "this PC" there named the machine that answered a
                 // health check, not the one doing the work.
-                : ((answeredHere && !String(window.remoteSongApi || '').trim()) ? 'this PC' : 'Pool');
+                : ((answeredHere && !String(window.remoteSongApi || '').trim()) ? here : pooledName);
             // The button follows the same answer, so both devices read the same
             // way: AI ready wherever the model answers, rather than only on the PC
             // that was able to launch it.

@@ -1104,7 +1104,7 @@
                 <a class="fit-act install-act" href="https://colab.research.google.com/github/soluzka/AI-driven_NVIDIA_song_designer/blob/main/deploy/colab/song_gpu.ipynb" target="_blank" rel="noopener">Open the free-GPU notebook</a>
                 <button class="library-song-btn install-btn" id="startGpuBtnPanel" onclick="startPoolGpu()" hidden
                         title="Starts a free Kaggle GPU that runs the song model, opens a tunnel and joins the pool">
-                    Start a GPU
+                    Start Kaggle
                 </button>
                 <!-- Said next to the button, because it is the thing that decides what a
                      press gets: a Kaggle account has to exist, and Kaggle ends a session
@@ -1116,10 +1116,10 @@
                     The card leaves when that session ends, and it is yours alone: it does not join this
                     pool.
                     <br><br>
-                    <strong>Start Kaggle</strong> — this button instead starts a Kaggle GPU that runs
-                    here for everybody, so it joins this pool and needs a Kaggle account. Kaggle caps a
-                    session at <strong>12 hours</strong>: when that runs out the card stops, the tunnel
-                    closes and this pool loses that machine — start another one from here.
+                    <strong>Start Kaggle</strong> — this card is shared instead: it runs here for
+                    everybody and joins this pool, so it needs a Kaggle account. Kaggle caps a session
+                    at <strong>12 hours</strong>: when that runs out the card stops, the tunnel closes and
+                    this pool loses that machine — start another one from here.
                 </div>
                 <!-- Kaggle, as this deployment sees it. The account name and the
                      dataset addresses stay out of the page on purpose: they are the

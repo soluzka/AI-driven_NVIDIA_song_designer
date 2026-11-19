@@ -123,10 +123,18 @@ const POOL_GRACE_MS = 10 * 60 * 1000;
 // The clock starts again after this long, so two failures an hour apart are not a pair.
 const POOL_STRIKE_MS = 90 * 1000;
 
+// A card that keeps missing is probed with a short timeout for a minute, so one dead
+// address cannot cost every reader three twelve-second waits - that latency is what the
+// page reports as "the pool is offline". Memory only: nothing here is ever written.
+const poolCooled = new Map();
+const POOL_COOLDOWN_MS = 60 * 1000;
+
 async function livingPool(env) {
   const pool = await readPool(env);
   if (!pool.length) return pool;
-  const answered = await Promise.allSettled(pool.map((entry) => answers(entry.url)));
+  const opened = Date.now();
+  const answered = await Promise.allSettled(
+    pool.map((entry) => answers(entry.url, poolCooled.get(entry.url) > opened ? 2500 : 8000)));
   const alive = pool.map((entry, index) => answered[index].status === 'fulfilled' && answered[index].value === true);
   // A tunnel that has just timed out is still closing that stream, so a retry against it
   // straight away failed on the same dead connection. Give the name a moment, then try
@@ -135,7 +143,8 @@ async function livingPool(env) {
     const pending = pool.filter((entry, index) => !alive[index]);
     if (!pending.length) break;
     await new Promise((resolve) => setTimeout(resolve, wait));
-    const again = await Promise.allSettled(pending.map((entry) => answers(entry.url, 12000)));
+    const again = await Promise.allSettled(pending.map((entry) => answers(
+      entry.url, poolCooled.get(entry.url) > Date.now() ? 2500 : 12000)));
     let at = 0;
     pool.forEach((entry, index) => {
       if (alive[index]) return;
@@ -144,36 +153,33 @@ async function livingPool(env) {
     });
   }
 
+  // Nothing about a probe result is written any more. A dead card made every single poll
+  // dirty, so a page polling /pool burned the whole 1,000-write daily allowance in
+  // minutes; once writing failed the dead entries could never leave the list, and every
+  // read paid three dead probes - which is what "the pool went offline" looked like.
+  // The stored list changes only when someone joins or leaves; a card that stops
+  // answering is filtered out of the answer here, in memory.
   const now = Date.now();
   const living = [];
-  const kept = [];
-  let dirty = false;
   pool.forEach((entry, index) => {
     if (alive[index]) {
-      // Kept in memory, never written: refreshing this clock every minute cost a KV write
-      // per card per minute, which is thousands a day - the free allowance is 1,000, and
-      // running out of it is what made the pool answer with an error instead of a list.
       entry.ok_at = now;
-      if (Number(entry.fail || 0) !== 0) {
-        entry.fail = 0;
-        entry.fail_at = 0;
-        dirty = true;
-      }
+      entry.fail = 0;
+      entry.fail_at = 0;
+      poolCooled.delete(entry.url);
       living.push(entry);
-      kept.push(entry);
       return;
     }
     const sinceFail = now - Number(entry.fail_at || 0);
     const strikes = sinceFail < POOL_STRIKE_MS ? Number(entry.fail || 0) + 1 : 1;
     entry.fail = strikes;
     entry.fail_at = now;
-    dirty = true;
+    if (strikes >= 2) poolCooled.set(entry.url, now + POOL_COOLDOWN_MS);
+    // The grace belongs to a card that answered recently, not to one that has been
+    // silent for days: that one is out of the answer at once, so nobody waits on it.
     const last = Math.max(Number(entry.ok_at || 0), Number(entry.seen || 0));
-    if (now - last < POOL_GRACE_MS) kept.push(entry);
-    // Still in the pool for one bad poll; out of routing only on the second in a row.
-    if (strikes < 2) living.push(entry);
+    if (strikes < 2 && now - last < POOL_GRACE_MS) living.push(entry);
   });
-  if (dirty || kept.length !== pool.length) await writePool(env, kept);
   return living;
 }
 

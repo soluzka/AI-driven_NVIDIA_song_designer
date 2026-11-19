@@ -528,11 +528,11 @@ let poolProbeCache = { at: 0, key: '', live: [] };
 
 // One probe, and what it means: alive, gone (nothing answered), or broken (it answered
 // and said its warm failed - a definite no rather than a blip).
-async function poolVerdict(address) {
+async function poolVerdict(address, timeoutMs = 4000) {
   try {
     const reply = await fetch(String(address).replace(/\/+$/, '') + '/health', {
       headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(4000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     if (!reply.ok) return 'gone';
     let body = null;
@@ -551,20 +551,41 @@ async function poolVerdict(address) {
 // machine that says its warm failed leaves at once, because that is an answer.
 const poolStrikes = new Map();
 const POOL_STRIKE_MS = 90 * 1000;
+// A card that has already missed twice is checked once, briefly, for the next minute.
+// Three four-second waits on a dead tunnel are what made /api/song/pool take nine seconds
+// and the page conclude that the whole pool was offline.
+const poolCooled = new Map();
+const POOL_COOL_MS = 60 * 1000;
 async function poolAlive(address) {
   // The gap is not decoration: after a genuine timeout the tunnel is still closing that
   // stream, and a retry 700 ms later can fail on the same dead connection.
-  for (const wait of [0, 1500, 3000]) {
+  const now0 = Date.now();
+  const lastOk = Number(poolLastOk.get(address) || 0);
+  const known = now0 - lastOk < POOL_ALIVE_MS;
+  const cooling = Number(poolCooled.get(address) || 0) > now0;
+  // A card nobody has watched answer in this isolate gets one short look, not three long
+  // ones. Three four-second waits on a rebooted tunnel's old address is what pushed
+  // /api/song/pool past the page's eight-second budget and printed "Pool - offline"
+  // while a perfectly live T4 was sitting in the list.
+  for (const wait of ((known && !cooling) ? [0, 1500, 3000] : [0])) {
     if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
-    const verdict = await poolVerdict(address);
-    if (verdict === 'alive') { poolStrikes.delete(address); return true; }
-    if (verdict === 'broken') { poolStrikes.delete(address); return false; }
+    const verdict = await poolVerdict(address, known ? 4000 : 2500);
+    if (verdict === 'alive') { poolStrikes.delete(address); poolCooled.delete(address); return true; }
+    if (verdict === 'broken') {
+      poolStrikes.delete(address);
+      poolCooled.set(address, Date.now() + POOL_COOL_MS);
+      return false;
+    }
   }
   const now = Date.now();
   const previous = poolStrikes.get(address);
   const strikes = previous && now - previous.at < POOL_STRIKE_MS ? previous.strikes + 1 : 1;
   poolStrikes.set(address, { strikes, at: now });
-  return strikes < 2;
+  if (strikes >= 2) poolCooled.set(address, now + POOL_COOL_MS);
+  // One miss is forgiven only for a card this isolate has watched answer in the last
+  // couple of minutes. Without that, every fresh isolate handed a dead tunnel a free
+  // pass, so an address that closed hours ago kept coming back at the top of the list.
+  return strikes < 2 && known;
 }
 
 async function poolAnswers(address) {

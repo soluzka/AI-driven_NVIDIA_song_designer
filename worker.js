@@ -306,9 +306,14 @@ async function startGpu(request, env, url) {
       configured: true,
       started: false,
       retryInSeconds: Math.ceil((GPU_COOLDOWN_MS - waited) / 1000),
-      error: 'A GPU was started ' + Math.round(waited / 60000) + ' minutes ago. Kaggle gives a limited '
-        + 'number of GPU hours a week, so this waits ' + Math.round(GPU_COOLDOWN_MS / 60000)
-        + ' minutes between starts.',
+      // This clock marks a *request* Kaggle accepted, not a machine that is running:
+      // Kaggle queues a pushed version and starts it when it frees a T4, which can be
+      // minutes later or not at all. Saying "a GPU was started" made a queued run look
+      // like a running one.
+      error: 'A GPU run was requested ' + Math.round(waited / 60000) + ' minutes ago; Kaggle starts '
+        + 'a queued version when it frees a card. Kaggle gives a limited number of GPU hours '
+        + 'a week, so this waits ' + Math.round(GPU_COOLDOWN_MS / 60000)
+        + ' minutes between requests.',
     }, 429);
   }
 

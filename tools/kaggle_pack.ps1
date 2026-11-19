@@ -135,12 +135,12 @@ if ($Packages) {
             $lines += $trimmed
         }
     }
-    # Kaggle's image carries tokenizers 0.23.3; transformers 4.57.6 accepts at most
-    # 0.23.0 and refuses to import beyond it. Pinning it here is what the first run
-    # that actually reached a worker died on, so it belongs in the list, not in a note.
-    # 0.22.1, not 0.23.0: PyPI never published 0.23.0, and asking for it makes the
-    # whole resolution fail.
-    if (-not ($lines -match '^tokenizers')) { $lines += 'tokenizers==0.22.1' }
+    # transformers 4.57.6 (pinned by ACE-Step) refuses to import with a tokenizers
+    # older than 0.23.1: a run bundled with 0.22.1 warmed all the way to
+    # warm_failed="tokenizers>=0.23.1,<0.24.0 is required", so the model never loaded.
+    # 0.23.3 is the version Kaggle's own image carries, so nothing else shifts.
+    $lines = @($lines | Where-Object { $_ -notmatch '^tokenizers' })
+    $lines += 'tokenizers==0.23.3'
     Set-Content -Path $filtered -Value $lines -Encoding utf8
     Say ("unpacking {0} requirements for Python {1} / {2} (this is the slow part) ..." -f $lines.Count, $PythonVersion, $Platform)
     if (Test-Path $pylibs) { Remove-Item $pylibs -Recurse -Force }

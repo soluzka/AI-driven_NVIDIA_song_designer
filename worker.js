@@ -316,7 +316,9 @@ async function startGpu(request, env, url) {
     slug: auth.handle + '/' + GPU_SLUG,
     newTitle: 'song gpu pool',
     text: gpuKernelScript(
-      String(env.SONG_JOIN_KEY || '').trim(),
+      // The key the pool endpoints verify is SONG_ENDPOINT_KEY; a kernel given a
+      // different value boots fine and then gets 403 Forbidden from every join.
+      String(env.SONG_ENDPOINT_KEY || env.SONG_JOIN_KEY || '').trim(),
       String(env.KAGGLE_CODE_DATASET || (auth.handle + '/song-gpu-code')).trim(),
       String(env.KAGGLE_WEIGHTS_DATASET || (auth.handle + '/song-gpu-weights')).trim(),
     ),

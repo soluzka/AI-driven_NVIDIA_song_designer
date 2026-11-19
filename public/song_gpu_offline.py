@@ -306,6 +306,12 @@ if not state.get('loaded'):
             say(open(os.path.join(WORK, 'song.log')).read()[-2000:])
         except OSError:
             pass
+        # A machine that cannot load is not a pool machine. Staying alive holds the
+        # card for twelve hours and spends the week's quota on nothing, so the run
+        # ends here - which is also what saves this version's output.
+        proc.terminate()
+        say('stopping this run: the GPU would be held by a machine that cannot render')
+        raise SystemExit(4)
     else:
         say('the model is not loaded yet; the first song request will load it (song.log has the warm)')
 else:

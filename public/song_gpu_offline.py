@@ -156,6 +156,15 @@ if os.path.isdir(ace):
 else:
     raise SystemExit('no ACE-Step source beside the repo: ' + ace)
 
+# The service runs as a child process, and a child does not inherit sys.path - only
+# the environment. Both directories have to be exported or the service cannot see
+# them, while this boot process can: that is what `No module named 'flask_cors'`
+# was, with the package sitting in pylibs the whole time.
+packaged = [p for p in (PYLIBS, ace) if os.path.isdir(p)]
+inherited = os.environ.get('PYTHONPATH', '')
+os.environ['PYTHONPATH'] = os.pathsep.join(packaged + ([inherited] if inherited else []))
+say('PYTHONPATH for the services:', os.environ['PYTHONPATH'])
+
 # --- the weights ------------------------------------------------------------
 weights_mount = os.path.join('/kaggle/input', 'song-gpu-weights')
 weights = mount('ACE-Step-v1-3.5B')

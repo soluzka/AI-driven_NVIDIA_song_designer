@@ -351,7 +351,15 @@ else:
                 ('https://song-pool.bpiersing.workers.dev/join', 'x-join-key'),
             ):
                 request = urllib.request.Request(target, data=payload, headers={
-                    'content-type': 'application/json', header: join_key})
+                    'content-type': 'application/json',
+                    # Cloudflare answers a bare urllib request with 403 "error code:
+                    # 1010" before the key is ever looked at, and urllib only prints
+                    # the status, so that block reads exactly like a wrong key. A
+                    # browser-shaped user-agent gets the request to the Worker.
+                    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                                  'AppleWebKit/537.36 (KHTML, like Gecko) '
+                                  'Chrome/131.0.0.0 Safari/537.36',
+                    header: join_key})
                 try:
                     with urllib.request.urlopen(request, timeout=20) as answer:
                         say('joined', target.split('/')[2], answer.status)

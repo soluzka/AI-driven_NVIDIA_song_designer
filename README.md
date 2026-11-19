@@ -1128,6 +1128,33 @@ there for half an hour does not pick itself up — cancel it and start again.
    means Kaggle accepted the run, not that a GPU is on the pool yet: the card has
    to boot, install, load ~10 GB of weights and publish, which takes minutes.
 
+**Pushing a kernel version by hand** — the button is not the only way; it makes the
+same call this does. Use it when the button is not on the page (a card is already in
+the pool, so the header hides it) or when a running boot has to pick up code that
+changed after it cloned the repository:
+
+```bash
+curl -s -X POST https://browser.bpiersing.workers.dev/api/gpu/start
+# {"configured":true,"started":true,"note":"…","said":"{\"versionNumberNullable\":15,…}"}
+```
+
+```powershell
+Invoke-RestMethod -Method Post -Uri https://browser.bpiersing.workers.dev/api/gpu/start
+```
+
+No body and no key: the Kaggle token is a Worker secret and the endpoint reads it
+there. `started: true` means Kaggle accepted the version, not that a card is
+running — `said` is Kaggle's own answer, where `error` shows a refusal and
+`invalidDatasetSources` names a dataset it could not mount. A spent KV write
+allowance does not block the push: the cooldown and boot-window timestamps are
+best-effort, so the request still reaches Kaggle (it used to answer `error code:
+1101` instead).
+
+This **replaces** the session that is running. Kaggle attaches the new version to
+the same kernel rather than running it beside the old one, so pushing kills a live
+card: its tunnel dies, the pool empties, and the new boot has to warm again before
+songs render. It also spends the week's GPU hours.
+
 5. Push the code that makes this work:
 
    ```powershell

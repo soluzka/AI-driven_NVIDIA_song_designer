@@ -5145,7 +5145,9 @@
                     tunnel = String(info.url || '').trim().replace(/\/+$/, '');
                 }
             } catch (err) { }
-            if (tunnel) window.remoteSongApi = tunnel;
+            // Set even when empty: a pool that has emptied must clear the address the GPU
+            // badge follows, or the badge keeps naming a machine that has stopped.
+            window.remoteSongApi = tunnel;
             // A pasted address wins, because that is this browser's choice. With none,
             // the tunnel that is actually serving is the address this line has to show:
             // the built-in 127.0.0.1 described a machine no visitor's song went to while
@@ -5306,9 +5308,12 @@
                     if (answer.ok) {
                         const live = await answer.json();
                         const now = String((live && live.url) || '').trim().replace(/\/+$/, '');
-                        if (now && !/^https?:\/\/(127\.|localhost|\[::1\])/i.test(now)) {
-                            window.remoteSongApi = now;
-                        }
+                        // An empty answer means no card is left in the pool. Clearing the
+                        // address is what makes the page go back to this PC - or to
+                        // "nothing is running" when the PC is off too - instead of probing
+                        // a tunnel that has gone away.
+                        window.remoteSongApi = (!now || /^https?:\/\/(127\.|localhost|\[::1\])/i.test(now))
+                            ? '' : now;
                     }
                 } catch (err) {}
             }
@@ -5456,10 +5461,12 @@
                 ? Math.floor(warmSeconds / 60) + 'm ' + String(warmSeconds % 60).padStart(2, '0') + 's'
                 : warmSeconds + 's';
             chip.dataset.state = onCuda && loaded ? 'live' : 'retrying';
+            // answeredWhat already carries the card's name ("this PC · GeForce RTX 4060
+            // Ti", "pooled Tesla T4"), so naming it here too printed it twice.
             text.textContent = onCuda
-                ? (loaded ? 'CUDA · ' + String(info.gpu || 'GPU').replace(/^NVIDIA\s+/i, '')
-                          : 'AI not connected yet · warming ' + (warmSeconds ? clock : 'up'))
-                  + ' · ' + answeredWhat
+                ? (loaded
+                    ? 'CUDA · ' + answeredWhat
+                    : 'AI not connected yet · warming ' + (warmSeconds ? clock : 'up') + ' · ' + answeredWhat)
                 : 'CPU only';
             chip.title = !onCuda
                 ? 'Torch cannot see a CUDA device, so songs and lyrics will be very slow.'

@@ -6033,10 +6033,14 @@
                         const complete = Array.isArray(filled) && filled.length && filled.every(part =>
                             Array.isArray(part.lines) && part.lines.length &&
                             part.lines.every(line => String(line || '').trim()));
-                        if (complete) {
-                            lyrics = filled;
-                            lyricSource = 'written by ' + written.model;
-                        }
+                        // When the model's own sections fit the arrangement they are used
+                        // as they are. When they do not - a verse of five lines where the
+                        // skeleton wants six - the skeleton keeps its blanks, and the
+                        // whole lyric used to be thrown away and reported as the model
+                        // never answering. Its own sections are a song too, so those are
+                        // used instead of losing the compose.
+                        lyrics = complete ? filled : written.sections;
+                        lyricSource = 'written by ' + written.model;
                     }
                 } catch (err) {
                 } finally {

@@ -211,7 +211,14 @@ export default {
       const pool = await livingPool(env);
       return json({
         count: pool.length,
-        machines: pool.map((entry) => ({ url: entry.url, seen: entry.seen, note: entry.note || '' })),
+        machines: pool.map((entry) => ({
+          url: entry.url,
+          seen: entry.seen,
+          // When this card first joined, which is what "the new GPU" means. seen
+          // moves on every re-join, so it cannot answer that on its own.
+          joined: entry.joined || entry.seen,
+          note: entry.note || '',
+        })),
       });
     }
 
@@ -265,9 +272,12 @@ export default {
       const known = pool.find((entry) => entry.url === value);
       if (known) {
         known.seen = now;
+        // The first join is kept: a machine that re-joins every two minutes is not
+        // newer than the notebook that started after it.
+        if (!known.joined) known.joined = known.seen || now;
         if (body.note) known.note = String(body.note).slice(0, 80);
       } else {
-        pool.unshift({ url: value, seen: now, note: String(body.note || '').slice(0, 80) });
+        pool.unshift({ url: value, seen: now, joined: now, note: String(body.note || '').slice(0, 80) });
       }
       await writePool(env, pool);
       return json({ ok: true, url: value, count: pool.length, pool: pool.map((entry) => entry.url) });

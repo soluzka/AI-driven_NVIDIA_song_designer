@@ -264,12 +264,16 @@
             white-space: nowrap;
         }
         .model-base-label { font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.7; }
-        #modelBaseText { overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+        /* The whole address, wrapped instead of cut: a tunnel shortened to
+           "https://stories-generator-niko…" cannot be copied or checked against the
+           machine it belongs to. */
+        #modelBase { white-space: normal; max-width: 100%; }
+        #modelBaseText { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; word-break: break-all; }
         .model-base[data-state="ready"] { color: #4ade80; border-color: rgba(74, 222, 128, 0.35); }
         .model-base[data-state="dead"] { color: #f87171; border-color: rgba(248, 113, 113, 0.45); }
         .model-base[data-state="checking"] { color: #fbbf24; border-color: rgba(251, 191, 36, 0.4); }
         .model-base[data-state="none"] { color: #fbbf24; border-color: rgba(251, 191, 36, 0.35); }
-        @media (max-width: 600px) { .model-base { max-width: 190px; font-size: 10px; } }
+        @media (max-width: 600px) { .model-base { max-width: 100%; font-size: 10px; } }
         .install-panel { max-height: 82vh; overflow-y: auto; }
         .install-list { display: grid; gap: 12px; }
         .install-item { border: 1px solid var(--border); border-radius: 12px; padding: 12px; }

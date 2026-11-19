@@ -465,7 +465,11 @@ async function readPool(env) {
       if (answer.ok) {
         const info = await answer.json();
         baseList = (info.machines || [])
-          .map((machine) => ({ url: String(machine.url || '').replace(/\/+$/, ''), seen: machine.seen || Date.now() }))
+          .map((machine) => ({
+            url: String(machine.url || '').replace(/\/+$/, ''),
+            seen: machine.seen || Date.now(),
+            joined: machine.joined || machine.seen || Date.now(),
+          }))
           .filter((machine) => machine.url);
       }
     } catch (err) {
@@ -503,6 +507,9 @@ async function readPool(env) {
   const merged = baseList
     ? baseList.concat(pool.filter((entry) => !baseList.some((known) => known.url === entry.url)))
     : pool;
+  // The card that joined last is the one this site connects to: starting a new GPU is a
+  // request to use it, not to share the work with the one left running overnight.
+  merged.sort((a, b) => (b.joined || b.seen || 0) - (a.joined || a.seen || 0));
   lastPoolSource = baseList ? 'pool+kv' : (remote ? 'kv-fallback ' + remote + ' ' + remoteNote : 'kv');
   return livePool(merged);
 }
@@ -674,9 +681,10 @@ async function song(request, env, url) {
   // KV is the one to use. Reading only SONG_API made /api/song/endpoint report a
   // live address that the proxy then ignored, so every model call through
   // Cloudflare answered 501 while the page quietly fell back to loopback.
-  // SONG_API pins one machine; otherwise every machine that published is a
-  // candidate. The order starts at a random entry so the load spreads over the
-  // pool, and a machine that does not answer is skipped for the next one.
+  // SONG_API pins one machine; otherwise the machines are candidates in the order
+  // readPool returns them, newest join first, and one that does not answer is skipped
+  // for the next. It used to start at a random entry to spread the load, which made
+  // "start a new GPU and use it" impossible to predict.
   let candidates = [];
   const pinned = String(env.SONG_API || '').trim().replace(/\/+$/, '');
   if (pinned) {
@@ -684,10 +692,6 @@ async function song(request, env, url) {
   } else {
     const pool = await readPool(env);
     candidates = pool.map((entry) => entry.url);
-    if (candidates.length > 1) {
-      const start = Math.floor(Math.random() * candidates.length);
-      candidates = candidates.slice(start).concat(candidates.slice(0, start));
-    }
   }
   if (!candidates.length) {
     return json({

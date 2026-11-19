@@ -1124,14 +1124,13 @@
                         title="Starts a free Kaggle GPU that runs the song model, opens a tunnel and joins the pool">
                     Start a GPU
                 </button>
-                <!-- Said next to the button, because it is the thing that decides
-                     whether pressing it is worth anything: a Kaggle account has to
-                     exist, and Kaggle's free cards are rationed by the week. -->
+                <!-- Said next to the button, because it is the thing that decides what a
+                     press gets: a Kaggle account has to exist, and Kaggle ends a session
+                     on its own clock. -->
                 <div class="install-note" id="kaggleTerms">
                     This button starts a <strong>Kaggle</strong> GPU, so it needs a Kaggle account.
-                    Kaggle rations free GPU time to about <strong>30 hours a week</strong> per account —
-                    that is why this site waits 30 minutes between starts instead of letting one press
-                    after another spend it.
+                    Kaggle caps a session at <strong>12 hours</strong>: when that runs out the card stops,
+                    the tunnel closes and this pool loses that machine — start another one from here.
                 </div>
                 <!-- Kaggle, as this deployment sees it. The account name and the
                      dataset addresses stay out of the page on purpose: they are the

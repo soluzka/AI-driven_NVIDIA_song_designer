@@ -183,6 +183,40 @@ async function livingPool(env) {
   return living;
 }
 
+// --- the two timestamps the site's own KV could not keep ---------------------
+// gpu:started_at and gpu:joined_at are what the site's GPU endpoints measure against:
+// the thirty-minute cooldown between starts, and the ninety-minute window that says a
+// run is still booting. They lived in the site Worker's STATS namespace, whose daily
+// write allowance runs out - and once it did, every announce answered 500, Start Kaggle
+// answered error 1101, and the boot guard stuck for the full ninety minutes. This
+// Worker's KV is a different namespace and kept answering, so they live here now.
+//
+// Reads are open like /pool - a timestamp is not a secret. Writes need the join key,
+// because the site's Worker is the only thing that should move this clock.
+// gpu:guard_at is the site's writability probe: the boot-window guard only enforces
+// when a write actually lands, and before this key existed its probe was refused here
+// and fell through to the site KV that is out of writes, so the guard switched itself
+// off on every press.
+const STATE_KEYS = new Set(['gpu:started_at', 'gpu:joined_at', 'gpu:guard_at']);
+const STATE_PREFIX = '/state/';
+
+async function readState(env, key) {
+  try {
+    return await env.POOL.get(key);
+  } catch (err) {
+    return null;
+  }
+}
+
+async function writeState(env, key, value) {
+  try {
+    await env.POOL.put(key, value);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 function authorised(request, env) {
   const expected = env.JOIN_KEY || '';
   if (!expected) return { ok: false, error: 'This pool has no JOIN_KEY set, so nobody can join.', status: 503 };
@@ -327,6 +361,27 @@ export default {
       return json({ ok: true, removed: value, count: pool.length, pool: pool.map((entry) => entry.url) });
     }
 
-    return json({ error: 'GET /pool, GET /pick, POST /join, POST /remove, GET /health' }, 404);
+    if (url.pathname.startsWith(STATE_PREFIX)) {
+      const key = decodeURIComponent(url.pathname.slice(STATE_PREFIX.length));
+      if (!STATE_KEYS.has(key)) return json({ error: 'No such state key: ' + key }, 404);
+      if (request.method === 'GET') return json({ key, value: await readState(env, key) });
+      if (request.method !== 'POST') return json({ error: 'GET or POST only' }, 405);
+      const allowed = authorised(request, env);
+      if (!allowed.ok) return json({ error: allowed.error }, allowed.status);
+      let body = {};
+      try {
+        body = await request.json();
+      } catch (err) {
+        return json({ error: 'Expected JSON: {"value": "..."}' }, 400);
+      }
+      const value = String((body && body.value) === undefined ? '' : (body && body.value)).slice(0, 40);
+      if (!value) return json({ error: 'Expected JSON: {"value": "..."}' }, 400);
+      if (!(await writeState(env, key, value))) {
+        return json({ error: 'This store refused the write.' }, 503);
+      }
+      return json({ ok: true, key, value });
+    }
+
+    return json({ error: 'GET /pool, GET /pick, POST /join, POST /remove, GET|POST /state/<key>, GET /health' }, 404);
   },
 };

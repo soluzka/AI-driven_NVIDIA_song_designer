@@ -291,12 +291,25 @@ async function kaggleStatus(env, auth) {
 
 async function startGpu(request, env, url) {
   const auth = kaggleAuth(env);
-  // This Worker's KV stops accepting writes once its daily allowance is gone ("KV
-  // put() limit exceeded for the day"), and that used to throw straight out of the
-  // bookkeeping below: pressing Start Kaggle answered "error code: 1101" and Kaggle
-  // was never asked to run anything. The two timestamps only feed the cooldown and
-  // the boot-window guard, so a KV that cannot store them must not stop the push.
+  // These two timestamps used to live in this Worker's STATS KV, whose daily write
+  // allowance runs out - and once it did, the cooldown and the boot-window clock were
+  // gone for the rest of the day, which is what made the announce answer 500, Start
+  // Kaggle answer error 1101, and the boot guard stick. They now go to the pool
+  // Worker's store: a different namespace that kept answering the whole time. STATS
+  // stays as the fallback for a deployment with no pool binding, and for a value
+  // written before this change.
   const remember = async (key, value) => {
+    try {
+      const answer = await poolRequest(env, '/state/' + encodeURIComponent(key), {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-join-key': String(env.SONG_ENDPOINT_KEY || ''),
+        },
+        body: JSON.stringify({ value: String(value) }),
+      });
+      if (answer.ok) return true;
+    } catch (err) {}
     try {
       await env.STATS.put(key, value);
       return true;
@@ -305,6 +318,13 @@ async function startGpu(request, env, url) {
     }
   };
   const recall = async (key) => {
+    try {
+      const answer = await poolRequest(env, '/state/' + encodeURIComponent(key));
+      if (answer.ok) {
+        const body = await answer.json();
+        if (body && body.value) return String(body.value);
+      }
+    } catch (err) {}
     try {
       return await env.STATS.get(key);
     } catch (err) {

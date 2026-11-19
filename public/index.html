@@ -5262,7 +5262,11 @@
             // while the pooled T4 was the one meant to render. A pooled machine is only
             // adopted once its model says loaded - a warming card must not displace a
             // card that can render now.
-            if (!savedModel && !String(window.remoteSongApi || '').trim()) {
+            // A saved address that is this machine's own loopback is not a choice between
+            // machines - it is where the local service happens to listen - so it does not
+            // outrank the kernel. Only a pasted tunnel (Colab, another PC) does.
+            const savedIsLocal = /^https?:\/\/(127\.|localhost|\[::1\])/i.test(savedModel);
+            if ((!savedModel || savedIsLocal) && !String(window.remoteSongApi || '').trim()) {
                 try {
                     const pooled = await fetchBounded('/api/song/pool', { cache: 'no-store' }, 8000);
                     if (pooled.ok) {
@@ -5278,10 +5282,14 @@
                     }
                 } catch (err) {}
             }
-            const bases = savedModel
+            // The running kernel first, then the locally saved endpoint, then whatever the
+            // page is served from: a loopback address saved earlier must not keep the page
+            // on this PC while a pooled kernel is up.
+            const bases = savedModel && !savedIsLocal
                 ? [savedModel]
                 : [
                     String(window.remoteSongApi || ''),
+                    savedModel,
                     String(window.SONG_API || '').replace(/\/+$/, ''),
                     servedLocally ? location.origin : '',
                 ];

@@ -4567,6 +4567,20 @@
             canvas.width = 1280;
             canvas.height = 720;
             const draw = canvas.getContext('2d');
+            // Shown while it records: the stage used to keep the paused audio bar, which
+            // read as a frozen card while the song went on from the Web Audio buffer.
+            // Now the picture being recorded is the picture on screen, so the sound is
+            // clearly this, and closing the player still silences it.
+            if (song.stage) {
+                try {
+                    // Paused before it is taken off the page: the bar itself must not
+                    // keep playing while the fetched copy decodes.
+                    if (song.element) song.element.pause();
+                    canvas.className = 'gen-canvas';
+                    song.stage.innerHTML = '';
+                    song.stage.appendChild(canvas);
+                } catch (err) {}
+            }
 
             // The song's own bytes, decoded into a buffer and played through Web Audio.
             // Capturing the player's media element was fragile: pausing, seeking or
@@ -6164,7 +6178,8 @@
                             lyrics: lyrics,
                             bpm: bpm,
                             seconds: seconds,
-                            schedule: options && Array.isArray(options.schedule) ? options.schedule : []
+                            schedule: options && Array.isArray(options.schedule) ? options.schedule : [],
+                            stage: intoPlayer ? stage : null
                         });
                         // The song's own entry gains the video, so the saved song is the
                         // video file itself: picture and its own audio in one webm, and
@@ -6178,7 +6193,7 @@
                         // Only while this song's own player is still on the page: a recording
                         // that was silenced by closing the player must not take over the
                         // stage of a song composed since.
-                        if (intoPlayer && blob && stage.contains(audio)) {
+                        if (intoPlayer && blob && stage.querySelector('canvas.gen-canvas')) {
                             // The player runs the video itself: the words are drawn on the
                             // picture and the song's own audio is inside the file, so
                             // picture and voice cannot drift apart.

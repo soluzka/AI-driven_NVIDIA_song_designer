@@ -139,15 +139,25 @@
             box-shadow: 0 16px 34px rgba(0, 0, 0, 0.45);
             font-size: 12px;
         }
-        .pool-menu a {
-            display: block;
+        .pool-link {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            width: 100%;
             padding: 7px 9px;
+            border: 0;
             border-radius: 8px;
+            background: none;
             color: #9fd0ff;
-            text-decoration: none;
-            word-break: break-all;
+            font: inherit;
+            text-align: left;
+            cursor: pointer;
         }
-        .pool-menu a:hover { background: rgba(255, 255, 255, 0.08); }
+        .pool-link:hover { background: rgba(255, 255, 255, 0.08); }
+        /* Selectable in one go, for the browser that refuses the clipboard. */
+        .pool-url { word-break: break-all; user-select: all; }
+        .pool-copied { margin-left: auto; flex: none; color: #4ade80; font-size: 11px; }
+        .pool-link[data-copied="no"] .pool-copied { color: #fbbf24; }
         .pool-menu .pool-none { padding: 7px 9px; color: var(--text-dim); }
         .conn-chip[data-state="offline"] { color: #f87171; border-color: rgba(248, 113, 113, 0.45); }
         .conn-chip[data-state="offline"] .conn-dot { background: #f87171; }
@@ -4906,8 +4916,10 @@
             if (!menu) return;
             const rows = (window.poolMachines || []).filter((m) => m && m.url);
             menu.innerHTML = rows.length
-                ? rows.map((m) => '<a href="' + poolEscape(m.url) + '" target="_blank" rel="noopener">'
-                    + poolEscape(m.url) + '</a>').join('')
+                ? rows.map((m) => '<button type="button" class="pool-link" data-url="' + poolEscape(m.url)
+                    + '" title="Click to copy this address">'
+                    + '<span class="pool-url">' + poolEscape(m.url) + '</span>'
+                    + '<span class="pool-copied"></span></button>').join('')
                 : '<div class="pool-none">No machine has joined the pool yet.</div>';
         }
         function togglePoolMenu(event) {
@@ -4922,6 +4934,52 @@
             const width = Math.min(menu.offsetWidth || 300, window.innerWidth - 24);
             menu.style.left = Math.round(Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))) + 'px';
             menu.style.top = Math.round(rect.bottom + 6) + 'px';
+        }
+        // A row is a copy, not a page load: the address is what goes onto a phone or into
+        // a notebook, and opening the tunnel in a tab only showed JSON. The browser's
+        // clipboard needs a real user gesture and a secure page; the textarea beside it is
+        // the fallback for a page served over plain http from this PC, and the row says
+        // which of the two happened instead of silently doing nothing.
+        async function copyPoolUrl(row) {
+            const url = row.getAttribute('data-url') || '';
+            if (!url) return;
+            let copied = false;
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(url);
+                    copied = true;
+                }
+            } catch (err) {}
+            if (!copied) {
+                try {
+                    const box = document.createElement('textarea');
+                    box.value = url;
+                    box.setAttribute('readonly', '');
+                    box.style.position = 'fixed';
+                    box.style.top = '-1000px';
+                    box.style.opacity = '0';
+                    document.body.appendChild(box);
+                    box.select();
+                    box.setSelectionRange(0, url.length);
+                    copied = document.execCommand('copy');
+                    document.body.removeChild(box);
+                } catch (err) { copied = false; }
+            }
+            row.dataset.copied = copied ? 'yes' : 'no';
+            const note = row.querySelector('.pool-copied');
+            if (note) note.textContent = copied ? 'copied' : 'select it by hand';
+            clearTimeout(row._copyTimer);
+            row._copyTimer = setTimeout(() => { if (note) note.textContent = ''; }, 2200);
+        }
+        const poolMenuEl = document.getElementById('poolMenu');
+        if (poolMenuEl) {
+            poolMenuEl.addEventListener('click', (event) => {
+                const row = event.target.closest ? event.target.closest('[data-url]') : null;
+                if (!row) return;
+                event.preventDefault();
+                event.stopPropagation();
+                copyPoolUrl(row);
+            });
         }
         document.addEventListener('click', (event) => {
             const menu = document.getElementById('poolMenu');

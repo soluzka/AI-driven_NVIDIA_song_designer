@@ -2894,32 +2894,43 @@
                 const wait = looksLikeEdge ? 10000 : 300000;
                 let response;
                 let ticker = null;
-                try {
-                    const status = document.getElementById('songStatus');
-                    if (status && !looksLikeEdge) {
-                        // The wait is real and it is the model loading; a counter
-                        // says it is working instead of looking hung.
-                        const began = Date.now();
-                        const paint = () => {
-                            status.textContent = 'Writing the lyrics on this machine... '
-                                + Math.round((Date.now() - began) / 1000) + 's';
-                        };
-                        paint();
-                        ticker = setInterval(paint, 1000);
+                // Two waits, not one. A lyric request that arrives while a song is still
+                // rendering on the same card is slow, not dead: the render holds the GPU
+                // for minutes, the lyric answer lands after the page stopped listening,
+                // and the compose was thrown away for it. Asking once more picks that
+                // answer up with the model already loaded, instead of failing the song.
+                for (let attempt = 0; attempt < (looksLikeEdge ? 1 : 2) && !response; attempt++) {
+                    try {
+                        const status = document.getElementById('songStatus');
+                        if (status && !looksLikeEdge) {
+                            // The wait is real and it is the model loading; a counter
+                            // says it is working instead of looking hung.
+                            const began = Date.now();
+                            const paint = () => {
+                                status.textContent = 'Writing the lyrics on this machine... '
+                                    + Math.round((Date.now() - began) / 1000) + 's';
+                            };
+                            paint();
+                            ticker = setInterval(paint, 1000);
+                        }
+                        response = await fetchBounded(base + '/api/lyrics', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ genre, subject, corpus, angle, seed, avoid }),
+                        }, wait);
+                    } catch (err) {
+                        why = (err && err.name === 'AbortError')
+                            ? 'the lyric model was still writing when the wait ran out'
+                            : 'nothing answered at ' + (base || 'this address');
+                        const line = document.getElementById('songStatus');
+                        if (attempt === 0 && line && !looksLikeEdge) {
+                            line.textContent = 'The card was busy with the last song; asking the lyric model again...';
+                        }
+                    } finally {
+                        if (ticker) { clearInterval(ticker); ticker = null; }
                     }
-                    response = await fetchBounded(base + '/api/lyrics', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ genre, subject, corpus, angle, seed, avoid }),
-                    }, wait);
-                } catch (err) {
-                    why = (err && err.name === 'AbortError')
-                        ? 'the lyric model was still writing when the wait ran out'
-                        : 'nothing answered at ' + (base || 'this address');
-                    continue;
-                } finally {
-                    if (ticker) clearInterval(ticker);
                 }
+                if (!response) continue;
                 const isJson = (response.headers.get('content-type') || '').includes('application/json');
                 if (!response.ok || !isJson) {
                     if (base === '' && response.status === 501) rememberEdgeModelOff();

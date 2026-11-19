@@ -104,15 +104,19 @@ async function answers(base, timeout = 8000) {
 // The pool that routing may use: every entry that still answers. Probes run in
 // parallel, so the cost is one 2.5 s timeout rather than one per machine, and the
 // register is rewritten only when something actually died.
+// A failed probe is not proof a card is gone. A tunnel's first request pays for its TLS
+// handshake, a Worker fetching a fresh trycloudflare hostname can be refused while a
+// browser reaches it fine, and the boot only joins once - so deleting on the first miss
+// erased machines that were alive and serving. Submissions are still dropped on a miss,
+// because routing must never hand out a card that cannot render; the entry is kept for
+// this long before it is forgotten, so a momentary failure costs nothing.
+const POOL_GRACE_MS = 10 * 60 * 1000;
+
 async function livingPool(env) {
   const pool = await readPool(env);
   if (!pool.length) return pool;
   const answered = await Promise.allSettled(pool.map((entry) => answers(entry.url)));
   const alive = pool.map((entry, index) => answered[index].status === 'fulfilled' && answered[index].value === true);
-  // A machine that joined a moment ago has a tunnel nobody has walked through yet, and
-  // the first request to a fresh trycloudflare hostname pays for the TLS handshake.
-  // One miss at 2.5 s therefore deleted machines that were alive, and nothing re-joins
-  // them: the boot joins once. A miss is asked again, slowly, before it is believed.
   const retry = pool.filter((entry, index) => !alive[index]);
   if (retry.length) {
     const again = await Promise.allSettled(retry.map((entry) => answers(entry.url, 12000)));
@@ -123,8 +127,30 @@ async function livingPool(env) {
       at += 1;
     });
   }
-  const living = pool.filter((entry, index) => alive[index]);
-  if (living.length !== pool.length) await writePool(env, living);
+
+  const now = Date.now();
+  const living = [];
+  const kept = [];
+  let dirty = false;
+  pool.forEach((entry, index) => {
+    if (alive[index]) {
+      // Only written once a minute: /pool is read by every page, and this entry is only
+      // the clock that decides how long a silent machine is remembered.
+      if (!entry.ok_at || now - entry.ok_at > 60000) {
+        entry.ok_at = now;
+        dirty = true;
+      }
+      entry.fail = 0;
+      living.push(entry);
+      kept.push(entry);
+      return;
+    }
+    entry.fail = Number(entry.fail || 0) + 1;
+    dirty = true;
+    const last = Math.max(Number(entry.ok_at || 0), Number(entry.seen || 0));
+    if (now - last < POOL_GRACE_MS) kept.push(entry);
+  });
+  if (dirty || kept.length !== pool.length) await writePool(env, kept);
   return living;
 }
 

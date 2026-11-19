@@ -1155,6 +1155,29 @@ the same kernel rather than running it beside the old one, so pushing kills a li
 card: its tunnel dies, the pool empties, and the new boot has to warm again before
 songs render. It also spends the week's GPU hours.
 
+**When the card has to run code you just committed** — a push alone is not enough.
+The pushed kernel never clones GitHub: it runs `repo/public/song_gpu_offline.py` out
+of the `song-gpu-code` **dataset**, staged by `tools\kaggle_pack.ps1` with robocopy
+from this working tree. A commit changes nothing on that card until the dataset is
+rebuilt, so the order is repack, then push:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\kaggle_pack.ps1 -CodeOnly -Create
+curl.exe -s -X POST https://browser.bpiersing.workers.dev/api/gpu/start
+```
+
+`-CodeOnly` uploads the repository copy and its unpacked Linux packages, not the
+10.7 GB of weights. The exact tree Kaggle will mount is the staging folder, so it can
+be checked before the upload:
+
+```powershell
+Select-String -Path build\kaggle_pack\code\repo\public\song_gpu_offline.py -Pattern 'the video downloader'
+```
+
+A dataset Kaggle cannot mount is named in the push reply as `invalidDatasetSources`
+(for example a weights dataset that does not exist on that account); the boot then
+has only the kernel's own Output and, if the kernel has a network, Hugging Face.
+
 5. Push the code that makes this work:
 
    ```powershell

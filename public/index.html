@@ -4110,8 +4110,33 @@
                 text.textContent = 'You are offline. Search, downloads and the pool need a connection; '
                     + 'a song can still render while this PC\'s model is running.';
             }
+            if (offline) {
+                // The chips kept the count and the address from before the drop, which
+                // reads as a pool that is still reachable. Said plainly instead: with no
+                // connection this page cannot reach the pool or any card on it.
+                const poolText = document.getElementById('poolText');
+                const poolChip = document.getElementById('poolChip');
+                if (poolText) poolText.textContent = 'Pool · offline';
+                if (poolChip) poolChip.dataset.state = 'offline';
+                const gpuChip = document.getElementById('gpuChip');
+                if (gpuChip) gpuChip.dataset.state = 'offline';
+            }
         }
-        window.addEventListener('online', reflectOffline);
+        window.addEventListener('online', () => {
+            reflectOffline();
+            // Coming back is not the same as never having left: while the connection was
+            // down the page kept the address and the count it last saw, and a tunnel that
+            // died in the meantime would still be named. Reading both again here is also
+            // what puts the new machine in the header after a phone has been away - the
+            // minute tick could be most of a minute late, and pressing before it is how
+            // "it will not reconnect" looked.
+            if (typeof refreshPoolBadge === 'function') refreshPoolBadge();
+            else refreshPublishedAddress();
+            // The card chip was marked offline when the connection dropped, and nothing
+            // else clears that on its own: the pool badge only asks again when the
+            // published address changed, which is not the case after a short drop.
+            if (typeof refreshGpu === 'function') refreshGpu();
+        });
         window.addEventListener('offline', reflectOffline);
         reflectOffline();
         // navigator.onLine can lag behind a dropped connection, so it is re-read.

@@ -26,6 +26,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 
@@ -72,6 +73,58 @@ def tee_boot_log():
 
 
 tee_boot_log()
+
+
+# The two endpoints that keep a list of cards: the site's own, and the pool Worker it
+# reads. Both are told, because a machine missing from either is a machine the site
+# will not use.
+POOL_TARGETS = (
+    ('https://browser.bpiersing.workers.dev/api/song/endpoint', 'x-song-key'),
+    ('https://song-pool.bpiersing.workers.dev/join', 'x-join-key'),
+)
+
+
+def tell_pool(url, join_key):
+    """Tell the pool and the site that this card is behind `url`.
+
+    Returns True when the pool Worker took the address. Cloudflare answers a bare
+    urllib request with 403 "error code: 1010" before the key is looked at, and urllib
+    prints only the status, so that block reads exactly like a wrong key - hence the
+    browser-shaped user-agent.
+    """
+    payload = ('{"url":"' + url + '"}').encode()
+    told = False
+    for target, header in POOL_TARGETS:
+        request = urllib.request.Request(target, data=payload, headers={
+            'content-type': 'application/json',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                          'AppleWebKit/537.36 (KHTML, like Gecko) '
+                          'Chrome/131.0.0.0 Safari/537.36',
+            header: join_key})
+        try:
+            with urllib.request.urlopen(request, timeout=20) as answer:
+                say('joined', target.split('/')[2], answer.status)
+                if target.endswith('/join'):
+                    told = True
+        except Exception as exc:
+            say('could not join', target.split('/')[2], exc)
+    return told
+
+
+# A boot joins once, so a machine the pool drops - a tunnel that hiccuped, a Worker
+# that was redeployed while the session slept - stayed off the list until the kernel
+# was restarted, with the card still warm and serving. Re-posting the same address
+# costs one request every couple of minutes and puts it back by itself.
+def keep_joined(url, join_key, every=120):
+    def loop():
+        while True:
+            time.sleep(every)
+            if not tell_pool(url, join_key):
+                say('the pool did not take the address this time; trying again in',
+                    every, 'seconds')
+
+    threading.Thread(target=loop, name='keep-joined', daemon=True).start()
+    say('the pool is told this address every', every, 'seconds, so a drop is repaired')
 
 
 def health_summary(state):
@@ -425,37 +478,22 @@ join_key = (os.environ.get('SONG_JOIN_KEY') or '').strip()
 if not join_key:
     say('no join key in this kernel, so the card is not in the pool: use', url)
 else:
-    joined = False
+    reached = False
     for attempt in range(10):
         try:
             with urllib.request.urlopen(url + '/health', timeout=10):
                 pass
-            payload = ('{"url":"' + url + '"}').encode()
-            for target, header in (
-                ('https://browser.bpiersing.workers.dev/api/song/endpoint', 'x-song-key'),
-                ('https://song-pool.bpiersing.workers.dev/join', 'x-join-key'),
-            ):
-                request = urllib.request.Request(target, data=payload, headers={
-                    'content-type': 'application/json',
-                    # Cloudflare answers a bare urllib request with 403 "error code:
-                    # 1010" before the key is ever looked at, and urllib only prints
-                    # the status, so that block reads exactly like a wrong key. A
-                    # browser-shaped user-agent gets the request to the Worker.
-                    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                                  'AppleWebKit/537.36 (KHTML, like Gecko) '
-                                  'Chrome/131.0.0.0 Safari/537.36',
-                    header: join_key})
-                try:
-                    with urllib.request.urlopen(request, timeout=20) as answer:
-                        say('joined', target.split('/')[2], answer.status)
-                except Exception as exc:
-                    say('could not join', target.split('/')[2], exc)
-            joined = True
-            break
         except Exception as exc:
             say('  the tunnel is not answering yet:', exc)
             time.sleep(10)
-    if not joined:
+            continue
+        reached = True
+        tell_pool(url, join_key)
+        # Started whether or not the first post landed: it is the same address, and a
+        # refused post is exactly the case the repeat exists to repair.
+        keep_joined(url, join_key)
+        break
+    if not reached:
         say('the card never answered through the tunnel, so the pool was not told about it')
 
 say('ready: the service is on', PORT, 'behind', url)

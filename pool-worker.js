@@ -95,17 +95,23 @@ async function readPool(env) {
 
 async function writePool(env, pool) {
   if (env.REGISTER) {
-    const trimmed = pool.slice(0, POOL_LIMIT);
+    // No cap on the D1 register: one row per machine, so the sixteenth card is no more
+    // expensive than the first. The old 16 was a KV value size, and a pool that silently
+    // stopped accepting the seventeenth machine is exactly the failure this is meant to
+    // end. Dead rows still leave by the TTL below.
+    const trimmed = pool;
     try {
-      const statements = trimmed.map((entry) => env.REGISTER
-        .prepare('INSERT INTO machines (url, seen, joined, note) VALUES (?, ?, ?, ?) '
-          + 'ON CONFLICT(url) DO UPDATE SET seen = excluded.seen, note = excluded.note')
-        .bind(entry.url, Number(entry.seen) || Date.now(),
-          Number(entry.joined || entry.seen) || Date.now(), String(entry.note || '')));
-      // A machine silent past the TTL leaves in the same breath, so the table cannot
-      // grow a dead row per session.
-      statements.push(env.REGISTER.prepare('DELETE FROM machines WHERE seen <= ?')
-        .bind(Date.now() - POOL_TTL_MS));
+      // The list passed in is the whole register, so the table is replaced with it: a row
+      // that is no longer in the list is gone. Upserting alone used to leave a removed
+      // machine listed for a week, because the only delete was the TTL.
+      const statements = [env.REGISTER.prepare('DELETE FROM machines')];
+      for (const entry of trimmed) {
+        statements.push(env.REGISTER
+          .prepare('INSERT INTO machines (url, seen, joined, note) VALUES (?, ?, ?, ?) '
+            + 'ON CONFLICT(url) DO UPDATE SET seen = excluded.seen, note = excluded.note')
+          .bind(entry.url, Number(entry.seen) || Date.now(),
+            Number(entry.joined || entry.seen) || Date.now(), String(entry.note || '')));
+      }
       await env.REGISTER.batch(statements);
       return true;
     } catch (err) {

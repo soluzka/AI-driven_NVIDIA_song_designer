@@ -14,6 +14,7 @@
 #   powershell -ExecutionPolicy Bypass -File tools\kaggle_pack.ps1 -Packages     # also unpack packages
 #   powershell -ExecutionPolicy Bypass -File tools\kaggle_pack.ps1 -Create       # also create the datasets
 #   powershell -ExecutionPolicy Bypass -File tools\kaggle_pack.ps1 -CodeOnly -Create  # code dataset only
+#   powershell -ExecutionPolicy Bypass -File tools\kaggle_pack.ps1 -WeightsOnly -Create  # weights dataset only
 #
 # -Create needs a Kaggle token in build\kaggle.json (tools\set_kaggle.ps1 writes one)
 # and uploads ~11 GB once. Nothing here is pushed to GitHub: the staging folder is
@@ -32,6 +33,8 @@ param(
     # Repack and upload the code dataset alone: a code change does not need the 10.7 GB
     # of weights to be uploaded again, and a run that has internet can fetch those.
     [switch]$CodeOnly,
+    # The mirror of -CodeOnly: a weights change does not need the repository re-uploaded.
+    [switch]$WeightsOnly,
     [switch]$WhatIfOnly
 )
 
@@ -216,7 +219,8 @@ if ($Create) {
     # on nothing: the first create failed, the fallback uploaded anyway, and the
     # version call was rejected at the end because the dataset had never been made.
     $existing = (& uv tool run --from kaggle --with six kaggle datasets list -m 2>$null) -join "`n"
-    $pairs = @(, @($codeDir, 'song-gpu-code'))
+    $pairs = @()
+    if (-not $WeightsOnly) { $pairs += , @($codeDir, 'song-gpu-code') }
     if (-not $CodeOnly) { $pairs += , @($weightsSource, 'song-gpu-weights') }
     foreach ($pair in $pairs) {
         $path = $pair[0]; $slug = "$Owner/" + $pair[1]

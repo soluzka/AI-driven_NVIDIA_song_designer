@@ -1,90 +1,81 @@
-# Reset the join key that public/join.cmd asks for.
+# Set the key that connects this PC's GPU to the song site.
 #
-#   reset_join_key.cmd                    type the key you want, install it
-#   reset_join_key.cmd -Key "abc..."      set it without being asked
-#   reset_join_key.cmd -Show              print the key this machine holds now
-#   reset_join_key.cmd -DryRun            show what would be set, change nothing live
+#   reset_join_key.cmd                 type the key you want, then Enter
+#   reset_join_key.cmd -Key "abc..."   set it in one line
+#   reset_join_key.cmd -Show           print the key this PC holds now
+#   reset_join_key.cmd -DryRun         show it, change nothing
 #
-# The key is shown because it is yours: it is the string you hand to whoever joins a
-# machine, so you have to be able to read it off. It is written to build\song_endpoint.key
-# (git-ignored) and set on the one thing that checks it:
+# This works for anybody, on any PC that has the app installed: it needs no Cloudflare
+# login and touches no server. It writes the key where join.cmd and the launcher already
+# read it - <app>\build\song_endpoint.key - and then asks the site whether it accepts that
+# key, so "saved" and "connected" are not the same thing in the output.
 #
-#   browser  SONG_ENDPOINT_KEY  what the site verifies when a machine publishes its address
-#
-# That is the key that lets a GPU connect to the website: with it, a machine can tell the
-# site "send the songs to me". After a reset the old key is refused with 403 and the next
-# publish has to use the new one.
+# It changes this PC only. Nobody can change the key the site itself holds from a
+# download: that is a secret on the Worker, and only the Cloudflare account that owns it
+# can set it.
 
 [CmdletBinding()]
 param(
     [string]$Key = '',
-    [string]$KeyFile = '',
+    [string]$App = '',
     [switch]$Show,
     [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Stop'
-
-# This file is also fetched raw from GitHub by reset_join_key.cmd, so it can run from
-# %TEMP% with no project around it. In that case it has to find the installed app itself.
-$root = Split-Path -Parent $PSScriptRoot
-if (-not (Test-Path (Join-Path $root 'song_service'))) {
-    foreach ($candidate in @(
-        (Join-Path $env:LOCALAPPDATA 'internet-gpu\AI-driven_NVIDIA_song_designer-main'),
-        (Join-Path $env:LOCALAPPDATA 'internet-gpu')
-    )) {
-        if (Test-Path (Join-Path $candidate 'song_service')) { $root = $candidate; break }
-    }
-}
-# Not $keyFile: PowerShell variable names are case-insensitive, so that would overwrite
-# the -KeyFile parameter with this path and make every run read the old key from disk.
-$keyPath = Join-Path $root 'build\song_endpoint.key'
-$wrangler = Join-Path $root 'build\wr.ps1'
+$ProgressPreference = 'SilentlyContinue'
 
 function Say([string]$text) { Write-Host $text }
 
-if (-not (Test-Path (Join-Path $root 'song_service'))) {
-    Say "no installed app found (looked beside this script and in $env:LOCALAPPDATA\internet-gpu)"
-    Say 'Run join.cmd on this PC first, or run this from the project folder.'
-    exit 1
+# --- where the app is --------------------------------------------------------
+# join.ps1 unpacks it here. This file can also be fetched raw and run from %TEMP%, so it
+# must not trust where it happens to be lying.
+$root = Split-Path -Parent $PSScriptRoot
+if (-not $App) {
+    if (Test-Path (Join-Path $root 'song_service')) {
+        $App = $root
+    } else {
+        foreach ($candidate in @(
+            (Join-Path $env:LOCALAPPDATA 'internet-gpu\AI-driven_NVIDIA_song_designer-main'),
+            (Join-Path $env:LOCALAPPDATA 'internet-gpu')
+        )) {
+            if (Test-Path (Join-Path $candidate 'song_service')) { $App = $candidate; break }
+        }
+    }
 }
+if (-not $App -or -not (Test-Path (Join-Path $App 'song_service'))) {
+    Say 'I could not find the installed app on this PC.'
+    Say 'It is normally in %LOCALAPPDATA%\internet-gpu\AI-driven_NVIDIA_song_designer-main.'
+    $typed = Read-Host 'Paste the folder that holds song_service (or press Enter to stop)'
+    if (-not $typed) { Say 'stopped'; exit 1 }
+    $App = $typed.Trim('"').Trim()
+    if (-not (Test-Path (Join-Path $App 'song_service'))) {
+        Say "no song_service under $App"
+        exit 1
+    }
+}
+Say "app:  $App"
 
-if ($Show -and -not $Key -and -not $KeyFile) {
-    if (-not (Test-Path $keyPath)) { Say 'this machine has no key yet'; exit 1 }
-    $current = (Get-Content -Raw -Path $keyPath).Trim()
-    Say 'the join key this machine holds now:'
+$keyPath = Join-Path $App 'build\song_endpoint.key'
+$tunnelPath = Join-Path $App 'build\tunnel_url.txt'
+
+if ($Show -and -not $Key) {
+    if (-not (Test-Path $keyPath)) { Say 'this PC has no key yet'; exit 1 }
     Say ''
-    Say $current
+    Say 'the key this PC holds now:'
     Say ''
-    Say 'that is the string join.cmd asks for. Change it with: reset_join_key.cmd'
+    Say ((Get-Content -Raw -Path $keyPath).Trim())
     exit 0
 }
 
-if ($KeyFile) {
-    if (-not (Test-Path $KeyFile)) { Say "no file at $KeyFile"; exit 1 }
-    $Key = (Get-Content -Raw -Path $KeyFile).Trim()
-    Say "read the key from $KeyFile"
-}
-
 if (-not $Key) {
-    # The key is typed, not generated: it is handed to somebody who has to paste it into
-    # join.cmd, and a string a person can pass on is easier to live with than a random
-    # one nobody can remember. Enter with nothing typed makes a random key instead.
-    Say 'Type the join key to use, or press Enter for a random one.'
+    Say ''
+    Say 'Type the key that connects this PC to the site.'
     Say 'Any text works, with no spaces. Shorter is easier to type and easier to guess.'
-    $typed = Read-Host 'Join key'
-    if ($typed -and $typed.Trim()) {
-        $Key = $typed.Trim()
-        Say 'using the key you typed'
-    } else {
-        $bytes = New-Object byte[] 36
-        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-        $rng.GetBytes($bytes)
-        $Key = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
-        Say 'made a new random key'
-    }
+    $typed = Read-Host 'Key'
+    if (-not $typed) { Say 'no key given, nothing changed'; exit 1 }
+    $Key = $typed.Trim()
 }
-
 if ($Key.Length -lt 4) {
     Say 'that key is too short: use at least 4 characters'
     exit 1
@@ -95,49 +86,51 @@ if ($Key -match '\s') {
 }
 
 Say ''
-Say 'the join key:'
+Say 'the key:'
 Say ''
 Say $Key
 Say ''
 
 if ($DryRun) {
-    Say '-DryRun: nothing was written and the Worker was not touched'
-    Say 'the key that works right now is unchanged'
+    Say '-DryRun: nothing was written and the site was not contacted'
     exit 0
 }
 
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $keyPath) | Out-Null
 Set-Content -Path $keyPath -Value $Key -Encoding ascii -NoNewline
-Say "written to build\song_endpoint.key ($($Key.Length) characters)"
+Say "written to $keyPath"
 
-Push-Location $root
-try {
-    # The bundled wrapper is in build\wr.ps1 in a full checkout; a copy that came out of
-    # the GitHub zip has no build folder, so wrangler on PATH or npx is the fallback.
-    $tool = $null
-    if (Test-Path $wrangler) { $tool = $wrangler }
-    elseif (Get-Command wrangler -ErrorAction SilentlyContinue) { $tool = 'wrangler' }
-    elseif (Get-Command npx -ErrorAction SilentlyContinue) { $tool = 'npx' }
-    if (-not $tool) {
-        Say 'no wrangler found: install Node (npx wrangler) or run this from the project folder.'
-        Say 'the local key file has the new key; the site was not told about it.'
-        exit 1
-    }
-    $wranglerArgs = @('secret', 'put', 'SONG_ENDPOINT_KEY', '--config', 'wrangler.jsonc')
-    if ($tool -eq 'npx') { $wranglerArgs = @('wrangler') + $wranglerArgs }
-    Say 'setting SONG_ENDPOINT_KEY on wrangler.jsonc ...'
-    $Key | & $tool @wranglerArgs 2>&1 | ForEach-Object {
-        if ($_ -match 'Success|success|Uploaded|created|updated') { Say '  ' + $_ }
-    }
-    if ($LASTEXITCODE -ne 0) {
-        Say "  wrangler exited $LASTEXITCODE"
-        Say '  the file now holds the new key, so publishing will be refused until this succeeds'
-        exit 1
-    }
-} finally {
-    Pop-Location
+# --- does the site accept it? ------------------------------------------------
+# The site answers 200 when this key is the one it holds, and 403 when it is not. It knows
+# the answer; this PC can only guess. The address is only sent so the check is the same
+# request the launcher makes.
+$address = if (Test-Path $tunnelPath) { (Get-Content -Raw -Path $tunnelPath).Trim() } else { '' }
+if (-not $address) {
+    Say ''
+    Say 'no tunnel address yet, so the key could not be checked. Start the app (start.cmd in'
+    Say 'the app folder), then run this again to see whether the site accepts the key.'
+    exit 0
 }
-
+try {
+    $body = @{ url = $address } | ConvertTo-Json -Compress
+    $reply = Invoke-WebRequest -UseBasicParsing -Uri 'https://browser.bpiersing.workers.dev/api/song/endpoint' `
+        -Method Post -Body $body -ContentType 'application/json' `
+        -Headers @{ 'x-song-key' = $Key } -TimeoutSec 25
+    if ($reply.StatusCode -ge 200 -and $reply.StatusCode -lt 300) {
+        Say ''
+        Say "the site accepted the key and knows this PC at $address"
+    }
+} catch {
+    $status = $null
+    if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
+    Say ''
+    if ($status -eq 403) {
+        Say 'the site refused this key (403): it is not the key the site holds.'
+        Say 'The key is saved on this PC, but publishing will fail until it matches.'
+        Say 'Only the owner of the site can change which key it holds.'
+    } else {
+        Say "could not check the key against the site: $($_.Exception.Message)"
+    }
+}
 Say ''
-Say 'done. that is the key a machine needs to connect its GPU to the site.'
-Say 'The machine already connected keeps its connection; the next publish uses this key.'
+Say 'done.'

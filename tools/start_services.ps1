@@ -395,10 +395,13 @@ if ($NoTunnel) {
             try { $started = $_.StartTime } catch { $started = $null }
             [pscustomobject]@{ Id = $_.Id; Started = $started }
         } | Sort-Object Started, Id)
+    $prunedAll = $false
     if ($running.Count -ge $keep) {
-        $prune = $running.Count - $keep + 1
-        Say "tunnel: pruning old tunnels ($($running.Count) running, $prune to stop so a new one can start)"
-        foreach ($p in ($running | Select-Object -First $prune)) {
+        # At five, every one of them goes, not just the oldest: a pile of tunnels is what
+        # makes Cloudflare refuse to route the next one, so the pile is cleared completely
+        # and exactly one fresh tunnel is started in its place.
+        Say "tunnel: pruning old tunnels ($($running.Count) running, all of them)"
+        foreach ($p in $running) {
             try {
                 Stop-Process -Id $p.Id -Force -ErrorAction Stop
                 Say "tunnel: pruned the one running as pid $($p.Id)"
@@ -406,11 +409,14 @@ if ($NoTunnel) {
                 Say "tunnel: pid $($p.Id) belongs to another account and cannot be stopped from here"
             }
         }
-        Start-Sleep -Seconds 1
+        Start-Sleep -Seconds 2
+        $prunedAll = $true
     }
 
     $live = @(Get-Process cloudflared -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -eq $cloudflared })
+    # Cleared above: the one that answers next is the single tunnel started below.
+    if ($prunedAll) { $live = @() }
     if ($NewTunnel) {
         # A Quick Tunnel's name lives exactly as long as the process that opened it, so a
         # new address is not a restart of anything else: stopping that process and opening

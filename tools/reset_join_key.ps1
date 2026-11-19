@@ -226,9 +226,11 @@ function Renew-Tunnel([switch]$Retried) {
             [pscustomobject]@{ Id = $_.Id; Started = $started }
         } | Sort-Object Started, Id)
     if ($running.Count -ge $keep) {
-        $prune = $running.Count - $keep + 1
-        Say "  pruning old tunnels ($($running.Count) running, $prune to stop so a new one can start)..."
-        foreach ($p in ($running | Select-Object -First $prune)) {
+        # At five, all of them go: a pile of tunnels is what makes Cloudflare refuse to
+        # route the next one, so the pile is cleared completely and exactly one fresh
+        # tunnel is started in its place.
+        Say "  pruning old tunnels ($($running.Count) running, all of them), then starting one"
+        foreach ($p in $running) {
             try {
                 Stop-Process -Id $p.Id -Force -ErrorAction Stop
                 Say "  pruned the tunnel running as pid $($p.Id)"

@@ -7485,7 +7485,10 @@
             stage.querySelectorAll('video, audio').forEach(el => {
                 try {
                     el.pause();
-                    if (el.src && el.src.startsWith('blob:')) URL.revokeObjectURL(el.src);
+                    // A running recording may still be reading that blob: revoking it
+                    // now would end the fetch and report an error for a song that was
+                    // only closed, so it is left until nothing is recording.
+                    if (el.src && el.src.startsWith('blob:') && !lyricRecording) URL.revokeObjectURL(el.src);
                     el.removeAttribute('src');
                     el.load();
                 } catch (err) { /* already gone */ }

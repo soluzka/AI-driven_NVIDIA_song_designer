@@ -405,10 +405,19 @@ if ($Start) {
         Say 'the reset script is missing from this install, so the header was not pointed'
         Say 'at this PC. Run reset_join_key.cmd once the install has finished.'
     } else {
-        # -PointOnly: the tunnel half of that same script, with the key this PC already
-        # holds. A new address every run, named as the model, this PC's card joined to the
-        # pool and its older cards dropped - the same code the reset command runs, so the
-        # two can never do different things.
-        & $reset -PointOnly -App $root
+        # The reset command's own code, called with the key this PC already holds: a new
+        # address every run, named as the model, this PC's card joined to the pool and its
+        # older cards dropped - the same thing reset_join_key.cmd does.
+        #
+        # Not -PointOnly: an archive downloaded before that switch was finished carries a
+        # reset where -PointOnly skips the block the tunnel functions are defined in, and
+        # the whole step dies with "The term 'Renew-Tunnel' is not recognized" after
+        # "getting a new address...". Passing the key works in every version of it.
+        $key = ((Get-Content -Raw -Path $keyFile) -as [string]).Trim()
+        if ($key) {
+            & $reset -Key $key -App $root
+        } else {
+            Say 'the join key on this PC is empty; run reset_join_key.cmd with the key.'
+        }
     }
 }

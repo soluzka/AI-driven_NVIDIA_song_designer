@@ -372,33 +372,25 @@ async function startGpu(request, env, url) {
       String(env.KAGGLE_WEIGHTS_DATASET || (auth.handle + '/song-gpu-weights')).trim(),
     ],
     competitionDataSources: [],
-    // The kernel's own previous Output, mounted as a source. The boot saves the ~10 GB
-    // of weights to /kaggle/working/models exactly so a later run can read them at
-    // /kaggle/input/<slug>/models instead of pulling them from Hugging Face again, and
-    // Kaggle lets a kernel take its own earlier version as an input. When the push is
-    // refused with this attached, it is retried without it below and the run downloads.
-    kernelDataSources: [auth.handle + '/' + GPU_SLUG],
+    // Left empty on purpose. Pointing this at the kernel's own slug looked like the way
+    // to mount the previous Output, but Kaggle answers invalidKernelSources for a
+    // kernel that sources itself and silently drops it - kernels/pull then shows
+    // kernelDataSources: [] - so the weights cannot come from here. They come from the
+    // song-gpu-weights dataset that has to exist beside song-gpu-code; without it every
+    // start downloads ~10 GB from Hugging Face first.
+    kernelDataSources: [],
     categoryIds: [],
   };
 
   let pushed = null;
   let said = '';
-  let sourceNote = '';
-  const push = async (payload) => fetch('https://www.kaggle.com/api/v1/kernels/push', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: auth.header },
-    body: JSON.stringify(payload),
-  });
   try {
-    let answer = await push(body);
+    const answer = await fetch('https://www.kaggle.com/api/v1/kernels/push', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: auth.header },
+      body: JSON.stringify(body),
+    });
     said = (await answer.text()).slice(0, 400);
-    if (!answer.ok && body.kernelDataSources.length) {
-      // A refusal here is about the extra source, not the run: the card still works
-      // without it, it just has to fetch the weights, so the run is not lost over it.
-      sourceNote = ' (the previous Output could not be attached: ' + said + ')';
-      answer = await push({ ...body, kernelDataSources: [] });
-      said = (await answer.text()).slice(0, 400);
-    }
     pushed = answer.ok;
     if (!answer.ok) {
       return json({ configured: true, started: false, error: 'Kaggle refused the run: ' + said }, 502);
@@ -412,7 +404,7 @@ async function startGpu(request, env, url) {
     configured: true,
     started: Boolean(pushed),
     note: 'The GPU boots, runs the song service, opens a tunnel and joins the pool. It shows up here '
-      + 'when it reports the model loaded, which takes a few minutes on a fresh machine.' + sourceNote,
+      + 'when it reports the model loaded, which takes a few minutes on a fresh machine.',
     said,
   });
 }

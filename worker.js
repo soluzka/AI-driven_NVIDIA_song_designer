@@ -324,11 +324,18 @@ async function startGpu(request, env, url) {
   // progress - and the pool is asked first, because a machine that is serving is not.
   const BOOT_WINDOW_MS = 90 * 60 * 1000;
   const living = await readPool(env);
-  if (!living.length) {
+  if (living.length) {
+    // A machine is serving: this run got as far as the pool, which is the difference
+    // between a boot still running and a run that ended. Recorded so that a press after
+    // it dies is allowed instead of waiting out the whole window.
+    await env.STATS.put('gpu:joined_at', String(Date.now()));
+  } else {
     const ran = await kaggleStatus(env, auth);
     const began = Date.parse((ran && ran.lastRunTime) || '') || 0;
     const since = Math.max(last, Number.isFinite(began) ? began : 0);
-    if (since && Date.now() - since < BOOT_WINDOW_MS) {
+    const joined = Number(await env.STATS.get('gpu:joined_at') || 0);
+    // Joined and gone: the run ended, so the start is allowed even inside the window.
+    if (since && Date.now() - since < BOOT_WINDOW_MS && !(joined >= since)) {
       const booted = Math.round((Date.now() - since) / 60000);
       return json({
         configured: true,

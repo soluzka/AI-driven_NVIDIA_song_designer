@@ -4583,7 +4583,12 @@
             const player = clockCtx.createBufferSource();
             player.buffer = buffer;
             player.connect(destination);
-            player.connect(clockCtx.destination);
+            // The room copy has its own gain, so the sound can be silenced the moment the
+            // player is closed while the capture - which reads the buffer directly - goes
+            // on to the end of the song.
+            const monitor = clockCtx.createGain();
+            player.connect(monitor);
+            monitor.connect(clockCtx.destination);
             const audioStream = destination.stream;
             // The recording's own clock, so the words are drawn where the sound is even
             // while the tab is throttled.
@@ -4616,16 +4621,13 @@
             };
             const beat = song.bpm ? 60 / song.bpm : 0.5;
             let running = true;
-            let interrupted = false;
-            const stopRecording = () => {
-                interrupted = true;
-                running = false;
-                try { player.stop(); } catch (err) {}
-                try { if (recorder.state !== 'inactive') recorder.stop(); } catch (err) {}
-                try { clockCtx.close(); } catch (err) {}
-                stream.getTracks().forEach(track => track.stop());
+            // Closing the player or composing again silences this copy at once, while the
+            // capture carries on: the picture and its audio are still being recorded, and
+            // the finished file is stored with the song when it ends.
+            const silence = () => {
+                try { monitor.gain.value = 0; } catch (err) {}
             };
-            lyricRecording = { stop: stopRecording };
+            lyricRecording = { stop: silence };
             const drawOnce = () => {
                 const at = clock();
                 frame.at = at;
@@ -4677,10 +4679,7 @@
             });
             running = false;
             clearInterval(pump);
-            if (lyricRecording && lyricRecording.stop === stopRecording) lyricRecording = null;
-            // A stopped recording is a part of a song, not a lyric video: it is thrown
-            // away here so it can never be stored over the song's own picture.
-            if (interrupted) throw new Error('the recording was stopped, so nothing was saved');
+            if (lyricRecording && lyricRecording.stop === silence) lyricRecording = null;
             await new Promise(resolve => setTimeout(resolve, 250));
             if (recorder.state !== 'inactive') recorder.stop();
             await finished;
@@ -6137,7 +6136,10 @@
                         const timed = options && Array.isArray(options.schedule) ? options.schedule : [];
                         if (kept && timed.length) await savedAttachSchedule(songId, timed);
                         videoButton.textContent = kept ? 'Lyric video saved with the song' : 'Could not store the video';
-                        if (intoPlayer && blob) {
+                        // Only while this song's own player is still on the page: a recording
+                        // that was silenced by closing the player must not take over the
+                        // stage of a song composed since.
+                        if (intoPlayer && blob && stage.contains(audio)) {
                             // The player runs the video itself: the words are drawn on the
                             // picture and the song's own audio is inside the file, so
                             // picture and voice cannot drift apart.

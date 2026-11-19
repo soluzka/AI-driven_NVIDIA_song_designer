@@ -4588,11 +4588,13 @@
             // clearly this, and closing the player still silences it.
             if (song.stage) {
                 try {
-                    // Paused before it is taken off the page: the bar itself must not
-                    // keep playing while the fetched copy decodes.
+                    // Paused, but left on the page: taking the bar away to show the
+                    // picture left nothing to press, so pause and play were dead for
+                    // the whole recording. The canvas goes under it instead.
                     if (song.element) song.element.pause();
+                    const previous = song.stage.querySelector('canvas.gen-canvas');
+                    if (previous) previous.remove();
                     canvas.className = 'gen-canvas';
-                    song.stage.innerHTML = '';
                     song.stage.appendChild(canvas);
                 } catch (err) {}
             }

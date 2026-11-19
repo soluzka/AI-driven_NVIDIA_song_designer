@@ -454,6 +454,59 @@ subprocess.Popen([sys.executable, 'app.py'], cwd=os.path.join(REPO, 'voice_servi
                  stdout=voice_log, stderr=subprocess.STDOUT,
                  env=dict(os.environ, VOICE_PORT=str(VOICE_PORT)))
 
+# --- the video downloader ---------------------------------------------------
+# Started only when this boot can actually complete a download, and said out loud
+# either way instead of leaving /pc to accept a job that can never finish. Two
+# things decide it: yt-dlp has to be importable (the packed wheels beside the repo
+# are built from song_service and voice_service, so it usually is not), and the
+# kernel has to have the network - the normal case here is none at all, which is
+# why the song stack boots from mounted files in the first place. The online boot,
+# public/song_gpu_cell.py, is where a downloader always starts.
+DOWNLOAD_PORT = 8080
+say()
+try:
+    import flask_cors  # noqa: F401
+    import imageio_ffmpeg  # noqa: F401
+    import yt_dlp  # noqa: F401
+    packed_downloader = True
+except ModuleNotFoundError as missing:
+    packed_downloader = False
+    say('video downloads: not started -', missing.name, 'is not in the packed wheels beside the repo')
+if not packed_downloader:
+    say('                 songs and the voice are unaffected; repack with')
+    say('                 downloader_service/requirements.txt added to tools\\kaggle_pack.ps1')
+    say('                 to have it here on a kernel that has internet')
+elif not NETWORK:
+    say('video downloads: not started - this kernel has no internet, so yt-dlp could not')
+    say('                 fetch a video even though its package is here')
+else:
+    say('starting the video downloader on 8080 ...')
+    download_log = open(os.path.join(WORK, 'downloads.log'), 'w')
+    download_proc = subprocess.Popen([sys.executable, 'app.py'],
+                                     cwd=os.path.join(REPO, 'downloader_service'),
+                                     stdout=download_log, stderr=subprocess.STDOUT,
+                                     env=dict(os.environ, PORT=str(DOWNLOAD_PORT),
+                                              MAX_HEIGHT='720'))
+    download_health = ''
+    for attempt in range(15):
+        try:
+            with urllib.request.urlopen('http://127.0.0.1:%d/health' % DOWNLOAD_PORT,
+                                        timeout=5) as answer:
+                download_health = answer.read().decode()
+            break
+        except Exception:
+            if attempt and attempt % 5 == 0:
+                say('  waiting for the downloader ...', str(attempt * 2) + 's')
+            time.sleep(2)
+    if download_health:
+        say('downloads:', download_health[:220])
+    else:
+        say('the downloader did not answer on 8080 within 30s. End of downloads.log:')
+        try:
+            say(open(os.path.join(WORK, 'downloads.log')).read()[-1200:])
+        except OSError as exc:
+            say('no log at all:', exc)
+
 # --- the tunnel -------------------------------------------------------------
 binary = os.path.join(PACKED, 'cloudflared-linux-amd64')
 if not os.path.isfile(binary):

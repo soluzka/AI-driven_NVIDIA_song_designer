@@ -258,6 +258,63 @@ else:
     except Exception:
         pass
 
+# --- the video downloader ---------------------------------------------------
+# A phone cannot download a video by itself: the site's button asks
+# 127.0.0.1:8080, which on a phone is the phone, and the Worker's own proxy is
+# switched off for this deployment. The song service forwards /pc/<path> to
+# 127.0.0.1:8080, so running downloader_service here makes this card serve
+# downloads - and Top 100 and the player - through the same tunnel. No second
+# address, no second public door: /pc is a route on the service the tunnel
+# already points at.
+say()
+say('starting the video downloader on 8080 ...')
+try:
+    import flask_cors  # noqa: F401
+    import imageio_ffmpeg  # noqa: F401
+    import yt_dlp  # noqa: F401
+except ModuleNotFoundError:
+    say('  installing its packages (about a minute; pip prints nothing until it finishes) ...')
+    download_specs = []
+    for line in open(os.path.join(REPO, 'downloader_service', 'requirements.txt')):
+        line = line.split('#')[0].strip()
+        # gunicorn is the container's WSGI server; app.py runs on its own here, and
+        # none of these packages touch torch, so the CUDA build stays as it is.
+        if line and not line.lower().startswith('gunicorn'):
+            download_specs.append(line)
+    run(pip + download_specs)
+
+DOWNLOAD_PORT = 8080
+DOWNLOAD_LOG = os.path.join(WORK, 'downloads.log')
+# PORT is what downloader_service/app.py binds; MAX_HEIGHT is its hosted cap, which
+# is also the cap the container runs with. Set here and inherited by the child.
+os.environ.update(PORT=str(DOWNLOAD_PORT), MAX_HEIGHT='720')
+download_log = open(DOWNLOAD_LOG, 'w')
+download_proc = subprocess.Popen([sys.executable, 'app.py'],
+                                 cwd=os.path.join(REPO, 'downloader_service'),
+                                 stdout=download_log, stderr=subprocess.STDOUT)
+download_health = ''
+for attempt in range(15):
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:%d/health' % DOWNLOAD_PORT,
+                                    timeout=5) as answer:
+            download_health = answer.read().decode()
+        break
+    except Exception:
+        if attempt and attempt % 5 == 0:
+            say('  waiting for the downloader ...', str(attempt * 2) + 's')
+        time.sleep(2)
+if download_health:
+    say('downloads:', download_health[:220])
+    say('a phone reaches it at <this address>/pc/api/download once the tunnel is up')
+else:
+    # The card is still worth keeping: songs and the voice do not need this, so the
+    # boot carries on and only downloads are missing.
+    say('the downloader did not answer on 8080 within 30s. End of ' + DOWNLOAD_LOG + ':')
+    try:
+        say(open(DOWNLOAD_LOG).read()[-1200:])
+    except Exception as exc:
+        say('no log at all:', exc)
+
 # --- the tunnel -------------------------------------------------------------
 say()
 

@@ -167,7 +167,31 @@ Say "written to $keyPath"
 # the file so the key is never retyped and a stray newline cannot get into the secret.
 $script:nodePath = Join-Path $App 'tools\node\node.exe'
 $script:wranglerPath = Join-Path $App 'build\wrangler-tool\node_modules\wrangler\bin\wrangler.js'
-$canSync = -not $NoSync -and (Test-Path $script:nodePath) -and (Test-Path $script:wranglerPath)
+$script:npmPath = Join-Path $App 'tools\node\npm.cmd'
+
+# --- wrangler, fetched once if it is missing --------------------------------
+# Setting the key on the Workers is the one thing this script cannot do without
+# wrangler, and an install does not carry it: without this a person types a key here,
+# the Workers never hear it, and the pool refuses the address with a 403 that looks
+# like a wrong key but is a key that was never set. npm sits beside node, so it is
+# fetched from there once into build\wrangler-tool and kept.
+function Ensure-Wrangler {
+    if ((Test-Path $script:nodePath) -and (Test-Path $script:wranglerPath)) { return $true }
+    if (-not (Test-Path $script:npmPath)) { return $false }
+    $tool = Join-Path $App 'build\wrangler-tool'
+    New-Item -ItemType Directory -Force -Path $tool | Out-Null
+    Say '  fetching wrangler once (a minute or two): it is what sets the key on the Workers'
+    $out = (& cmd /c ('"{0}" install --prefix "{1}" --no-audit --no-fund --loglevel=error wrangler@4 2>&1' -f $script:npmPath, $tool)) | Out-String
+    if (Test-Path $script:wranglerPath) {
+        Say '  wrangler: ready'
+        return $true
+    }
+    $why = (($out -split "`n") | Where-Object { $_.Trim() } | Select-Object -Last 1)
+    Say "  wrangler: could not be fetched - $why"
+    return $false
+}
+
+$canSync = -not $NoSync -and (Ensure-Wrangler)
 
 function Push-Secret([string]$label, [string]$name, [string[]]$extra) {
     $line = '"{0}" "{1}" secret put {2}' -f $script:nodePath, $script:wranglerPath, $name
@@ -191,8 +215,9 @@ Say ''
 if ($NoSync) {
     Say '-NoSync: the Workers were not contacted and keep the key they hold.'
 } elseif (-not $canSync) {
-    Say 'The Workers were not contacted: this PC has no wrangler, so the key is written here only.'
-    Say 'Run this on the PC signed in to the Cloudflare account that owns the site to set it there.'
+    Say 'The Workers were not contacted: there is no wrangler here and no npm to fetch it, so the'
+    Say 'key is written on this PC only. Run this where wrangler can run, signed in to the'
+    Say 'Cloudflare account that owns the Workers, and it sets both of them from the same key.'
 } else {
     Say 'telling the Workers the same GPU connect key...'
     $poolOk = Push-Secret 'GPU connect key on the pool' 'JOIN_KEY' @('--config', 'wrangler.pool.jsonc')
@@ -246,28 +271,40 @@ if ($tunnel -notmatch '^https?://') {
         Say '  the key was still written.'
         $tunnel = ''
     }
-    if ($tunnel) { try {
-        Invoke-RestMethod -Method Post `
-            -Uri 'https://song-pool.bpiersing.workers.dev/state/site:endpoint' `
-            -Headers @{ 'x-join-key' = $Key } -ContentType 'application/json' `
-            -Body (@{ value = $tunnel } | ConvertTo-Json -Compress) -TimeoutSec 25 | Out-Null
-        Say "  $tunnel"
-        Say '  named as the model, so the header says this PC and not the pool.'
-    } catch {
-        Say "  not pointed: $($_.Exception.Message)"
-        $code = 0
-        try { $code = [int]$_.Exception.Response.StatusCode } catch { $code = 0 }
-        if ($code -eq 403) {
-            # 403 here is never about the address: the address already answered above. It is
-            # the key. The pool refuses one it does not hold, which means this PC and the
-            # Worker disagree - the key was typed here but never set there.
-            Say '  403 means the pool holds a different GPU connect key than this PC, so it would'
-            Say '  not accept the address. The key is right here; the Workers are the ones behind:'
-            Say '  JOIN_KEY on the pool Worker and POOL_JOIN_KEY on the site have to match it.'
-        } else {
-            Say '  the key is still written on this PC; nothing on the Workers was changed by this step.'
+        if ($tunnel) {
+        function Name-ThisPc([string]$address) {
+            try {
+                Invoke-RestMethod -Method Post `
+                    -Uri 'https://song-pool.bpiersing.workers.dev/state/site:endpoint' `
+                    -Headers @{ 'x-join-key' = $Key } -ContentType 'application/json' `
+                    -Body (@{ value = $address } | ConvertTo-Json -Compress) -TimeoutSec 25 | Out-Null
+                return 0
+            } catch {
+                try { return [int]$_.Exception.Response.StatusCode } catch { return -1 }
+            }
         }
-    } }
+        $status = Name-ThisPc $tunnel
+        # A 403 here is never about the address: the address answered a moment ago. It is
+        # the key - this PC holds one the Worker does not. The key is right here, so the
+        # Workers are told it once and the name is tried again: that is the repair, and it
+        # is why typing a new key no longer ends in an error.
+        if ($status -eq 403 -and $canSync) {
+            Say '  the pool holds a different key, so the Workers are being told this one...'
+            $retryPool = Push-Secret 'GPU connect key on the pool' 'JOIN_KEY' @('--config', 'wrangler.pool.jsonc')
+            $retrySite = Push-Secret 'GPU connect key on the site' 'POOL_JOIN_KEY' @()
+            if ($retryPool -and $retrySite) { $status = Name-ThisPc $tunnel }
+        }
+        if ($status -eq 0) {
+            Say "  $tunnel"
+            Say '  named as the model, so the header says this PC and not the pool.'
+        } elseif ($status -eq 403) {
+            Say '  not pointed: the pool still holds a different GPU connect key than this PC.'
+            Say '  Run this once on the PC signed in to the Cloudflare account that owns the'
+            Say '  Workers: it sets JOIN_KEY on the pool and POOL_JOIN_KEY on the site to this key.'
+        } else {
+            Say "  not pointed: the site did not accept the address (status $status)."
+        }
+    }
 }
 
 Say ''

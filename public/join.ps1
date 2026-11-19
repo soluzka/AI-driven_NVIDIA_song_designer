@@ -95,6 +95,19 @@ Say "app:   $appDir"
 # know about it. Read-Host -AsSecureString keeps it off the screen; the plain value
 # only ever exists in this process and in that 64-byte file.
 $keyFile = Join-Path $appDir 'build\song_endpoint.key'
+$urlFile = Join-Path $appDir 'build\model_endpoint_url.txt'
+# A pasted address is not a join key: it is the model endpoint, the one the page shows as
+# "MODEL ENDPOINT" and every device is told to use. It goes to its own file, and
+# reset_join_key.cmd makes the site name it. Storing an address in the key file would make
+# a machine that runs perfectly and can never publish or join.
+if ($Key -match '^https?://') {
+    $endpoint = $Key.Trim().TrimEnd('/')
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $urlFile) | Out-Null
+    Set-Content -Path $urlFile -Value $endpoint -Encoding ascii -NoNewline
+    Say "model endpoint: $endpoint"
+    Say 'saved. reset_join_key.cmd points the site at it; the join key is separate.'
+    $Key = ''
+}
 if ($Key) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $keyFile) | Out-Null
     Set-Content -Path $keyFile -Value $Key -Encoding ascii -NoNewline
@@ -108,8 +121,15 @@ if ($Key) {
     $secure = Read-Host 'Paste the join key (hidden), or press Enter to skip' -AsSecureString
     $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
         [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
-    if (-not $plain) { Say 'no key given: this PC will run the AI for itself, not for the site' }
-    else {
+    if (-not $plain) {
+        Say 'no key given: this PC will run the AI for itself, not for the site'
+    } elseif ($plain -match '^https?://') {
+        $endpoint = $plain.Trim().TrimEnd('/')
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $urlFile) | Out-Null
+        Set-Content -Path $urlFile -Value $endpoint -Encoding ascii -NoNewline
+        Say "model endpoint: $endpoint"
+        Say 'that was an address, not a key: saved here, and reset_join_key.cmd names it on the site.'
+    } else {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $keyFile) | Out-Null
         Set-Content -Path $keyFile -Value $plain -Encoding ascii -NoNewline
     }

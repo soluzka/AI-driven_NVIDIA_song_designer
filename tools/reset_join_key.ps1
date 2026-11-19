@@ -20,6 +20,7 @@
 [CmdletBinding()]
 param(
     [string]$Key = '',
+    [string]$Url = '',
     [string]$App = '',
     [switch]$Show,
     [switch]$DryRun,
@@ -62,6 +63,61 @@ Say "app:  $App"
 
 $keyPath = Join-Path $App 'build\song_endpoint.key'
 $tunnelPath = Join-Path $App 'build\tunnel_url.txt'
+$typedUrlPath = Join-Path $App 'build\model_endpoint_url.txt'
+
+# --- an address instead of a key --------------------------------------------
+# The same command sets the model endpoint when what is pasted is a URL. That is the
+# address the page shows as "MODEL ENDPOINT" and every device is told to use, and naming
+# it here is how a host from somewhere else - a card on another PC, a Kaggle one - becomes
+# the model the site hands out. A key is still a key: no spaces, written to its own file.
+# Writing a URL into the key file would leave a machine that runs and can never publish.
+if (-not $Url -and $Key -match '^https?://') { $Url = $Key; $Key = '' }
+if ($Url) {
+    $Url = $Url.Trim().TrimEnd('/')
+    if ($Url -notmatch '^https://[^\s]+$' -and $Url -notmatch '^http://[^\s]+$') {
+        Say 'that is not an http(s) address'
+        exit 1
+    }
+    $held = ''
+    if (Test-Path $keyPath) { $held = ((Get-Content -Raw -Path $keyPath) -as [string]).Trim() }
+    Say ''
+    Say "model endpoint: $Url"
+    if (-not $held) {
+        Say 'this PC has no join key yet, so it is not allowed to name the site''s address.'
+        Say 'Run this once with your join key, then paste the address.'
+        exit 1
+    }
+    if ($DryRun) {
+        Say '-DryRun: the address was checked and nothing was sent, and the site still names what it named.'
+        exit 0
+    }
+    Say 'asking that address to answer ...'
+    $alive = $false
+    try {
+        $probe = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($Url + '/health') -TimeoutSec 8
+        $alive = ($probe.StatusCode -eq 200)
+    } catch { $alive = $false }
+    if (-not $alive) {
+        Say 'it did not answer /health, so the site still names whatever it named before.'
+        Say 'Nothing was changed.'
+        exit 1
+    }
+    try {
+        Invoke-RestMethod -Method Post `
+            -Uri 'https://song-pool.bpiersing.workers.dev/state/site:endpoint' `
+            -Headers @{ 'x-join-key' = $held } -ContentType 'application/json' `
+            -Body (@{ value = $Url } | ConvertTo-Json -Compress) -TimeoutSec 25 | Out-Null
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $typedUrlPath) | Out-Null
+        Set-Content -Path $typedUrlPath -Value $Url -Encoding ascii -NoNewline
+        Say 'the site now names that address as the model endpoint, for every device.'
+        Say "kept in $typedUrlPath, so a later run of this names it again."
+        exit 0
+    } catch {
+        Say "the site refused it: $($_.Exception.Message)"
+        Say 'Nothing was changed here; the key on this PC is probably not the one the pool Worker holds.'
+        exit 1
+    }
+}
 
 if ($Show -and -not $Key) {
     if (-not (Test-Path $keyPath)) { Say 'this PC has no key yet'; exit 1 }
@@ -162,8 +218,13 @@ if ($NoSync) {
 # list of GPUs that take work, which is the pool badge's business, not the header's.
 $tunnelPath = Join-Path $App 'build\tunnel_url.txt'
 $tunnel = ''
-if (Test-Path $tunnelPath) {
-    $tunnel = ((Get-Content -Raw -Path $tunnelPath) -as [string]).Trim().TrimEnd('/')
+# An address typed here wins over the tunnel this PC last wrote: it is the one the person
+# chose, and the one they expect the page to name.
+foreach ($candidate in @($typedUrlPath, $tunnelPath)) {
+    if ($tunnel) { break }
+    if (Test-Path $candidate) {
+        $tunnel = ((Get-Content -Raw -Path $candidate) -as [string]).Trim().TrimEnd('/')
+    }
 }
 if ($tunnel -notmatch '^https?://') {
     Say ''

@@ -7,6 +7,8 @@ rem
 rem   reset_join_key.cmd                 type the key you want, then Enter
 rem   reset_join_key.cmd -Key "abc..."   set it in one line
 rem   reset_join_key.cmd -Show           print the key this PC holds now
+rem   reset_join_key.cmd "https://host"   paste an address instead of a key: that names the
+rem                                     model endpoint the page hands to every device
 rem
 rem It writes <app>\build\song_endpoint.key - the GPU connect key - and, on a PC signed
 rem in to the Cloudflare account that owns the Workers, sets the same key there too: JOIN_KEY

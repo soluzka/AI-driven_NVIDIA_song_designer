@@ -2821,10 +2821,20 @@
         // Used when no language model answers. These are images, not a description
         // of the collection: the seed words come from the listings, the lines are
         // about a night, a road, weather, a person.
+        // A listing word is not an image. These are the ones that turned a verse into
+        // "Christmas in the rain, YouTube on the wire": the site's own name, the brands,
+        // and the words every listing carries.
+        const BRAND_WORD = /\b(netflix|google|reddit|facebook|instagram|tiktok|twitter|spotify|youtube|iphone|android|wifi|internet|online|download\w*|stream\w*)\b/;
+        const LYRIC_FALLBACK = ['neon', 'rain', 'static', 'night', 'concrete', 'signal',
+            'headlights', 'coffee', 'window', 'phone', 'harbour', 'cold air'];
+
         function libraryLyrics(summary, seed) {
-            const words = (summary.words && summary.words.length)
-                ? summary.words.slice(0, 24)
-                : ['neon', 'rain', 'static', 'night', 'concrete', 'signal'];
+            // The words offered here are filtered the same way the ones the model is
+            // offered are, so the built-in verses cannot name a website or a product.
+            const usable = (summary.words || [])
+                .map(word => String(word || '').toLowerCase().trim())
+                .filter(word => word.length > 3 && !LYRIC_JUNK.has(word) && !LYRIC_STOP.has(word) && !BRAND_WORD.test(word));
+            const words = usable.length >= 6 ? usable.slice(0, 24) : LYRIC_FALLBACK;
             const offset = seed % words.length;
             const word = (index) => words[(index + offset) % words.length];
             const line = (text) => text.charAt(0).toUpperCase() + text.slice(1);

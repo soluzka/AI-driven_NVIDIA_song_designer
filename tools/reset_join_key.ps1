@@ -141,10 +141,16 @@ if ($NoSync) {
     Say 'telling the Workers the same GPU connect key...'
     $poolOk = Push-Secret 'GPU connect key on the pool' 'JOIN_KEY' @('--config', 'wrangler.pool.jsonc')
     $siteOk = Push-Secret 'GPU connect key on the site' 'POOL_JOIN_KEY' @()
-    if (-not ($poolOk -and $siteOk)) {
+    if ($poolOk -and $siteOk) {
         Say ''
-        Say 'One of them refused it, so a card can still be told "Wrong join key". A refusal is'
-        Say 'usually a PC not signed in to the Cloudflare account that owns the Workers.'
+        Say 'this PC, the pool and the site now hold the same GPU connect key. Nothing else can'
+        Say 'disagree with it: a card is refused only when one of the three was left behind, and'
+        Say 'running this again is what puts them back in step.'
+    } else {
+        Say ''
+        Say 'The key is written here but not on every Worker, so a card can still be refused until'
+        Say 'it is. Run this again on the PC signed in to the Cloudflare account that owns them, or'
+        Say 'set both to this key: JOIN_KEY on the pool Worker, POOL_JOIN_KEY on the site.'
     }
 }
 
@@ -188,7 +194,7 @@ if ($tunnel -notmatch '^https?://') {
         Say '  named as the model, so the header says this PC and not the pool.'
     } catch {
         Say "  not pointed: $($_.Exception.Message)"
-        Say '  the key is still written; a refusal here means the pool Worker has a different key.'
+        Say '  the key is still written on this PC; nothing on the Workers was changed by this step.'
     } }
 }
 

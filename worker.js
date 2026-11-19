@@ -209,7 +209,17 @@ function gpuKernelScript(joinKey, codeDataset, weightsDataset) {
     "CODE = '/kaggle/input/" + codeDataset.split('/')[1] + "/repo'",
     'script = os.path.join(CODE, \'public\', \'song_gpu_offline.py\')',
     'os.environ[\'SONG_JOIN_KEY\'] = ' + JSON.stringify(joinKey || ''),
-    "print('offline boot:', script, flush=True)",
+    '# cpu_offload streams a 7 GB transformer through the CPU one layer at a time, which\n'
+    + '# is what turned a warm on a 15 GB T4 into ten minutes of "warming". Only a card\n'
+    + '# that cannot hold the model needs it, so it is switched off when the card can.\n'
+    + 'try:\n'
+    + '    import torch as _torch\n'
+    + '    if _torch.cuda.is_available() and _torch.cuda.get_device_properties(0).total_memory >= 12 * 1024 ** 3:\n'
+    + "        os.environ['ACE_CPU_OFFLOAD'] = '0'\n"
+    + "        print('cpu_offload: off (the card holds the model)', flush=True)\n"
+    + 'except Exception as _exc:\n'
+    + "    print('cpu_offload: left at its default (' + str(_exc) + ')', flush=True)\n"
+    + "print('offline boot:', script, flush=True)",
     'if not os.path.isfile(script):',
     "    print('the code dataset is not mounted at', CODE, flush=True)",
     "    print('attach " + codeDataset + " and " + weightsDataset + " to this kernel', flush=True)",

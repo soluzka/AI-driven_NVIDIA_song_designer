@@ -80,8 +80,11 @@ New-Item -ItemType Directory -Force -Path $codeDir, $weightsDir | Out-Null
 Say 'copying the repository (no .git, no models, no environments) ...'
 # A bare 'models' here excludes every directory of that name at any depth, which is how
 # third_party\ACE-Step\acestep\models went missing: the packaged copy then had no
-# acestep.models, and the kernel warmed with "No module named 'acestep.models'".
-$excludeDirs = @('.git', '.venv', 'node_modules', 'build', 'song_service\models', 'tools\node', '__pycache__', 'dist')
+# acestep.models, and the kernel warmed with "No module named 'acestep.models'". The
+# weights folder is named by its full path instead - a relative one is not honoured and
+# let 12 GB of weights into the package.
+$excludeDirs = @('.git', '.venv', 'node_modules', 'build', (Join-Path $Root 'song_service\models'),
+                 (Join-Path $Root 'song_service\logs'), 'tools\node', '__pycache__', 'dist')
 $args = @($Root, $repoCopy, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:1', '/W:1',
           '/XD') + $excludeDirs + @('/XF', '*.log', '*.pyc')
 & robocopy @args | Out-Null

@@ -5168,7 +5168,10 @@
             // machine where nothing was running. Green now means something answered.
             // Green means it answered, red means it did not, amber means the answer
             // is still on its way. A chip that cannot go red is a chip that lies.
-            chip.dataset.state = 'checking';
+            // Amber means "still asking". Setting it on every poll made a machine that
+            // was ready flash orange then green every few seconds, which reads as a
+            // broken connection: the first look is the only one that needs it.
+            if (!chip.dataset.state || chip.dataset.state === 'none') chip.dataset.state = 'checking';
             let answers = false;
             let health = null;
             try {

@@ -5999,6 +5999,7 @@
             // has to be loaded again - because the placeholder carried no id and
             // so nothing could ever update it. It is an id now: every stage below
             // writes into it.
+            silenceStage(stage);
             stage.innerHTML = '<div class="gen-canvas" style="display:flex;align-items:center;justify-content:center;text-align:center;padding:20px;color:#8b9aa0;font-size:13px"><div id="songStatus">Reading the library...</div></div>';
             panel.hidden = false;
             panel.innerHTML = '';
@@ -6089,6 +6090,7 @@
                 window._lastLyricLines = lyrics.reduce((all, part) => all.concat(part.lines), []);
                 // A model song takes tens of seconds, so the player says what it is
                 // waiting for instead of looking stuck on the old picture.
+                silenceStage(stage);
                 stage.innerHTML = '<div class="gen-canvas" style="display:flex;align-items:center;justify-content:center;text-align:center;color:#8b9aa0;font-size:13px;padding:20px"><div id="songStatus">Asking the song model...</div></div>';
                 // The song can come from this machine's model service; nothing is
                 // sent to a hosted provider. The browser band stays as the
@@ -6143,6 +6145,7 @@
                 audio.autoplay = true;
                 audio.className = 'gen-audio';
                 audio.src = url;
+                silenceStage(stage);
                 stage.innerHTML = '';
                 stage.appendChild(audio);
                 // The picture starts with the first note, not after the model answers:
@@ -6254,6 +6257,7 @@
                             piece.className = 'gen-video';
                             piece.src = played;
                             wearRecordingDuration(piece);
+                            silenceStage(stage);
                             stage.innerHTML = '';
                             stage.appendChild(piece);
                             // The autoplay attribute is a request, not a promise: a browser
@@ -6548,6 +6552,7 @@
 
             stopRemixAudio();
             if (window._remixStopVisuals) { window._remixStopVisuals(); window._remixStopVisuals = null; }
+            silenceStage(stage);
             stage.innerHTML = '';
 
             const canvas = document.createElement('canvas');
@@ -6616,6 +6621,7 @@
                         video.src = savedUrl;
                         window._lastGenerated = { url: savedUrl, name: safeFileName(doc.remix.title) + '.webm' };
                     }
+                    silenceStage(stage);
                     stage.innerHTML = '';
                     stage.appendChild(video);
 
@@ -7596,6 +7602,17 @@
                 } catch (err) { /* already gone */ }
             });
             stage.querySelectorAll('iframe').forEach(el => { el.src = 'about:blank'; });
+        }
+
+        // Emptying a stage that holds a playing element does not stop it: a media element
+        // taken out of the page keeps playing its own audio, so the card disappeared and
+        // the song carried on with nothing left to pause. Every place that replaces a
+        // stage silences what is already in it first.
+        function silenceStage(stage) {
+            if (!stage) return;
+            stage.querySelectorAll('video, audio').forEach(el => {
+                try { el.pause(); } catch (err) { /* already gone */ }
+            });
         }
 
         function closePlayer(e) {

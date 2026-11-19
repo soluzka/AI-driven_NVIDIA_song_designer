@@ -291,8 +291,28 @@ async function kaggleStatus(env, auth) {
 
 async function startGpu(request, env, url) {
   const auth = kaggleAuth(env);
+  // This Worker's KV stops accepting writes once its daily allowance is gone ("KV
+  // put() limit exceeded for the day"), and that used to throw straight out of the
+  // bookkeeping below: pressing Start Kaggle answered "error code: 1101" and Kaggle
+  // was never asked to run anything. The two timestamps only feed the cooldown and
+  // the boot-window guard, so a KV that cannot store them must not stop the push.
+  const remember = async (key, value) => {
+    try {
+      await env.STATS.put(key, value);
+      return true;
+    } catch (err) {
+      return false;
+    }
+  };
+  const recall = async (key) => {
+    try {
+      return await env.STATS.get(key);
+    } catch (err) {
+      return null;
+    }
+  };
   const state = async () => ({
-    lastStart: Number(await env.STATS.get('gpu:started_at') || 0),
+    lastStart: Number(await recall('gpu:started_at') || 0),
     status: auth ? await kaggleStatus(env, auth) : null,
     configured: Boolean(auth),
   });
@@ -309,7 +329,7 @@ async function startGpu(request, env, url) {
     }, 501);
   }
 
-  const last = Number(await env.STATS.get('gpu:started_at') || 0);
+  const last = Number(await recall('gpu:started_at') || 0);
   const waited = Date.now() - last;
   if (last && waited < GPU_COOLDOWN_MS) {
     return json({
@@ -338,12 +358,12 @@ async function startGpu(request, env, url) {
     // A machine is serving: this run got as far as the pool, which is the difference
     // between a boot still running and a run that ended. Recorded so that a press after
     // it dies is allowed instead of waiting out the whole window.
-    await env.STATS.put('gpu:joined_at', String(Date.now()));
+    await remember('gpu:joined_at', String(Date.now()));
   } else {
     const ran = await kaggleStatus(env, auth);
     const began = Date.parse((ran && ran.lastRunTime) || '') || 0;
     const since = Math.max(last, Number.isFinite(began) ? began : 0);
-    const joined = Number(await env.STATS.get('gpu:joined_at') || 0);
+    const joined = Number(await recall('gpu:joined_at') || 0);
     // Joined and gone: the run ended, so the start is allowed even inside the window.
     if (since && Date.now() - since < BOOT_WINDOW_MS && !(joined >= since)) {
       const booted = Math.round((Date.now() - since) / 60000);
@@ -409,7 +429,7 @@ async function startGpu(request, env, url) {
     return json({ configured: true, started: false, error: 'Could not reach Kaggle: ' + (err && err.message) }, 502);
   }
 
-  await env.STATS.put('gpu:started_at', String(Date.now()));
+  await remember('gpu:started_at', String(Date.now()));
   return json({
     configured: true,
     started: Boolean(pushed),

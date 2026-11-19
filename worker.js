@@ -317,6 +317,32 @@ async function startGpu(request, env, url) {
     }, 429);
   }
 
+  // A push does not add a run beside the old one: Kaggle attaches the new version to the
+  // session the kernel already has, so pressing Start Kaggle during a boot is what
+  // cancels that boot. The site cannot see a run before it joins, but Kaggle's kernel
+  // carries its start time, so "started recently with an empty pool" is a boot in
+  // progress - and the pool is asked first, because a machine that is serving is not.
+  const BOOT_WINDOW_MS = 90 * 60 * 1000;
+  const living = await readPool(env);
+  if (!living.length) {
+    const ran = await kaggleStatus(env, auth);
+    const began = Date.parse((ran && ran.lastRunTime) || '') || 0;
+    const since = Math.max(last, Number.isFinite(began) ? began : 0);
+    if (since && Date.now() - since < BOOT_WINDOW_MS) {
+      const booted = Math.round((Date.now() - since) / 60000);
+      return json({
+        configured: true,
+        started: false,
+        booting: true,
+        retryInSeconds: Math.ceil((BOOT_WINDOW_MS - (Date.now() - since)) / 1000),
+        error: 'The GPU run started ' + booted + ' minutes ago and has not joined the pool yet, so it '
+          + 'is still booting. Pushing a new version would replace that session and cancel it, so '
+          + 'this refuses until ' + Math.round(BOOT_WINDOW_MS / 60000) + ' minutes have passed since '
+          + 'the run began - start one then if it never joined.',
+      }, 429);
+    }
+  }
+
   const body = {
     slug: auth.handle + '/' + GPU_SLUG,
     newTitle: 'song gpu pool',

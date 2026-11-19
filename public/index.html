@@ -4808,6 +4808,25 @@
         // The pool badge: how many machines can render a song right now, and with
         // no GPU online it is the thing to press — the wake path goes through
         // songsvc://, a per-user registration, so it never asks for administrator.
+        // A start was asked for from this site and the pool is still empty. The kernel
+        // copies the repository, unpacks the packages and pulls ~10 GB of weights before
+        // it can join, so during those minutes "0 GPUs" reads as broken when it is only
+        // early. The request time is the only clock the page has, and it never claims a
+        // card exists: it says one was asked for and has not joined yet.
+        async function poolStartingMinutes() {
+            try {
+                const answer = await fetchBounded('/api/gpu/status', { cache: 'no-store' }, 8000);
+                if (!answer.ok) return null;
+                const info = await answer.json();
+                const at = Number(info.lastStart || 0);
+                if (!at) return null;
+                const age = Date.now() - at;
+                if (age < 0 || age > 30 * 60000) return null;
+                return Math.floor(age / 60000);
+            } catch (err) {
+                return null;
+            }
+        }
         async function refreshPoolBadge() {
             const text = document.getElementById('poolText');
             const chip = document.getElementById('poolChip');
@@ -4828,7 +4847,12 @@
                 // "auto": this site finds these machines by itself. Nothing has to be
                 // pressed for a machine to appear here; the page asks the pool every
                 // minute and uses whatever answers.
-                text.textContent = (count === 1 ? 'Pool · 1 GPU' : 'Pool · ' + count + ' GPUs') + ' · auto';
+                const starting = count ? null : await poolStartingMinutes();
+                text.textContent = count
+                    ? (count === 1 ? 'Pool · 1 GPU' : 'Pool · ' + count + ' GPUs') + ' · auto'
+                    : (starting === null
+                        ? 'Pool · 0 GPUs · auto'
+                        : 'Pool · GPU starting (' + starting + ' min)');
                 // Hidden while a machine is connected, shown when none is: it is the
                 // control for an empty pool, not another piece of header furniture.
                 const startBtn = document.getElementById('startGpuBtnPanel');
@@ -4839,8 +4863,12 @@
                     chip.dataset.state = count ? 'live' : 'offline';
                     chip.title = count
                         ? 'This site connects to these by itself: ' + (info.machines || []).map(m => m.url).join(', ')
-                        : 'No machine has joined. Press to start the AI on this PC (songsvc://, no admin), '
-                          + 'or run song_gpu.ipynb on a free Colab T4 (no install, no payment).';
+                        : starting === null
+                            ? 'No machine has joined. Press to start the AI on this PC (songsvc://, no admin), '
+                              + 'or run song_gpu.ipynb on a free Colab T4 (no install, no payment).'
+                            : 'A GPU was requested ' + starting + ' min ago and has not joined yet: the kernel '
+                              + 'copies the repo, unpacks the packages and pulls about 10 GB of weights before '
+                              + 'it can load, so this stays counting until it does.';
                 }
             } catch (err) {
                 text.textContent = 'Pool · offline';
@@ -4897,10 +4925,14 @@
                 if (!answer.ok) throw new Error('pool ' + answer.status);
                 const info = await answer.json();
                 const count = Number(info.count || 0);
+                const starting = count ? null : await poolStartingMinutes();
                 line.textContent = count
                     ? count + (count === 1 ? ' machine is' : ' machines are')
                         + ' online and can render a song right now. Add another below.'
-                    : 'No machine is online right now, so nothing can render until one joins.';
+                    : starting === null
+                        ? 'No machine is online right now, so nothing can render until one joins.'
+                        : 'A GPU was requested ' + (starting ? starting + ' min ago' : 'just now')
+                            + ' and has not joined yet: it appears here, and renders, once the model has loaded.';
             } catch (err) {
                 line.textContent = 'The pool did not answer, so the live count is unknown.';
             }

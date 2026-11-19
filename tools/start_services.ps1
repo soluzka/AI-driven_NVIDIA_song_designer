@@ -343,6 +343,44 @@ $cloudflared = Join-Path $root 'tools\bin\cloudflared.exe'
 $tunnelLog = Join-Path $root 'tunnel.log'
 $siteUrl = 'https://browser.bpiersing.workers.dev'
 
+# cloudflared refuses a zero-byte config with "Configuration file ... was empty", and a
+# run that rewrites the file can leave it empty for a moment. It is checked and rewritten
+# here instead of being handed over as-is.
+function Ensure-TunnelConfig([string]$path) {
+    if ((Test-Path $path) -and ((Get-Item $path).Length -gt 0)) { return $true }
+    $text = @(
+        '# Deliberately empty apart from this comment.',
+        '#',
+        '# Quick Tunnels (trycloudflare.com) do not work when cloudflared picks up a',
+        '# config.yaml from ~/.cloudflared: that file''s ingress rules take over, the',
+        '# catch-all at the end answers 404, and nothing reaches the local service.',
+        '# Passing --config with this file keeps the quick tunnel''s own --url routing.'
+    ) -join "`n"
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path $path) | Out-Null
+        Set-Content -Path $path -Value $text -Encoding ascii
+        Say 'tunnel: quick-tunnel.yml was missing or empty, so it was written again'
+        return $true
+    } catch {
+        Say "tunnel: could not write quick-tunnel.yml ($($_.Exception.Message))"
+        return $false
+    }
+}
+
+# Does this address answer the model through Cloudflare? The page and the pool reach the
+# card through the edge, so a loopback check says yes while every visitor gets 530. An
+# address is only written down or published after this has answered.
+function Test-TunnelHealth([string]$address, [int]$Tries = 1) {
+    if (-not $address) { return $false }
+    $target = $address.TrimEnd('/') + '/health'
+    for ($t = 0; $t -lt $Tries; $t++) {
+        $code = & curl.exe -s -o NUL -w '%{http_code}' --max-time 12 $target 2>$null
+        if ("$code".Trim() -eq '200') { return $true }
+        if ($t -lt ($Tries - 1)) { Start-Sleep -Seconds 3 }
+    }
+    return $false
+}
+
 # A fresh clone has no cloudflared.exe: it is a 55 MB binary and gitignored, so
 # "clone, run, the phone works" used to need a manual download first. Fetch it
 # once, at a pinned version, and only run it if Windows calls the signature valid
@@ -414,10 +452,8 @@ if ($NoTunnel) {
     }
 
     # One address per machine. Every cloudflared on this PC points at the same model
-    # port, so a second one is the same card under a second name: the pool listed this
-    # PC twice and the page kept switching between the two, which read as the GPU
-    # changing underneath it. The newest is kept and the rest are stopped here, before
-    # anything new is started.
+    # port, so a second one is the same card under a second name, and the page read that
+    # as the GPU changing underneath it.
     $live = @(Get-Process cloudflared -ErrorAction SilentlyContinue | ForEach-Object {
             $started = $null
             try { $started = $_.StartTime } catch { $started = $null }
@@ -425,9 +461,31 @@ if ($NoTunnel) {
         } | Sort-Object Started, Id)
     # Cleared above: the one that answers next is the single tunnel started below.
     if ($prunedAll) { $live = @() }
-    if ($live.Count -gt 1) {
-        Say "tunnel: pruning old tunnels ($($live.Count) running, keeping the newest)"
-        foreach ($p in $live[0..($live.Count - 2)]) {
+
+    # The address this PC is already known by, and whether it still answers through
+    # Cloudflare. A running cloudflared is not the same thing as a working address: a name
+    # can answer 530 from the edge while its process sits there looking healthy, and that
+    # is how a dead address came to be published next to the live one. While an address
+    # answers it is reused and nothing is rotated, so restarting a service - or running
+    # this script again - never changes the name a phone or the pool is holding.
+    $recordedFile = Join-Path $root 'build\tunnel_url.txt'
+    $recorded = ''
+    if (Test-Path $recordedFile) { $recorded = ((Get-Content -Raw -Path $recordedFile) -as [string]).Trim().TrimEnd('/') }
+    $reuse = $false
+    if (-not $NewTunnel -and $recorded -and $live.Count -gt 0) { $reuse = Test-TunnelHealth $recorded 1 }
+
+    if ($reuse) {
+        # The extra cloudflared processes are left alone here on purpose: they cannot be
+        # told apart from outside, so stopping the wrong one is what a rotation would then
+        # have to repair. The address that answers is the one that is published.
+        Say "tunnel: reusing $recorded ($($live.Count) cloudflared running; nothing rotated while it answers)"
+        $tunnelUrl = $recorded
+    } else {
+        if ($NewTunnel) { Say 'tunnel: replacing the running one for a new address' }
+        # Nothing that answers: those processes are of no use, and a pile of tunnels is what
+        # makes Cloudflare refuse to route the next one. All of them go, and exactly one
+        # fresh tunnel is started in their place.
+        foreach ($p in $live) {
             try {
                 Stop-Process -Id $p.Id -Force -ErrorAction Stop
                 Say "tunnel: pruned the one running as pid $($p.Id)"
@@ -435,51 +493,36 @@ if ($NoTunnel) {
                 Say "tunnel: pid $($p.Id) belongs to another account and cannot be stopped from here"
             }
         }
-        $live = @($live[-1])
-    }
-    if ($NewTunnel) {
-        # A Quick Tunnel's name lives exactly as long as the process that opened it, so a
-        # new address is not a restart of anything else: stopping that process and opening
-        # another gives a name nobody has seen, with the model left alone. Any cloudflared
-        # is stopped, not only the one under this folder: the tunnel that is serving the
-        # model may have been started from another copy of the app, and leaving it running
-        # is exactly how the same address comes back.
-        $running = @(Get-Process cloudflared -ErrorAction SilentlyContinue)
-        if ($running.Count -gt 0) {
-            foreach ($p in $running) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
-            Start-Sleep -Seconds 2
-            Say 'tunnel: replacing the running one for a new address'
-        } else {
-            Say 'tunnel: opening a new one'
+        if ($live.Count -gt 0) { Start-Sleep -Seconds 2 }
+        $tunnelUrl = ''
+        if (Ensure-TunnelConfig (Join-Path $root 'tools\bin\quick-tunnel.yml')) {
+            Remove-Item $tunnelLog -ErrorAction SilentlyContinue
+            Start-Process -FilePath $cloudflared -WorkingDirectory $root -ArgumentList @(
+                'tunnel', '--config', 'tools\bin\quick-tunnel.yml',
+                '--url', 'http://127.0.0.1:8090', '--no-autoupdate',
+                '--logfile', 'tunnel.log', '--loglevel', 'info'
+            ) -WindowStyle Hidden | Out-Null
+            Say 'tunnel: starting'
+            # The address is read from the log this run opened, so it belongs to the
+            # process just started rather than to a tunnel that has already gone.
+            for ($t = 0; $t -lt 20; $t++) {
+                if (Test-Path $tunnelLog) {
+                    $tunnelUrl = (Select-String -Path $tunnelLog -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' |
+                        ForEach-Object { $_.Matches[0].Value } | Select-Object -Last 1)
+                    if ($tunnelUrl) { break }
+                }
+                Start-Sleep -Seconds 2
+            }
         }
-        $live = @()
-    }
-    if ($live.Count -gt 0) {
-        Say 'tunnel: already running'
-    } else {
-        Remove-Item $tunnelLog -ErrorAction SilentlyContinue
-        Start-Process -FilePath $cloudflared -WorkingDirectory $root -ArgumentList @(
-            'tunnel', '--config', 'tools\bin\quick-tunnel.yml',
-            '--url', 'http://127.0.0.1:8090', '--no-autoupdate',
-            '--logfile', 'tunnel.log', '--loglevel', 'info'
-        ) -WindowStyle Hidden | Out-Null
-        Say 'tunnel: starting'
-    }
-
-    # The address reaches the log either way: a fresh tunnel writes it as it
-    # connects, and one already up wrote it when it started.
-    $tunnelUrl = ''
-    for ($t = 0; $t -lt 20; $t++) {
-        if (Test-Path $tunnelLog) {
-            $tunnelUrl = (Select-String -Path $tunnelLog -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' |
-                ForEach-Object { $_.Matches[0].Value } | Select-Object -Last 1)
-            if ($tunnelUrl) { break }
-        }
-        Start-Sleep -Seconds 2
     }
 
     if (-not $tunnelUrl) {
         Say 'tunnel: no address yet, see tunnel.log'
+    } elseif (-not (Test-TunnelHealth $tunnelUrl 8)) {
+        # Written down and published only when it answers: a name the edge cannot route is
+        # exactly the failure this block exists to prevent, and putting it in
+        # build\tunnel_url.txt would point the page and the pool at nothing.
+        Say "tunnel: $tunnelUrl is open but does not answer through Cloudflare yet; the address on file is unchanged"
     } else {
         try { Set-Content -Path (Join-Path $root 'build\tunnel_url.txt') -Value $tunnelUrl -Encoding ascii } catch { }
         try { Set-Clipboard -Value $tunnelUrl } catch { }

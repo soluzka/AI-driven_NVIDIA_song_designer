@@ -24,7 +24,18 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# This file is also fetched raw from GitHub by reset_join_key.cmd, so it can run from
+# %TEMP% with no project around it. In that case it has to find the installed app itself.
 $root = Split-Path -Parent $PSScriptRoot
+if (-not (Test-Path (Join-Path $root 'song_service'))) {
+    foreach ($candidate in @(
+        (Join-Path $env:LOCALAPPDATA 'internet-gpu\AI-driven_NVIDIA_song_designer-main'),
+        (Join-Path $env:LOCALAPPDATA 'internet-gpu')
+    )) {
+        if (Test-Path (Join-Path $candidate 'song_service')) { $root = $candidate; break }
+    }
+}
 # Not $keyFile: PowerShell variable names are case-insensitive, so that would overwrite
 # the -KeyFile parameter with this path and make every run read the old key from disk.
 $keyPath = Join-Path $root 'build\song_endpoint.key'
@@ -33,7 +44,8 @@ $wrangler = Join-Path $root 'build\wr.ps1'
 function Say([string]$text) { Write-Host $text }
 
 if (-not (Test-Path (Join-Path $root 'song_service'))) {
-    Say "this is not the project folder: $root has no song_service"
+    Say "no installed app found (looked beside this script and in $env:LOCALAPPDATA\internet-gpu)"
+    Say 'Run join.cmd on this PC first, or run this from the project folder.'
     exit 1
 }
 
@@ -100,8 +112,21 @@ Say "written to build\song_endpoint.key ($($Key.Length) characters)"
 
 Push-Location $root
 try {
+    # The bundled wrapper is in build\wr.ps1 in a full checkout; a copy that came out of
+    # the GitHub zip has no build folder, so wrangler on PATH or npx is the fallback.
+    $tool = $null
+    if (Test-Path $wrangler) { $tool = $wrangler }
+    elseif (Get-Command wrangler -ErrorAction SilentlyContinue) { $tool = 'wrangler' }
+    elseif (Get-Command npx -ErrorAction SilentlyContinue) { $tool = 'npx' }
+    if (-not $tool) {
+        Say 'no wrangler found: install Node (npx wrangler) or run this from the project folder.'
+        Say 'the local key file has the new key; the site was not told about it.'
+        exit 1
+    }
+    $wranglerArgs = @('secret', 'put', 'SONG_ENDPOINT_KEY', '--config', 'wrangler.jsonc')
+    if ($tool -eq 'npx') { $wranglerArgs = @('wrangler') + $wranglerArgs }
     Say 'setting SONG_ENDPOINT_KEY on wrangler.jsonc ...'
-    $Key | & $wrangler secret put SONG_ENDPOINT_KEY --config wrangler.jsonc 2>&1 | ForEach-Object {
+    $Key | & $tool @wranglerArgs 2>&1 | ForEach-Object {
         if ($_ -match 'Success|success|Uploaded|created|updated') { Say '  ' + $_ }
     }
     if ($LASTEXITCODE -ne 0) {

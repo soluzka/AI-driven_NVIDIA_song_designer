@@ -4852,7 +4852,7 @@
                     ? (count === 1 ? 'Pool · 1 GPU' : 'Pool · ' + count + ' GPUs') + ' · auto'
                     : (starting === null
                         ? 'Pool · 0 GPUs · auto'
-                        : 'Pool · GPU starting (' + starting + ' min)');
+                        : 'Pool · GPU requested ' + starting + ' min ago');
                 // Hidden while a machine is connected, shown when none is: it is the
                 // control for an empty pool, not another piece of header furniture.
                 const startBtn = document.getElementById('startGpuBtnPanel');

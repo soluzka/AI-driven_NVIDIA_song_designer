@@ -148,9 +148,9 @@ def health_summary(state):
             + ' checkpoint_present=' + str(state.get('checkpoint_present')))
 
 
-def mount(name):
-    """The first mounted path that ends with this name, or ''."""
-    root = '/kaggle/input'
+def mount(name, root='/kaggle/input'):
+    """The first mounted path that ends with this name, or ''. The root is a parameter
+    so the search can be exercised against a folder that is not a Kaggle mount."""
     try:
         for entry in sorted(os.listdir(root)):
             for inner in (entry, os.path.join(entry, entry.replace('-', '_'))):
@@ -159,6 +159,24 @@ def mount(name):
                     for item in sorted(os.listdir(candidate)):
                         if item.lower() == name.lower():
                             return os.path.join(candidate, item)
+                    # A kernel source mounts a whole Output one folder deeper than a
+                    # dataset does: the weights are saved as models/ACE-Step-v1-3.5B,
+                    # so they arrive at /kaggle/input/<kernel-slug>/models/<name>.
+                    try:
+                        subs = sorted(os.listdir(candidate))
+                    except OSError:
+                        subs = []
+                    for sub in subs:
+                        deeper = os.path.join(candidate, sub)
+                        if not os.path.isdir(deeper):
+                            continue
+                        try:
+                            inner_files = sorted(os.listdir(deeper))
+                        except OSError:
+                            continue
+                        for item in inner_files:
+                            if item.lower() == name.lower():
+                                return os.path.join(deeper, item)
     except OSError:
         pass
     direct = os.path.join(root, name)

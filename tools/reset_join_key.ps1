@@ -214,6 +214,30 @@ function Renew-Tunnel {
     # until the new address answers: a rotation that stops the old one first is a
     # disconnection, not a change of address, and the model stops being reachable while
     # the new one comes up.
+    # A cap of five. Every rotation leaves its own cloudflared behind, and a pile of them
+    # is what makes Cloudflare refuse to route a new address at all - the new tunnel opens,
+    # registers, and then answers 530 from the edge. So before opening anything, old
+    # tunnels are pruned: the five newest are kept, the older ones are stopped, and the run
+    # says what it is doing instead of silently leaving them running.
+    $keep = 5
+    $running = @(Get-Process cloudflared -ErrorAction SilentlyContinue | ForEach-Object {
+            $started = $null
+            try { $started = $_.StartTime } catch { $started = $null }
+            [pscustomobject]@{ Id = $_.Id; Started = $started }
+        } | Sort-Object Started, Id)
+    if ($running.Count -ge $keep) {
+        $prune = $running.Count - $keep + 1
+        Say "  pruning old tunnels ($($running.Count) running, $prune to stop so a new one can start)..."
+        foreach ($p in ($running | Select-Object -First $prune)) {
+            try {
+                Stop-Process -Id $p.Id -Force -ErrorAction Stop
+                Say "  pruned the tunnel running as pid $($p.Id)"
+            } catch {
+                Say "  pid $($p.Id) runs under another account and cannot be stopped from here"
+            }
+        }
+    }
+
     $oldIds = @(Get-Process cloudflared -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
     Say '  opening a second tunnel beside the one that is serving...'
     Remove-Item $log -ErrorAction SilentlyContinue

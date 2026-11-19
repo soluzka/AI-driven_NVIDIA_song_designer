@@ -354,24 +354,34 @@ async function startGpu(request, env, url) {
   // progress - and the pool is asked first, because a machine that is serving is not.
   const BOOT_WINDOW_MS = 90 * 60 * 1000;
   const living = await readPool(env);
+  // The guard can only speak if its join time can be stored. With KV refusing writes
+  // (its daily allowance gone) every run looks like a boot that never joined, and a
+  // press was refused for the whole ninety minutes on nothing: a run that died at
+  // minute two was treated as a boot in progress. So the window is enforced only when
+  // a write actually lands; otherwise the push is allowed and the answer says the
+  // guard was off.
+  let guard = 'enforced';
   if (living.length) {
     // A machine is serving: this run got as far as the pool, which is the difference
     // between a boot still running and a run that ended. Recorded so that a press after
     // it dies is allowed instead of waiting out the whole window.
-    await remember('gpu:joined_at', String(Date.now()));
+    if (!(await remember('gpu:joined_at', String(Date.now())))) guard = 'off (KV refused a write)';
   } else {
     const ran = await kaggleStatus(env, auth);
     const began = Date.parse((ran && ran.lastRunTime) || '') || 0;
     const since = Math.max(last, Number.isFinite(began) ? began : 0);
     const joined = Number(await recall('gpu:joined_at') || 0);
+    const storable = await remember('gpu:guard_at', String(Date.now()));
+    if (!storable) guard = 'off (KV refused a write)';
     // Joined and gone: the run ended, so the start is allowed even inside the window.
-    if (since && Date.now() - since < BOOT_WINDOW_MS && !(joined >= since)) {
+    if (storable && since && Date.now() - since < BOOT_WINDOW_MS && !(joined >= since)) {
       const booted = Math.round((Date.now() - since) / 60000);
       return json({
         configured: true,
         started: false,
         booting: true,
         retryInSeconds: Math.ceil((BOOT_WINDOW_MS - (Date.now() - since)) / 1000),
+        guard,
         error: 'The GPU run started ' + booted + ' minutes ago and has not joined the pool yet, so it '
           + 'is still booting. Pushing a new version would replace that session and cancel it, so '
           + 'this refuses until ' + Math.round(BOOT_WINDOW_MS / 60000) + ' minutes have passed since '
@@ -433,6 +443,7 @@ async function startGpu(request, env, url) {
   return json({
     configured: true,
     started: Boolean(pushed),
+    guard,
     note: 'The GPU boots, runs the song service, opens a tunnel and joins the pool. It shows up here '
       + 'when it reports the model loaded, which takes a few minutes on a fresh machine.',
     said,

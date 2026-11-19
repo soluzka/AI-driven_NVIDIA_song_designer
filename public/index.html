@@ -3781,8 +3781,12 @@
             const seconds = SONG_SECONDS;
             // 24 steps rather than 16: the render measures about a second a step
             // here, so the detail is affordable and the layers land more cleanly.
-            // With a phrase recorded, these same lyrics are sung in that voice.
-            const voiced = !!(fit && fit.result);
+            // Never the voice job. A phrase recorded once used to turn every later song
+            // into a request to the voice service, so Song designer sent its lyrics off
+            // to a path the person had not chosen - and when that service was not up the
+            // card stalled and the answer read as a failure. The fitted voice belongs to
+            // the Fit voice panel's own "Sing the lyrics" button, not to this one.
+            const voiced = false;
             const voiceClip = voiced ? fitWav(fit.result) : null;
             const payload = {
                 prompt: modelPrompt(summary, seed),
@@ -6133,7 +6137,7 @@
                     : `Built from ${summary.label}. `) +
                     `Rendered and mastered in ${took}s by ${origin}. Lyrics ${lyricSource}.`
                         + ` Every network load counted: ${loads.join(', ')}.`
-                        + (fit && fit.result ? ' These lyrics are sung by the model, fitted to your measured pitch and tone.' : '')
+
                         + (window._modelNote ? ` ${window._modelNote}.` : '')
                         + (modelError ? ` (model unavailable: ${explainModelError(modelError)})` : '');
 
@@ -6407,8 +6411,10 @@
                     // already carries it; also laying the recording over the track put an
                     // unchanged copy of it behind the sung voice, which is what made the
                     // finished song sound like the recording was part of the backing.
-                    const withVoice = !!(fit && fit.result);
-                    fit.mixUrl = source;
+                    // Same rule as the request: this song was not made with the fitted
+                    // voice, so it is not labelled with it and the fit panel is not
+                    // pointed at it.
+                    const withVoice = false;
                     audio.src = source;
                     audio.autoplay = true;
                     head.textContent = head.textContent.replace(' · seed', (withVoice ? ' · with your voice · seed' : ' · sung by the model · seed'));

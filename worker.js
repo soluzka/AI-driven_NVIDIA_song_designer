@@ -508,8 +508,11 @@ async function readPool(env) {
     ? baseList.concat(pool.filter((entry) => !baseList.some((known) => known.url === entry.url)))
     : pool;
   // The card that joined last is the one this site connects to: starting a new GPU is a
-  // request to use it, not to share the work with the one left running overnight.
-  merged.sort((a, b) => (b.joined || b.seen || 0) - (a.joined || a.seen || 0));
+  // request to use it, not to share the work with the one left running overnight. Only a
+  // real join time counts - an address that merely re-published itself to this Worker's KV
+  // (every couple of minutes, by design) used to outrank the pool and put a dead tunnel
+  // first, which is what made both cards look offline.
+  merged.sort((a, b) => Number(b.joined || 0) - Number(a.joined || 0));
   lastPoolSource = baseList ? 'pool+kv' : (remote ? 'kv-fallback ' + remote + ' ' + remoteNote : 'kv');
   return livePool(merged);
 }
@@ -568,6 +571,11 @@ async function poolAnswers(address) {
   return (await poolVerdict(address)) === 'alive';
 }
 
+// When each machine was last seen alive in this isolate, so one bad probe is forgiven
+// only for a card that was working a minute ago.
+const poolLastOk = new Map();
+const POOL_ALIVE_MS = 2 * 60 * 1000;
+
 async function livePool(list) {
   if (!Array.isArray(list) || !list.length) return [];
   const key = list.map((entry) => entry.url).join(' ');
@@ -576,7 +584,14 @@ async function livePool(list) {
   }
   const verdicts = await Promise.all(
     list.map(async (entry) => ({ entry, alive: await poolAlive(entry.url) })));
-  const live = verdicts.filter((item) => item.alive).map((item) => item.entry);
+  // The grace belongs to a card that was serving a moment ago. A dead address nobody saw
+  // answer - a leftover test entry, a tunnel that closed hours ago - used to be kept for
+  // one poll in every fresh isolate, which put it back at the top of the list each time.
+  const live = verdicts.filter((item) => {
+    if (item.alive) { poolLastOk.set(item.entry.url, Date.now()); return true; }
+    const last = poolLastOk.get(item.entry.url) || Number(item.entry.seen || 0);
+    return Date.now() - last < POOL_ALIVE_MS;
+  }).map((item) => item.entry);
   poolProbeCache = { at: Date.now(), key, live };
   return live;
 }

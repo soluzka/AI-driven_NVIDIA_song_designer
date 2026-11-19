@@ -263,6 +263,7 @@
             color: var(--text-dim);
             white-space: nowrap;
         }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.95em; }
         .model-base-label { font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.7; }
         /* The whole address, wrapped instead of cut: a tunnel shortened to
            "https://stories-generator-niko…" cannot be copied or checked against the
@@ -1131,6 +1132,24 @@
                     GPU and sends the song there, so a visitor connects to whichever card is in the pool
                     — the one that joined last first, and the other if that one stops answering — with
                     nothing to paste. The key decides who may <em>add</em> a card, not who may use one.
+                    <br><br>
+                    <strong>Where the model itself runs</strong> — never on this site, always on a card:
+                    <br>
+                    • <strong>This PC, Windows with an NVIDIA card</strong>: <strong>Start the AI</strong>
+                    installs it and runs it here on 127.0.0.1:8090. Private to this computer until it
+                    joins the pool, which needs the join key.<br>
+                    • <strong>A Linux box or server with an NVIDIA card</strong>: the same notebook cell
+                    runs there, or install <span class="mono">song_service/requirements.txt</span> and run
+                    <span class="mono">app.py --role song</span>; a tunnel is what makes it reachable.<br>
+                    • <strong>Kaggle</strong>: <strong>Start Kaggle</strong> uses the pool owner's Kaggle
+                    account, so it starts a card of theirs — not one under your name.<br>
+                    • <strong>Colab</strong>: any Google account can open the notebook and press Run all on
+                    a free T4; without <strong>SONG_JOIN_KEY</strong> the card stays private and prints an
+                    address, with it the card joins this pool.<br>
+                    • <strong>A Mac, or a PC without an NVIDIA card</strong>: the service starts on the CPU
+                    and does work, but one song takes many minutes — not recommended.<br>
+                    • <strong>Phone or tablet</strong>: nothing to install; use this page, which is what the
+                    pool is for.
                     <br><br>
                     <strong>Start Kaggle</strong> — this card is shared instead: it runs here for
                     everybody and joins this pool, so it needs a Kaggle account. Kaggle caps a session

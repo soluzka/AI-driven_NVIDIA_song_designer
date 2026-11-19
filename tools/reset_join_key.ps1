@@ -242,16 +242,18 @@ if ($NoSync) {
 # This names this machine as the model. It is not a pool join: nothing is added to the
 # list of GPUs that take work, which is the pool badge's business, not the header's.
 $tunnelPath = Join-Path $App 'build\tunnel_url.txt'
-$tunnel = ''
-# An address typed here wins over the tunnel this PC last wrote: it is the one the person
-# chose, and the one they expect the page to name.
+# An address typed here wins over the tunnel this PC last wrote - it is the one the person
+# chose. But a tunnel name dies when its session ends, and the app writes a new one when it
+# starts again, so a typed address that no longer answers is stepped over for the one the
+# app recorded: naming a dead host is worse than naming the live one beside it.
+$candidates = @()
 foreach ($candidate in @($typedUrlPath, $tunnelPath)) {
-    if ($tunnel) { break }
-    if (Test-Path $candidate) {
-        $tunnel = ((Get-Content -Raw -Path $candidate) -as [string]).Trim().TrimEnd('/')
-    }
+    if (-not (Test-Path $candidate)) { continue }
+    $v = ((Get-Content -Raw -Path $candidate) -as [string]).Trim().TrimEnd('/')
+    if ($v -match '^https?://' -and ($candidates -notcontains $v)) { $candidates += $v }
 }
-if ($tunnel -notmatch '^https?://') {
+$tunnel = ''
+if (-not $candidates.Count) {
     Say ''
     Say 'the header was not pointed at this PC: no tunnel address yet (build\tunnel_url.txt).'
     Say 'start the model once, then run this again.'
@@ -261,17 +263,20 @@ if ($tunnel -notmatch '^https?://') {
     # Only an address that answers is worth naming: build\tunnel_url.txt keeps the last
     # tunnel the app opened, and one left over from a session that ended resolves to
     # nothing. Nagging the header with it is worse than leaving it on the pool.
-    $alive = $false
-    try {
-        $probe = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($tunnel + '/health') -TimeoutSec 6
-        $alive = ($probe.StatusCode -eq 200)
-    } catch { $alive = $false }
-    if (-not $alive) {
-        Say '  not pointed: that address did not answer, so the header keeps whatever it uses now.'
-        Say '  the key was still written.'
-        $tunnel = ''
+    foreach ($c in $candidates) {
+        $alive = $false
+        try {
+            $probe = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($c + '/health') -TimeoutSec 6
+            $alive = ($probe.StatusCode -eq 200)
+        } catch { $alive = $false }
+        if ($alive) { $tunnel = $c; break }
+        Say "  $c did not answer, so it is not named."
     }
-        if ($tunnel) {
+    if (-not $tunnel) {
+        Say '  not pointed: none of those addresses answered, so the header keeps what it uses now.'
+        Say '  the key was still written.'
+    }
+    if ($tunnel) {
         function Name-ThisPc([string]$address) {
             try {
                 Invoke-RestMethod -Method Post `

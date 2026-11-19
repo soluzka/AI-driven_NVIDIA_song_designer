@@ -398,14 +398,19 @@ if ($Start) {
 # to nothing, and naming it leaves every device with a model that cannot render.
 if ($Start) {
     $tunnelFile = Join-Path $buildDir 'tunnel_url.txt'
+    $typedFile = Join-Path $buildDir 'model_endpoint_url.txt'
     $keyFile = Join-Path $buildDir 'song_endpoint.key'
-    $mine = ''
-    for ($i = 0; $i -lt 12 -and -not $mine; $i++) {
-        if (Test-Path $tunnelFile) { $mine = ((Get-Content $tunnelFile -Raw) -as [string]).Trim() }
-        if (-not $mine) { Start-Sleep -Seconds 5 }
+    $candidates = @()
+    for ($i = 0; $i -lt 12 -and -not $candidates.Count; $i++) {
+        foreach ($file in @($typedFile, $tunnelFile)) {
+            if (-not (Test-Path $file)) { continue }
+            $v = ((Get-Content -Raw -Path $file) -as [string]).Trim().TrimEnd('/')
+            if ($v -match '^https?://' -and ($candidates -notcontains $v)) { $candidates += $v }
+        }
+        if (-not $candidates.Count) { Start-Sleep -Seconds 5 }
     }
     Say ''
-    if (-not $mine) {
+    if (-not $candidates.Count) {
         Say 'the header was not pointed at this PC: the tunnel has not written its address yet'
         Say '(build\tunnel_url.txt). Start the model once, then run reset_join_key.cmd.'
     } elseif (-not (Test-Path $keyFile)) {
@@ -413,13 +418,21 @@ if ($Start) {
         Say 'address needs one. Run reset_join_key.cmd with the key.'
     } else {
         Say 'pointing the site at this PC for "AI ready - this PC"...'
-        $alive = $false
-        try {
-            $probe = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($mine + '/health') -TimeoutSec 8
-            $alive = ($probe.StatusCode -eq 200)
-        } catch { $alive = $false }
-        if (-not $alive) {
-            Say "  not pointed: $mine did not answer, so the header keeps what it uses now."
+        # An address typed by hand wins, but one that no longer answers is stepped over for
+        # the tunnel the app recorded: a name dies with its session, and naming a dead host
+        # leaves every device with a model that cannot render.
+        $mine = ''
+        foreach ($c in $candidates) {
+            $alive = $false
+            try {
+                $probe = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($c + '/health') -TimeoutSec 8
+                $alive = ($probe.StatusCode -eq 200)
+            } catch { $alive = $false }
+            if ($alive) { $mine = $c; break }
+            Say "  $c did not answer, so it is not named."
+        }
+        if (-not $mine) {
+            Say '  not pointed: none of those addresses answered, so the header keeps what it uses now.'
         } else {
             try {
                 $held = ((Get-Content $keyFile -Raw) -as [string]).Trim()

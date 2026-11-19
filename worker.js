@@ -618,8 +618,19 @@ async function livePool(list) {
 }
 
 async function writePool(env, pool) {
-  await env.STATS.put(POOL_KEY, JSON.stringify(pool.slice(0, POOL_LIMIT)));
-  if (pool.length) await env.STATS.put('song_api', pool[0].url);
+  // KV has a daily write allowance, and this namespace has hit it. A failed put used
+  // to throw straight out of the POST that announces a machine, so a boot that had
+  // already joined the pool Worker logged "could not join browser.bpiersing.workers.dev
+  // HTTP Error 500" even though nothing was wrong with it. The pool base is the list
+  // that matters; this says whether this Worker's own copy was saved, and never
+  // fails the request over it.
+  try {
+    await env.STATS.put(POOL_KEY, JSON.stringify(pool.slice(0, POOL_LIMIT)));
+    if (pool.length) await env.STATS.put('song_api', pool[0].url);
+    return true;
+  } catch (err) {
+    return false;
+  }
 }
 
 // --- is that address actually alive? ----------------------------------------
@@ -706,8 +717,8 @@ async function songEndpoint(request, env) {
     const remove = String((body && body.remove) || '').trim().replace(/\/+$/, '');
     if (remove) {
       pool = pool.filter((entry) => entry.url !== remove);
-      await writePool(env, pool);
-      return json({ ok: true, removed: remove, pool: pool.map((entry) => entry.url) });
+      const saved = await writePool(env, pool);
+      return json({ ok: true, removed: remove, saved, pool: pool.map((entry) => entry.url) });
     }
     if (!value) {
       return json({ ok: true, url: '', pool: pool.map((entry) => entry.url) });
@@ -716,7 +727,10 @@ async function songEndpoint(request, env) {
     const known = pool.find((entry) => entry.url === value);
     if (known) known.seen = now;
     else pool.unshift({ url: value, seen: now });
-    await writePool(env, pool);
+    // saved: false means this Worker's KV copy was not written (usually its daily
+    // allowance). The forward below still goes out, so the machine is in the pool the
+    // site actually reads, and the answer says what happened instead of throwing.
+    const saved = await writePool(env, pool);
     // When the pool lives on its own base, the machine belongs there too: this
     // Worker forwards the announcement so both lists agree, and neither the site
     // nor the pool has to be redeployed for the other to keep working.
@@ -727,7 +741,7 @@ async function songEndpoint(request, env) {
         body: JSON.stringify({ url: value }),
       });
     } catch (err) {}
-    return json({ ok: true, url: value, pool: pool.map((entry) => entry.url) });
+    return json({ ok: true, url: value, saved, pool: pool.map((entry) => entry.url) });
   }
 
   const pool = await readPool(env);

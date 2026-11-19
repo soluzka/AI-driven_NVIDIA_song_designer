@@ -413,10 +413,30 @@ if ($NoTunnel) {
         $prunedAll = $true
     }
 
-    $live = @(Get-Process cloudflared -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -eq $cloudflared })
+    # One address per machine. Every cloudflared on this PC points at the same model
+    # port, so a second one is the same card under a second name: the pool listed this
+    # PC twice and the page kept switching between the two, which read as the GPU
+    # changing underneath it. The newest is kept and the rest are stopped here, before
+    # anything new is started.
+    $live = @(Get-Process cloudflared -ErrorAction SilentlyContinue | ForEach-Object {
+            $started = $null
+            try { $started = $_.StartTime } catch { $started = $null }
+            [pscustomobject]@{ Id = $_.Id; Started = $started }
+        } | Sort-Object Started, Id)
     # Cleared above: the one that answers next is the single tunnel started below.
     if ($prunedAll) { $live = @() }
+    if ($live.Count -gt 1) {
+        Say "tunnel: pruning old tunnels ($($live.Count) running, keeping the newest)"
+        foreach ($p in $live[0..($live.Count - 2)]) {
+            try {
+                Stop-Process -Id $p.Id -Force -ErrorAction Stop
+                Say "tunnel: pruned the one running as pid $($p.Id)"
+            } catch {
+                Say "tunnel: pid $($p.Id) belongs to another account and cannot be stopped from here"
+            }
+        }
+        $live = @($live[-1])
+    }
     if ($NewTunnel) {
         # A Quick Tunnel's name lives exactly as long as the process that opened it, so a
         # new address is not a restart of anything else: stopping that process and opening

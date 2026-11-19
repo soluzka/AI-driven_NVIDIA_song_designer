@@ -5597,7 +5597,14 @@
                         if (first) {
                             const probe = await fetchBounded(first + '/health', {}, 12000).catch(() => null);
                             const body = probe && probe.ok ? await probe.json().catch(() => null) : null;
-                            if (body && body.loaded === true) window.remoteSongApi = first;
+                            // Loaded, or warmed and then released so the lyric model could
+                            // take an 8 GB card: that card still renders on request, and
+                            // skipping it left the page with no address while the machine
+                            // was answering.
+                            if (body && (body.loaded === true
+                                || (body.warm_done === true && body.warming !== true))) {
+                                window.remoteSongApi = first;
+                            }
                         }
                     }
                 } catch (err) {}
@@ -5717,7 +5724,13 @@
             // service replies within seconds while ACE-Step is still being loaded
             // onto the card, and calling that "AI ready" is what made a restart
             // look broken: the badge was green and a song still waited minutes.
-            const loaded = info.loaded === true;
+            // The 8 GB card holds one model, so the song model is released whenever the
+            // lyric model takes it: loaded: false with warm_done: true is a card that
+            // loads the song model for the next job, not one that is warming up. Reading
+            // it as a warm-up is what made the header say "AI not connected yet · warming"
+            // and the address button sit amber while the model endpoint was green.
+            const loaded = info.loaded === true
+                || (info.warm_done === true && info.warming !== true);
             // The service says how long its warm has been running, so the badge can
             // count instead of leaving someone wondering whether it is stuck.
             const warmSeconds = Number(info.warming_seconds || 0);

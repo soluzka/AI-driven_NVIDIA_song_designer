@@ -1190,10 +1190,18 @@ has only the kernel's own Output and, if the kernel has a network, Hugging Face.
    build\kaggle.json` or `git add -A` with it present; if it was ever committed,
    revoke the token at Kaggle, create a new one, and treat the old key as burnt.
 
-**Limits worth knowing:** one start per thirty minutes (the cooldown lives in KV
-as `gpu:started_at`), the weekly GPU allowance is Kaggle's, the kernel is private
-to your account, and a started card ends when its kernel session ends. The pool
-entry disappears with it, and the header goes back to `Start a GPU`.
+**Limits worth knowing:** one start per thirty minutes (the cooldown is the
+`gpu:started_at` timestamp, kept in the **pool** Worker's KV at `/state/gpu:started_at`
+because the site's own KV runs out of daily writes and every GPU request failed once it
+did), the weekly GPU allowance is Kaggle's, the kernel is private to your account, and a
+started card ends when its kernel session ends. The pool entry disappears with it, and
+the header goes back to `Start a GPU`.
+
+```bash
+curl -s https://song-pool.bpiersing.workers.dev/state/gpu:started_at   # {"key":…,"value":"…"}
+```
+
+Reads are open; a write needs `x-join-key`, which only the site Worker sends.
 
 A token that starts with `KGAT` is a bearer token, not a username-and-key pair;
 the Worker sends it as `Authorization: Bearer`, and only falls back to basic auth

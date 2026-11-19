@@ -6141,7 +6141,10 @@
                             const piece = document.createElement('video');
                             piece.controls = true;
                             piece.autoplay = true;
-                            piece.loop = true;
+                            // Not looping: a song that starts over by itself reads as the
+                            // audio being cut and the track restarting. It plays once and
+                            // stops at the end, like the audio bar it replaced.
+                            piece.loop = false;
                             piece.playsInline = true;
                             piece.className = 'gen-video';
                             piece.src = played;
@@ -6155,10 +6158,10 @@
                             const started = piece.play();
                             if (started && started.catch) {
                                 started.catch(() => {
-                                    piece.muted = true;
-                                    piece.play().catch(() => {});
+                                    // Never muted: silence is the very thing that was wrong.
+                                    // The controls are there, so it says what to press.
                                     if (window.showToast) {
-                                        showToast('info', 'Video ready', 'press play or unmute the video to hear it');
+                                        showToast('info', 'Video ready', 'press play on the video to hear it');
                                     }
                                 });
                             }
@@ -6496,7 +6499,7 @@
                     const video = document.createElement('video');
                     video.controls = true;
                     video.autoplay = true;
-                    video.loop = true;
+                    video.loop = false;
                     video.playsInline = true;
                     video.className = 'gen-video';
                     let savedUrl = null;

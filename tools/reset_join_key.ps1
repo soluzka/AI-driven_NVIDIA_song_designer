@@ -4,12 +4,14 @@
 #   reset_join_key.cmd -Key "abc..."   set it in one line
 #   reset_join_key.cmd -Url "https://host"   name that address as the model instead
 #   reset_join_key.cmd -KeepUrl        keep the address this PC already has
+#   reset_join_key.cmd -NewUrl         force a new address even if the old one answers
 #   reset_join_key.cmd -Show           print the key this PC holds now
 #   reset_join_key.cmd -DryRun         show it, change nothing
 #
-# Every run also opens a new tunnel, so the address the site names is a new one each
-# time: a Quick Tunnel's name lives only as long as the process that opened it, which is
-# why the same address used to come back forever. -KeepUrl skips that.
+# The address changes when the one this PC has stops answering: a working tunnel is kept,
+# and a dead one is replaced by a new tunnel opened beside it, which is closed only after
+# the new address answers. -NewUrl forces that a new address is made anyway; -KeepUrl
+# leaves even a dead one alone.
 #
 # The key is written where join.cmd and the launcher already read it -
 # <app>\build\song_endpoint.key - and then handed to the two Workers, but only on a PC
@@ -32,7 +34,8 @@ param(
     [switch]$DryRun,
     [switch]$NoSync,
     [switch]$KeepUrl,
-    [switch]$PointOnly
+    [switch]$PointOnly,
+    [switch]$NewUrl
 )
 
 $ErrorActionPreference = 'Stop'
@@ -227,10 +230,46 @@ $canSync = -not $NoSync -and (Ensure-Wrangler)
 # every run used to keep the address from whenever the model started. Stopping that one
 # process and opening another gives a name nobody has seen, in seconds, with the model,
 # its warmed-up weights and the other services untouched. -KeepUrl leaves it alone.
+function Find-LiveAddress {
+    # Every address this PC has recorded, newest first, plus the last address in each tunnel
+    # log. A tunnel that is running but was never written down still printed its name.
+    $list = @()
+    foreach ($f in @($tunnelPath, $typedUrlPath)) {
+        if (-not (Test-Path $f)) { continue }
+        $v = ((Get-Content -Raw -Path $f) -as [string]).Trim().TrimEnd('/')
+        if ($v -match '^https?://' -and ($list -notcontains $v)) { $list += $v }
+    }
+    foreach ($logFile in @(Get-ChildItem -Path (Join-Path $App 'build') -Filter 'tunnel*.log' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 6)) {
+        $found = (Select-String -Path $logFile.FullName -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.Matches[0].Value } | Select-Object -Last 1)
+        if ($found -and ($list -notcontains $found)) { $list += $found }
+    }
+    foreach ($u in $list) {
+        try {
+            if ((Invoke-WebRequest -UseBasicParsing -Uri ($u + '/health') -TimeoutSec 8).StatusCode -eq 200) { return $u }
+        } catch { }
+    }
+    return ''
+}
+
 function Renew-Tunnel {
     $cf = Join-Path $App 'tools\bin\cloudflared.exe'
     $cfg = Join-Path $App 'tools\bin\quick-tunnel.yml'
-    $log = Join-Path $App 'build\tunnel-new.log'
+    # A log of its own for every rotation, named by the minute: a shared one holds the
+    # addresses of tunnels that have already gone, and reading the last line of it named
+    # an older address that no longer answered.
+    $log = Join-Path $App ('build\tunnel-{0}.log' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    # A working tunnel is kept. Opening a new one on every run was making a stream of
+    # throwaway tunnels, and Cloudflare stops serving new quick tunnels when they come
+    # that fast - the new address then never answers and nothing gets pointed anywhere.
+    # A new address is opened only when the one this PC has is gone, or with -NewUrl.
+    $live = Find-LiveAddress
+    if ($live -and -not $NewUrl) {
+        Say "  the address this PC has still answers, so it is kept: $live"
+        $script:previousTunnel = $live
+        return $live
+    }
     if (-not (Test-Path $cf)) {
         Say '  there is no cloudflared on this PC, so the address stays as it is'
         return ''
@@ -243,13 +282,25 @@ function Renew-Tunnel {
     $oldIds = @(Get-Process cloudflared -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
     Say '  opening a second tunnel beside the one that is serving...'
     Remove-Item $log -ErrorAction SilentlyContinue
-    # Start-Process, not a child of this window: a tunnel that is a child of this console
-    # stops the moment the window closes, which is how an address appears and then dies.
+    # What this PC was using, so the pool can be told exactly which card to drop once the
+    # new address is in. Probing the old one is not enough: a tunnel that was left running
+    # elsewhere keeps answering, and its card would stay in the pool forever.
+    $script:previousTunnel = ''
+    foreach ($f in @((Join-Path $App 'build\tunnel_url.txt'))) {
+        if (Test-Path $f) { $script:previousTunnel = ((Get-Content -Raw -Path $f) -as [string]).Trim() }
+    }
+    # Started through WMI, so its parent is the WMI service and not this window: a tunnel
+    # started by the window or by this script stops when either closes, which is exactly
+    # how a new address appears and then goes dead. This one outlives both.
+    $cmdline = 'pushd "{0}" && "{1}" tunnel --config "{2}" --url http://127.0.0.1:8090 --no-autoupdate --logfile "{3}" --loglevel info' -f $App, $cf, $cfg, $log
     try {
-        Start-Process -FilePath $cf -WorkingDirectory $App -WindowStyle Hidden -ArgumentList @(
-            'tunnel', '--config', $cfg, '--url', 'http://127.0.0.1:8090',
-            '--no-autoupdate', '--logfile', $log, '--loglevel', 'info'
-        ) -PassThru | Out-Null
+        $made = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+            CommandLine = "cmd /c $cmdline"
+        }
+        if ($made.ReturnValue -ne 0) {
+            Say "  cloudflared did not start (code $($made.ReturnValue))"
+            return ''
+        }
     } catch {
         Say "  cloudflared did not start: $($_.Exception.Message)"
         return ''
@@ -281,7 +332,8 @@ function Renew-Tunnel {
     }
 
     # Only now: the new one answers, so the old ones can go without anybody noticing.
-    Say "  new address: $new (the old one answers until it is closed)"
+    Say "  new address: $new"
+    Say '  the old tunnel is closed below, and its card is taken out of the pool either way'
     $closed = 0
     foreach ($id in $oldIds) {
         try { Stop-Process -Id $id -Force -ErrorAction Stop; $closed++ } catch { }
@@ -369,6 +421,15 @@ foreach ($candidate in @($typedUrlPath, $tunnelPath)) {
     $v = ((Get-Content -Raw -Path $candidate) -as [string]).Trim().TrimEnd('/')
     if ($v -match '^https?://' -and ($candidates -notcontains $v)) { $candidates += $v }
 }
+# A tunnel that is running but whose address was never written down still printed it in
+# its log. Without this the site can be left on an address that no longer answers while a
+# working one sits on the same machine.
+foreach ($logFile in @(Get-ChildItem -Path (Join-Path $App 'build') -Filter 'tunnel*.log' -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 4)) {
+    $found = (Select-String -Path $logFile.FullName -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.Matches[0].Value } | Select-Object -Last 1)
+    if ($found -and ($candidates -notcontains $found)) { $candidates += $found }
+}
 $tunnel = ''
 if (-not $candidates.Count) {
     Say ''
@@ -439,11 +500,48 @@ if (-not $candidates.Count) {
             # worse than one stale card for a few minutes. A card that does answer is never
             # touched - that is this PC's own GPU as much as the notebook's.
             $poolRoot = 'https://song-pool.bpiersing.workers.dev'
+            # The machine's own id, made once and kept: the pool has no other way to tell
+            # that three cards with three addresses are one PC.
+            $idFile = Join-Path $App 'build\machine_id.txt'
+            $machineId = ''
+            if (Test-Path $idFile) { $machineId = ((Get-Content -Raw -Path $idFile) -as [string]).Trim() }
+            if (-not $machineId) {
+                $machineId = [guid]::NewGuid().ToString('N')
+                try { Set-Content -Path $idFile -Value $machineId -Encoding ascii -NoNewline } catch { }
+            }
             try {
                 Invoke-RestMethod -Method Post -Uri ($poolRoot + '/join') `
                     -Headers @{ 'x-join-key' = $Key } -ContentType 'application/json' `
-                    -Body (@{ url = $tunnel } | ConvertTo-Json -Compress) -TimeoutSec 25 | Out-Null
+                    -Body (@{ url = $tunnel; note = $machineId } | ConvertTo-Json -Compress) -TimeoutSec 25 | Out-Null
                 Say '  in the pool: this address is one of the GPUs the site can send to'
+                # The address this PC replaced is dropped by name, not by waiting for it to
+                # stop answering: a tunnel left running on another account keeps answering,
+                # and its card would otherwise sit in the pool beside the new one for a week.
+                # One machine, one card. Every card carries the id of the machine that put
+                # it there, so the cards of this PC are exactly the ones with this id: each
+                # of them that is not the chosen address is taken out. Waiting for an old
+                # address to stop answering is not enough - a tunnel left running keeps
+                # answering for hours, and the pool would list the same PC three times with
+                # only one of them current. The notebook's card has its own id or none, so
+                # it is never touched.
+                $dropped = 0
+                try {
+                    $now = Invoke-RestMethod -Uri ($poolRoot + '/pool') -TimeoutSec 25
+                    foreach ($m in @($now.machines)) {
+                        $u = [string]$m.url
+                        $note = [string]$m.note
+                        if (-not $u -or $u -eq $tunnel) { continue }
+                        if ($note -ne $machineId) { continue }
+                        try {
+                            Invoke-RestMethod -Method Post -Uri ($poolRoot + '/remove') `
+                                -Headers @{ 'x-join-key' = $Key } -ContentType 'application/json' `
+                                -Body (@{ url = $u } | ConvertTo-Json -Compress) -TimeoutSec 20 | Out-Null
+                            Say "  out of the pool: $u (an address this PC no longer uses)"
+                            $dropped++
+                        } catch { }
+                    }
+                } catch { }
+                if (-not $dropped) { Say '  the pool had no other address of this PC to drop' }
                 $pool = Invoke-RestMethod -Uri ($poolRoot + '/pool') -TimeoutSec 25
                 foreach ($m in @($pool.machines)) {
                     $old = [string]$m.url

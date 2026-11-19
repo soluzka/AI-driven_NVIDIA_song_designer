@@ -333,14 +333,11 @@ if not url:
         say('no log at all:', exc)
     raise SystemExit('no tunnel address')
 
-say('ADDRESS:', url)
-say('(that line is the whole address; it stops working when this session ends)')
-say('=' * 70)
-say()
-say('On the site: press Connect my model in the header and paste that address.')
-say('This card is reachable while this cell and session stay running.')
-
+# The card announces itself before anything is printed about addresses: a pooled card
+# needs no address in the page at all, and telling someone to paste one when the site
+# already knows the machine is the paste this cell exists to remove.
 join_key = find_join_key()
+joined = False
 if join_key:
     body = json.dumps({'url': url, 'note': 'colab t4'}).encode()
     request = urllib.request.Request(
@@ -349,11 +346,22 @@ if join_key:
     try:
         with urllib.request.urlopen(request, timeout=20) as answer:
             say('pool:', answer.read().decode())
-        say('This card is in the pool until the notebook stops. Keep the tab open.')
+        joined = True
     except Exception as exc:
         say('join refused:', exc)
-        say('Use the address above with Connect my model instead.')
+
+say('ADDRESS:', url)
+say('(that line is the whole address; it stops working when this session ends)')
+say('=' * 70)
+say()
+if joined:
+    say('This card is in the pool, so the site finds it by itself: nothing to paste,')
+    say('and no Connect my model step. The header names it as a pooled card within a')
+    say('minute. Keep this tab open: the card leaves the pool when the session ends.')
 else:
-    say('No join key found, so this card is not in the pool: use the address above.')
-    say('To join it next time, add SONG_JOIN_KEY to Colab Secrets (Secrets panel, left):')
-    say('one paste there and every run of this cell puts the card in the pool by itself.')
+    say('On the site: press Connect my model in the header and paste that address.')
+    say('This card is reachable while this cell and session stay running.')
+    say()
+    say('To have the site find it by itself instead, add SONG_JOIN_KEY to Colab Secrets')
+    say('(key icon on the left): one paste there, and every run of this cell joins the')
+    say('pool with nothing to paste here.')

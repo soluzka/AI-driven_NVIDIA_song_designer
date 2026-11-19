@@ -307,6 +307,12 @@ else:
 packaged = [p for p in (PYLIBS, ace) if os.path.isdir(p)]
 inherited = os.environ.get('PYTHONPATH', '')
 os.environ['PYTHONPATH'] = os.pathsep.join(packaged + ([inherited] if inherited else []))
+# app.py puts its own vendored checkout on sys.path first, and a copy of that checkout
+# inside the repository is not always complete: the packaged one had no acestep/models,
+# so the service warmed with "No module named 'acestep.models'" while the mounted tree
+# beside it was whole. Naming the mounted tree leaves nothing to chance.
+os.environ['ACE_REPO'] = ace
+say('ACE_REPO for the services:', ace)
 say('PYTHONPATH for the services:', os.environ['PYTHONPATH'])
 
 # --- the weights ------------------------------------------------------------

@@ -78,7 +78,10 @@ New-Item -ItemType Directory -Force -Path $codeDir, $weightsDir | Out-Null
 # robocopy, because it copies a tree with exclusions without loading every file
 # into PowerShell objects. Exit codes 0-7 are success for robocopy.
 Say 'copying the repository (no .git, no models, no environments) ...'
-$excludeDirs = @('.git', '.venv', 'node_modules', 'build', 'models', 'song_service\models', 'tools\node', '__pycache__', 'dist')
+# A bare 'models' here excludes every directory of that name at any depth, which is how
+# third_party\ACE-Step\acestep\models went missing: the packaged copy then had no
+# acestep.models, and the kernel warmed with "No module named 'acestep.models'".
+$excludeDirs = @('.git', '.venv', 'node_modules', 'build', 'song_service\models', 'tools\node', '__pycache__', 'dist')
 $args = @($Root, $repoCopy, '/E', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:1', '/W:1',
           '/XD') + $excludeDirs + @('/XF', '*.log', '*.pyc')
 & robocopy @args | Out-Null

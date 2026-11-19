@@ -60,6 +60,25 @@ function json(body, status = 200) {
 }
 
 async function readPool(env) {
+  // The register lives in D1 when it is bound: one row per machine, so a re-join is an
+  // upsert and a read is a SELECT. KV's 1,000 writes a day could not carry a card that
+  // re-joins every two minutes, and when they ran out the pool answered 0 GPUs for a
+  // machine that was running and serving. KV is still read when D1 is not bound.
+  if (env.REGISTER) {
+    try {
+      const cutoff = Date.now() - POOL_TTL_MS;
+      const { results } = await env.REGISTER
+        .prepare('SELECT url, seen, joined, note FROM machines WHERE seen > ? ORDER BY seen DESC')
+        .bind(cutoff).all();
+      return (results || []).map((row) => ({
+        url: row.url, seen: Number(row.seen) || 0,
+        joined: Number(row.joined) || 0, note: row.note || '',
+      }));
+    } catch (err) {
+      lastWriteError = String((err && err.message) || err);
+      return [];
+    }
+  }
   if (!env.POOL) return [];
   let entries = [];
   try {
@@ -75,15 +94,40 @@ async function readPool(env) {
 }
 
 async function writePool(env, pool) {
+  if (env.REGISTER) {
+    const trimmed = pool.slice(0, POOL_LIMIT);
+    try {
+      const statements = trimmed.map((entry) => env.REGISTER
+        .prepare('INSERT INTO machines (url, seen, joined, note) VALUES (?, ?, ?, ?) '
+          + 'ON CONFLICT(url) DO UPDATE SET seen = excluded.seen, note = excluded.note')
+        .bind(entry.url, Number(entry.seen) || Date.now(),
+          Number(entry.joined || entry.seen) || Date.now(), String(entry.note || '')));
+      // A machine silent past the TTL leaves in the same breath, so the table cannot
+      // grow a dead row per session.
+      statements.push(env.REGISTER.prepare('DELETE FROM machines WHERE seen <= ?')
+        .bind(Date.now() - POOL_TTL_MS));
+      await env.REGISTER.batch(statements);
+      return true;
+    } catch (err) {
+      lastWriteError = String((err && err.message) || err);
+      return false;
+    }
+  }
   // KV has a daily write allowance. Hitting it must not take the pool down: the list this
   // isolate already holds is still good for routing, and the next write that fits saves it.
   try {
     await env.POOL.put(POOL_KEY, JSON.stringify(pool.slice(0, POOL_LIMIT)));
     return true;
   } catch (err) {
+    lastWriteError = String((err && err.message) || err);
     return false;
   }
 }
+
+// Kept so a refusal can be read back instead of guessed at: an exhausted daily write
+// allowance and a broken binding look identical from "the join said ok and the pool is
+// still empty".
+let lastWriteError = '';
 
 // A tunnel dies with the session that opened it, but the register only knew time:
 // a machine was dropped after a week of silence, so yesterday's dead tunnel kept
@@ -197,10 +241,16 @@ async function livingPool(env) {
 // when a write actually lands, and before this key existed its probe was refused here
 // and fell through to the site KV that is out of writes, so the guard switched itself
 // off on every press.
-const STATE_KEYS = new Set(['gpu:started_at', 'gpu:joined_at', 'gpu:guard_at']);
+const STATE_KEYS = new Set(['gpu:started_at', 'gpu:joined_at', 'gpu:guard_at', 'site:endpoint']);
 const STATE_PREFIX = '/state/';
 
 async function readState(env, key) {
+  if (env.REGISTER) {
+    try {
+      const row = await env.REGISTER.prepare('SELECT value FROM state WHERE key = ?').bind(key).first();
+      if (row) return String(row.value);
+    } catch (err) {}
+  }
   try {
     return await env.POOL.get(key);
   } catch (err) {
@@ -209,6 +259,16 @@ async function readState(env, key) {
 }
 
 async function writeState(env, key, value) {
+  if (env.REGISTER) {
+    try {
+      await env.REGISTER.prepare('INSERT INTO state (key, value) VALUES (?, ?) '
+        + 'ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+        .bind(key, String(value)).run();
+      return true;
+    } catch (err) {
+      lastWriteError = String((err && err.message) || err);
+    }
+  }
   try {
     await env.POOL.put(key, value);
     return true;
@@ -267,7 +327,41 @@ export default {
     if (request.method === 'OPTIONS') return new Response('', { status: 204, headers: CORS });
 
     if (url.pathname === '/health') {
-      return json({ ok: true, pool: (await readPool(env)).length });
+      const entries = await readPool(env);
+      // The raw register, not the living one: /pool answers what routing may use, and
+      // without this there is no way to tell "never joined" from "joined and filtered"
+      // - which is the whole difference between a card that is down and a pool that is
+      // refusing to see it. URLs are already public in /pool, so nothing new leaks.
+      return json({
+        ok: true,
+        pool: entries.length,
+        raw: entries.map((entry) => ({ url: entry.url, seen: entry.seen, joined: entry.joined || 0 })),
+      });
+    }
+
+    // Why a card that answers in a browser is filtered out of /pool. Read-only, and it
+    // only asks an address the caller already names - no key, no secrets. This is the
+    // endpoint that turns "the pool is red" into the actual status or error.
+    if (url.pathname === '/probe') {
+      const target = String(url.searchParams.get('url') || '').trim().replace(/\/+$/, '');
+      if (!target) return json({ error: 'add ?url=https://host' }, 400);
+      const started = Date.now();
+      try {
+        const answer = await fetch(target + '/health', {
+          headers: { accept: 'application/json' },
+          signal: AbortSignal.timeout(15000),
+        });
+        const text = await answer.text();
+        return json({
+          url: target, ok: answer.ok, status: answer.status, ms: Date.now() - started,
+          body: text.slice(0, 300),
+        });
+      } catch (err) {
+        return json({
+          url: target, ok: false, ms: Date.now() - started,
+          error: String((err && err.message) || err),
+        });
+      }
     }
 
     if (url.pathname === '/pool') {
@@ -342,8 +436,12 @@ export default {
       } else {
         pool.unshift({ url: value, seen: now, joined: now, note: String(body.note || '').slice(0, 80) });
       }
-      await writePool(env, pool);
-      return json({ ok: true, url: value, count: pool.length, pool: pool.map((entry) => entry.url) });
+      const saved = await writePool(env, pool);
+      return json({
+        ok: true, url: value, saved,
+        error: saved ? undefined : (lastWriteError || 'the register refused the write'),
+        count: pool.length, pool: pool.map((entry) => entry.url),
+      });
     }
 
     if (url.pathname === '/remove' && request.method === 'POST') {
@@ -374,7 +472,10 @@ export default {
       } catch (err) {
         return json({ error: 'Expected JSON: {"value": "..."}' }, 400);
       }
-      const value = String((body && body.value) === undefined ? '' : (body && body.value)).slice(0, 40);
+      // 200, not 40: these keys hold timestamps, and one of them holds the address the
+      // header names - a tunnel host is longer than 40 characters and was being cut
+      // mid-hostname, which stores something that looks fine and resolves to nothing.
+      const value = String((body && body.value) === undefined ? '' : (body && body.value)).slice(0, 200);
       if (!value) return json({ error: 'Expected JSON: {"value": "..."}' }, 400);
       if (!(await writeState(env, key, value))) {
         return json({ error: 'This store refused the write.' }, 503);

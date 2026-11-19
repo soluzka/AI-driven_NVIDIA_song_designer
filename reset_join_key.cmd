@@ -8,8 +8,10 @@ rem   reset_join_key.cmd                 type the key you want, then Enter
 rem   reset_join_key.cmd -Key "abc..."   set it in one line
 rem   reset_join_key.cmd -Show           print the key this PC holds now
 rem
-rem It writes <app>\build\song_endpoint.key and sets SONG_ENDPOINT_KEY on the site Worker,
-rem which is what the site checks when a machine publishes "send the songs to me".
+rem It writes <app>\build\song_endpoint.key - the GPU connect key - and, on a PC signed
+rem in to the Cloudflare account that owns the Workers, sets the same key there too: JOIN_KEY
+rem on the pool Worker and POOL_JOIN_KEY on the site. Without that half a card is refused
+rem with "Wrong join key" and never appears in the pool. The song key is left alone.
 setlocal
 cd /d "%~dp0"
 echo Fetching the reset script from GitHub...

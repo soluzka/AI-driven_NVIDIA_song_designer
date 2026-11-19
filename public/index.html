@@ -4885,10 +4885,39 @@
                 if (String(window.remoteSongApi || '') !== beforeAddress && typeof refreshGpu === 'function') {
                     refreshGpu();
                 }
+                // A machine that was started ten minutes ago is not in the pool yet, and
+                // that is the normal state of a boot: the weights load, the voice starts,
+                // the tunnel opens, and only then does the card announce itself. Red for
+                // that whole quarter of an hour said "nothing is running" to someone who
+                // had just pressed Start. The site knows when a boot was asked for, so it
+                // says so - and only when none was does the empty pool mean idle.
+                let booting = 0;
+                if (!count) {
+                    try {
+                        const started = await fetchBounded('/api/gpu/status', { cache: 'no-store' }, 6000);
+                        if (started.ok) {
+                            const gpuInfo = await started.json();
+                            // Two clocks, because a card is booted two ways: by Start on
+                            // this page, and by a run started on Kaggle itself - Run all
+                            // in the notebook, or a version pushed from this repo. Only
+                            // the first was looked at, so a card warming from the second
+                            // read as idle and the badge stayed red through the whole
+                            // boot it was meant to report.
+                            const pressed = Number(gpuInfo.lastStart) || 0;
+                            const ran = Date.parse(String((gpuInfo.status && gpuInfo.status.lastRunTime) || '')) || 0;
+                            const last = Math.max(pressed, ran);
+                            if (last && Date.now() - last < 90 * 60000) {
+                                booting = Math.max(1, Math.round((Date.now() - last) / 60000));
+                            }
+                        }
+                    } catch (err) {}
+                }
                 // "auto": this site finds these machines by itself. Nothing has to be
                 // pressed for a machine to appear here; the page asks the pool every
                 // minute and uses whatever answers.
-                text.textContent = (count === 1 ? 'Pool · 1 GPU' : 'Pool · ' + count + ' GPUs') + ' · auto';
+                text.textContent = count
+                    ? (count === 1 ? 'Pool · 1 GPU' : 'Pool · ' + count + ' GPUs') + ' · auto'
+                    : 'Pool · 0 GPUs · ' + (booting ? 'starting ' + booting + 'm' : 'idle');
                 // Hidden while a machine is connected, shown when none is: it is the
                 // control for an empty pool, not another piece of header furniture.
                 const startBtn = document.getElementById('startGpuBtnPanel');
@@ -4896,11 +4925,16 @@
                 if (chip) {
                     // Green means the pool has a machine in it and is drawn green by the
                     // stylesheet; an empty pool is red, because nothing can render a song
-                    // however healthy the Worker answering this count is.
-                    chip.dataset.state = count ? 'live' : 'offline';
+                    // however healthy the Worker answering this count is. The one exception
+                    // is a boot in progress: amber, because the answer is not in yet.
+                    chip.dataset.state = count ? 'live' : (booting ? 'connecting' : 'offline');
                     chip.title = count
                         ? 'This site connects to these by itself: ' + (info.machines || []).map(m => m.url).join(', ')
-                        : 'No machine has joined yet. Press Start Kaggle, or run the free-GPU notebook.';
+                        : booting
+                            ? 'A machine was started ' + booting + ' minute' + (booting === 1 ? '' : 's')
+                                + ' ago and has not announced itself yet. A boot loads the weights, '
+                                + 'starts the voice, then opens the tunnel last - ten to fifteen minutes is normal.'
+                            : 'No machine has joined yet. Press Start Kaggle, or run the free-GPU notebook.';
                 }
             } catch (err) {
                 text.textContent = 'Pool · offline';

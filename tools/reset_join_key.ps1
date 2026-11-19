@@ -5,21 +5,25 @@
 #   reset_join_key.cmd -Show           print the key this PC holds now
 #   reset_join_key.cmd -DryRun         show it, change nothing
 #
-# This works for anybody, on any PC that has the app installed: it needs no Cloudflare
-# login and touches nothing but the file. It writes the key where join.cmd and the
-# launcher already read it - <app>\build\song_endpoint.key - and nothing else on this
-# machine, no server, no website.
+# The key is written where join.cmd and the launcher already read it -
+# <app>\build\song_endpoint.key - and then handed to the two Workers, but only on a PC
+# where wrangler is signed in to the Cloudflare account that owns them. That second half
+# is the point: a card whose file says one thing while the Workers check another is
+# refused with "Wrong join key", so it runs, serves songs, and the site's header still
+# says the pool is empty. Writing the file alone is what made that state possible.
 #
-# It changes this PC only. Nobody can change the key the site itself holds from a
-# download: that is a secret on the Worker, and only the Cloudflare account that owns it
-# can set it.
+# It sets the GPU connect key: JOIN_KEY on the pool Worker, POOL_JOIN_KEY on the site.
+# It never touches SONG_ENDPOINT_KEY, the song key, which signs publishing and is a
+# different secret now. Without a Cloudflare login the file is still written and the
+# script says plainly that the Workers kept their own key.
 
 [CmdletBinding()]
 param(
     [string]$Key = '',
     [string]$App = '',
     [switch]$Show,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$NoSync
 )
 
 $ErrorActionPreference = 'Stop'
@@ -92,7 +96,7 @@ Say $Key
 Say ''
 
 if ($DryRun) {
-    Say '-DryRun: nothing was written and the site was not contacted'
+    Say '-DryRun: nothing was written and nothing was contacted'
     exit 0
 }
 
@@ -100,7 +104,94 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $keyPath) | Out-Nu
 Set-Content -Path $keyPath -Value $Key -Encoding ascii -NoNewline
 Say "written to $keyPath"
 
+# --- and the Workers have to agree with it --------------------------------
+# A join is checked against the pool Worker's JOIN_KEY and a publish against the site's
+# key, so the file by itself can leave a machine that runs perfectly and never appears in
+# the pool. Both secrets are set here from the value just written, with stdin taken from
+# the file so the key is never retyped and a stray newline cannot get into the secret.
+$script:nodePath = Join-Path $App 'tools\node\node.exe'
+$script:wranglerPath = Join-Path $App 'build\wrangler-tool\node_modules\wrangler\bin\wrangler.js'
+$canSync = -not $NoSync -and (Test-Path $script:nodePath) -and (Test-Path $script:wranglerPath)
+
+function Push-Secret([string]$label, [string]$name, [string[]]$extra) {
+    $line = '"{0}" "{1}" secret put {2}' -f $script:nodePath, $script:wranglerPath, $name
+    if ($extra -and $extra.Count) { $line += ' ' + ($extra -join ' ') }
+    $line += ' < "{0}" 2>&1' -f $keyPath
+    Push-Location $App
+    $out = (& cmd /c $line) | Out-String
+    $code = $LASTEXITCODE
+    Pop-Location
+    if ($code -eq 0 -and $out -match 'Success') {
+        Say "  $label : set"
+        return $true
+    }
+    $why = (($out -split "`n") | Where-Object { $_.Trim() } | Select-Object -Last 1)
+    if (-not $why) { $why = "wrangler exited with $code" }
+    Say "  $label : not set - $why"
+    return $false
+}
+
 Say ''
-Say 'done. this PC will use that key the next time it starts and publishes.'
-Say 'Nothing was sent anywhere: the website was not asked, and it still holds the key its'
-Say 'owner set.'
+if ($NoSync) {
+    Say '-NoSync: the Workers were not contacted and keep the key they hold.'
+} elseif (-not $canSync) {
+    Say 'The Workers were not contacted: this PC has no wrangler, so the key is written here only.'
+    Say 'Run this on the PC signed in to the Cloudflare account that owns the site to set it there.'
+} else {
+    Say 'telling the Workers the same GPU connect key...'
+    $poolOk = Push-Secret 'GPU connect key on the pool' 'JOIN_KEY' @('--config', 'wrangler.pool.jsonc')
+    $siteOk = Push-Secret 'GPU connect key on the site' 'POOL_JOIN_KEY' @()
+    if (-not ($poolOk -and $siteOk)) {
+        Say ''
+        Say 'One of them refused it, so a card can still be told "Wrong join key". A refusal is'
+        Say 'usually a PC not signed in to the Cloudflare account that owns the Workers.'
+    }
+}
+
+# --- and the header has to name this PC ----------------------------------
+# "AI ready · CUDA · this PC" is the address the site publishes; every device reads it
+# from GET /api/song/endpoint. The site's own KV runs out of writes daily, so the address
+# goes where writes still land - beside the pool's clocks - and the site reads it there.
+# This names this machine as the model. It is not a pool join: nothing is added to the
+# list of GPUs that take work, which is the pool badge's business, not the header's.
+$tunnelPath = Join-Path $App 'build\tunnel_url.txt'
+$tunnel = ''
+if (Test-Path $tunnelPath) {
+    $tunnel = ((Get-Content -Raw -Path $tunnelPath) -as [string]).Trim().TrimEnd('/')
+}
+if ($tunnel -notmatch '^https?://') {
+    Say ''
+    Say 'the header was not pointed at this PC: no tunnel address yet (build\tunnel_url.txt).'
+    Say 'start the model once, then run this again.'
+} else {
+    Say ''
+    Say 'pointing the site at this PC for "AI ready - this PC"...'
+    # Only an address that answers is worth naming: build\tunnel_url.txt keeps the last
+    # tunnel the app opened, and one left over from a session that ended resolves to
+    # nothing. Nagging the header with it is worse than leaving it on the pool.
+    $alive = $false
+    try {
+        $probe = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($tunnel + '/health') -TimeoutSec 6
+        $alive = ($probe.StatusCode -eq 200)
+    } catch { $alive = $false }
+    if (-not $alive) {
+        Say '  not pointed: that address did not answer, so the header keeps whatever it uses now.'
+        Say '  the key was still written.'
+        $tunnel = ''
+    }
+    if ($tunnel) { try {
+        Invoke-RestMethod -Method Post `
+            -Uri 'https://song-pool.bpiersing.workers.dev/state/site:endpoint' `
+            -Headers @{ 'x-join-key' = $Key } -ContentType 'application/json' `
+            -Body (@{ value = $tunnel } | ConvertTo-Json -Compress) -TimeoutSec 25 | Out-Null
+        Say "  $tunnel"
+        Say '  named as the model, so the header says this PC and not the pool.'
+    } catch {
+        Say "  not pointed: $($_.Exception.Message)"
+        Say '  the key is still written; a refusal here means the pool Worker has a different key.'
+    } }
+}
+
+Say ''
+Say 'the song key (SONG_ENDPOINT_KEY) was not touched.'
+Say 'done. restart the song service so it reads the new key: it keeps the one it started with.'

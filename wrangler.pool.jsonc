@@ -20,6 +20,21 @@
       "id": "41fccf777bca40b19f53d7c62d4598cc"
     }
   ],
+  // The register itself. KV allows 1,000 writes a day, which a card re-joining every two
+  // minutes spends by itself - and once it is spent the pool cannot list a machine that
+  // is running, so the header says 0 GPUs while the card serves songs. D1 has its own
+  // allowance (100,000 rows written a day), one row per machine, so a join is an upsert
+  // and a read is a SELECT. KV stays bound as the fallback for a deployment without it.
+  //
+  //   npx wrangler d1 create song-pool
+  //   npx wrangler d1 execute song-pool --remote --command "CREATE TABLE IF NOT EXISTS machines (url TEXT PRIMARY KEY, seen INTEGER, joined INTEGER, note TEXT)"
+  "d1_databases": [
+    {
+      "binding": "REGISTER",
+      "database_name": "song-pool",
+      "database_id": "d0e60fbe-15bc-4a31-9d37-8028ae04a4af"
+    }
+  ],
   // Optional: store the ~10 GB checkpoint on Cloudflare and stream it to the GPU
   // machines from /weights/<key>. R2 has no egress fee; a Worker still cannot run
   // the model, so this is the download and the versioning, not the compute.

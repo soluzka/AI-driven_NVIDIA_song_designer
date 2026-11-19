@@ -304,7 +304,7 @@ async function startGpu(request, env, url) {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-join-key': String(env.SONG_ENDPOINT_KEY || ''),
+          'x-join-key': poolJoinKey(env),
         },
         body: JSON.stringify({ value: String(value) }),
       });
@@ -414,9 +414,9 @@ async function startGpu(request, env, url) {
     slug: auth.handle + '/' + GPU_SLUG,
     newTitle: 'song gpu pool',
     text: gpuKernelScript(
-      // The key the pool endpoints verify is SONG_ENDPOINT_KEY; a kernel given a
-      // different value boots fine and then gets 403 Forbidden from every join.
-      String(env.SONG_ENDPOINT_KEY || env.SONG_JOIN_KEY || '').trim(),
+      // The key the pool endpoints verify; a kernel given a different value boots fine
+      // and then gets 403 Forbidden from every join.
+      poolJoinKey(env),
       String(env.KAGGLE_CODE_DATASET || (auth.handle + '/song-gpu-code')).trim(),
       String(env.KAGGLE_WEIGHTS_DATASET || (auth.handle + '/song-gpu-weights')).trim(),
     ),
@@ -742,6 +742,17 @@ async function songProbe(url) {
   }
 }
 
+// The GPU connect key: what the pool Worker checks as JOIN_KEY when a card says "route
+// songs to me". It is its own secret on purpose. The song key (SONG_ENDPOINT_KEY) signs
+// publishing, and the two were one value, so rotating the GPU key quietly rotated the
+// song key with it - and a machine holding one while the Workers held the other could
+// render songs all day while the pool never listed it, which is what "the pool is red
+// and I am running it" was. POOL_JOIN_KEY wins when it is set; SONG_ENDPOINT_KEY stays
+// the fallback so a deployment that never set it keeps working.
+function poolJoinKey(env) {
+  return String(env.POOL_JOIN_KEY || env.SONG_ENDPOINT_KEY || '').trim();
+}
+
 async function songEndpoint(request, env) {
   if (request.method === 'POST') {
     const expected = env.SONG_ENDPOINT_KEY || '';
@@ -788,7 +799,7 @@ async function songEndpoint(request, env) {
     try {
       await poolRequest(env, '/join', {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-join-key': env.SONG_ENDPOINT_KEY || '' },
+        headers: { 'content-type': 'application/json', 'x-join-key': poolJoinKey(env) },
         body: JSON.stringify({ url: value }),
       });
     } catch (err) {}
@@ -796,9 +807,30 @@ async function songEndpoint(request, env) {
   }
 
   const pool = await readPool(env);
+  // The address a machine published for the header comes before the pool. "AI ready ·
+  // this PC" is what Connect my model means; taking pool[0] instead named whichever card
+  // had joined most recently - a Kaggle one - so a person running the PC was shown someone
+  // else's GPU. It is kept where writes still land (this Worker's own KV runs out of them
+  // daily, and then this GET answered "" for a machine that was up), and it is probed:
+  // an address that stopped answering must not become the header's answer.
+  let published = '';
+  try {
+    const answer = await poolRequest(env, '/state/' + encodeURIComponent('site:endpoint'));
+    if (answer.ok) {
+      const body = await answer.json();
+      if (body && body.value) published = String(body.value).trim().replace(/\/+$/, '');
+    }
+  } catch (err) {}
+  let url = '';
+  if (published && /^https?:\/\//i.test(published) && await poolAnswers(published)) {
+    url = published;
+  }
+  if (!url) url = pool.length ? pool[0].url : (env.SONG_API || '');
+  const urls = pool.map((entry) => entry.url);
+  if (url && !urls.includes(url)) urls.unshift(url);
   return json({
-    url: pool.length ? pool[0].url : (env.SONG_API || ''),
-    urls: pool.map((entry) => entry.url),
+    url,
+    urls,
     machines: pool.map((entry) => ({ url: entry.url, seen: entry.seen })),
     source: lastPoolSource,
   });

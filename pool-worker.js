@@ -179,6 +179,15 @@ const POOL_STRIKE_MS = 90 * 1000;
 const poolCooled = new Map();
 const POOL_COOLDOWN_MS = 60 * 1000;
 
+// A card that has stopped answering is filtered out of every answer, but its row used to
+// stay in the register for the whole seven-day TTL: still probed on every read, still
+// counted by anything that reads the register, and still a URL a song could be sent to.
+// Writing on every poll is what exhausted the write allowance once, so dead rows are
+// deleted rarely - at most once every ten minutes, and only when the probe really found
+// a card gone. That keeps dead addresses out of the pool at almost no write cost.
+const PRUNE_EVERY_MS = 10 * 60 * 1000;
+let prunedAt = 0;
+
 async function livingPool(env) {
   const pool = await readPool(env);
   if (!pool.length) return pool;
@@ -230,6 +239,10 @@ async function livingPool(env) {
     const last = Math.max(Number(entry.ok_at || 0), Number(entry.seen || 0));
     if (strikes < 2 && now - last < POOL_GRACE_MS) living.push(entry);
   });
+  if (living.length < pool.length && Date.now() - prunedAt > PRUNE_EVERY_MS) {
+    prunedAt = Date.now();
+    await writePool(env, living);
+  }
   return living;
 }
 

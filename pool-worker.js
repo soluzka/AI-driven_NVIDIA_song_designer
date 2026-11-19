@@ -443,23 +443,29 @@ export default {
       const value = String((body && body.url) || '').trim().replace(/\/+$/, '');
       if (!/^https?:\/\/[^\s]+$/i.test(value)) return json({ error: 'Not an http(s) address.' }, 400);
 
+      const note = String(body.note || '').slice(0, 80);
       const pool = await readPool(env);
       const now = Date.now();
-      const known = pool.find((entry) => entry.url === value);
+      // A restart gives the machine a new tunnel address, and the row it left behind is
+      // a dead address listed next to the live one until a probe finds it - at most once
+      // every ten minutes. The note names the machine, so rows carrying the same note and
+      // a different address are dropped in this same write rather than left to the probe.
+      const kept = note ? pool.filter((entry) => entry.url === value || entry.note !== note) : pool;
+      const known = kept.find((entry) => entry.url === value);
       if (known) {
         known.seen = now;
         // The first join is kept: a machine that re-joins every two minutes is not
         // newer than the notebook that started after it.
         if (!known.joined) known.joined = known.seen || now;
-        if (body.note) known.note = String(body.note).slice(0, 80);
+        if (note) known.note = note;
       } else {
-        pool.unshift({ url: value, seen: now, joined: now, note: String(body.note || '').slice(0, 80) });
+        kept.unshift({ url: value, seen: now, joined: now, note });
       }
-      const saved = await writePool(env, pool);
+      const saved = await writePool(env, kept);
       return json({
         ok: true, url: value, saved,
         error: saved ? undefined : (lastWriteError || 'the register refused the write'),
-        count: pool.length, pool: pool.map((entry) => entry.url),
+        count: kept.length, pool: kept.map((entry) => entry.url),
       });
     }
 

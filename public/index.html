@@ -5222,7 +5222,10 @@
                 // button that said "connected" while the song service was up and no
                 // weights were loaded; it is green only when the model itself reports
                 // loaded, amber while it loads, red when it says loading failed.
-                if (!info || info.loaded !== true) {
+                // Same rule here: a released song model with a finished warm is ready to
+                // render on demand, not broken and not loading.
+                const released = !!(info && info.warm_done === true && info.warming !== true);
+                if (!info || (info.loaded !== true && !released)) {
                     if (info && info.warm_failed) {
                         button.dataset.state = 'dead';
                         button.title = 'The service at ' + address + ' is running, but the model failed to load: '
@@ -5437,7 +5440,13 @@
             // read as connected while the service was up with no model in memory. The
             // model's own report decides: loaded is green, answering-but-loading is
             // amber, silence is red.
-            const modelReady = !!(answers && health && health.loaded === true);
+            // A service that answers and reports warm_done with loaded: false has
+            // released the song model to make room for the lyric model on an 8 GB card.
+            // That is its normal state between songs - the next job loads it - so it is
+            // not a warm-up. Reading it as one left the header saying "the AI is
+            // warming up" for as long as the page stayed open.
+            const modelReady = !!(answers && health && (health.loaded === true
+                || (health.warm_done === true && health.warming !== true)));
             const warmingFor = Number(health && health.warming_seconds) || 0;
             chip.dataset.state = modelReady ? 'ready' : (answers ? 'warming' : 'dead');
             // The whole address, ellipsised by CSS: "the model location" is the

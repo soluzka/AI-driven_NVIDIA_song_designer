@@ -549,13 +549,14 @@ async function poolVerdict(address) {
 const poolStrikes = new Map();
 const POOL_STRIKE_MS = 90 * 1000;
 async function poolAlive(address) {
-  let verdict = await poolVerdict(address);
-  if (verdict === 'alive') { poolStrikes.delete(address); return true; }
-  if (verdict === 'broken') { poolStrikes.delete(address); return false; }
-  await new Promise((resolve) => setTimeout(resolve, 700));
-  verdict = await poolVerdict(address);
-  if (verdict === 'alive') { poolStrikes.delete(address); return true; }
-  if (verdict === 'broken') { poolStrikes.delete(address); return false; }
+  // The gap is not decoration: after a genuine timeout the tunnel is still closing that
+  // stream, and a retry 700 ms later can fail on the same dead connection.
+  for (const wait of [0, 1500, 3000]) {
+    if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+    const verdict = await poolVerdict(address);
+    if (verdict === 'alive') { poolStrikes.delete(address); return true; }
+    if (verdict === 'broken') { poolStrikes.delete(address); return false; }
+  }
   const now = Date.now();
   const previous = poolStrikes.get(address);
   const strikes = previous && now - previous.at < POOL_STRIKE_MS ? previous.strikes + 1 : 1;

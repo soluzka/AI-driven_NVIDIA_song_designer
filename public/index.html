@@ -5269,16 +5269,17 @@
         // The health answer of one machine, with the grace a card gets in the pool: a
         // first miss is retried after a moment, because a tunnel hiccups for a second and
         // one missed probe used to move the page to another GPU - or back to this PC.
+        // The gap matters: after a real timeout the tunnel is still tearing the stream
+        // down, and a retry 700 ms later failed against the same dead connection - measured
+        // at 12.7 s with a null answer. 1.5 s, then 3 s, is enough for the name to settle.
         async function healthAnswer(base) {
-            try {
-                const first = await fetchBounded(base + '/health', { cache: 'no-store' }, 12000);
-                if (first.ok) return await first.json();
-            } catch (err) {}
-            await new Promise(resolve => setTimeout(resolve, 700));
-            try {
-                const second = await fetchBounded(base + '/health', { cache: 'no-store' }, 12000);
-                if (second.ok) return await second.json();
-            } catch (err) {}
+            for (const wait of [0, 1500, 3000]) {
+                if (wait) await new Promise(resolve => setTimeout(resolve, wait));
+                try {
+                    const reply = await fetchBounded(base + '/health', { cache: 'no-store' }, 12000);
+                    if (reply.ok) return await reply.json();
+                } catch (err) {}
+            }
             return null;
         }
 

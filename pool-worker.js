@@ -121,9 +121,14 @@ async function livingPool(env) {
   if (!pool.length) return pool;
   const answered = await Promise.allSettled(pool.map((entry) => answers(entry.url)));
   const alive = pool.map((entry, index) => answered[index].status === 'fulfilled' && answered[index].value === true);
-  const retry = pool.filter((entry, index) => !alive[index]);
-  if (retry.length) {
-    const again = await Promise.allSettled(retry.map((entry) => answers(entry.url, 12000)));
+  // A tunnel that has just timed out is still closing that stream, so a retry against it
+  // straight away failed on the same dead connection. Give the name a moment, then try
+  // twice more before a card is even counted as having missed.
+  for (const wait of [1500, 3000]) {
+    const pending = pool.filter((entry, index) => !alive[index]);
+    if (!pending.length) break;
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    const again = await Promise.allSettled(pending.map((entry) => answers(entry.url, 12000)));
     let at = 0;
     pool.forEach((entry, index) => {
       if (alive[index]) return;

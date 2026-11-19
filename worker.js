@@ -523,21 +523,48 @@ async function readPool(env) {
 const POOL_PROBE_MS = 15000;
 let poolProbeCache = { at: 0, key: '', live: [] };
 
-async function poolAnswers(address) {
+// One probe, and what it means: alive, gone (nothing answered), or broken (it answered
+// and said its warm failed - a definite no rather than a blip).
+async function poolVerdict(address) {
   try {
     const reply = await fetch(String(address).replace(/\/+$/, '') + '/health', {
       headers: { accept: 'application/json' },
       signal: AbortSignal.timeout(4000),
     });
-    if (!reply.ok) return false;
+    if (!reply.ok) return 'gone';
     let body = null;
     try { body = await reply.json(); } catch (err) {}
     // Reachable but unable to render: a machine whose warm ended in warm_failed
     // answers /health forever and never loads, so it must not be handed a song.
-    return !(body && body.warm_failed);
+    return (body && body.warm_failed) ? 'broken' : 'alive';
   } catch (err) {
-    return false;
+    return 'gone';
   }
+}
+
+// A card that misses one /health probe is not gone: a tunnel hiccups for a second and
+// the page would jump to another machine, or back to this PC, on that alone. So one
+// quick retry, and then a second consecutive bad poll, before it leaves the list. A
+// machine that says its warm failed leaves at once, because that is an answer.
+const poolStrikes = new Map();
+const POOL_STRIKE_MS = 90 * 1000;
+async function poolAlive(address) {
+  let verdict = await poolVerdict(address);
+  if (verdict === 'alive') { poolStrikes.delete(address); return true; }
+  if (verdict === 'broken') { poolStrikes.delete(address); return false; }
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  verdict = await poolVerdict(address);
+  if (verdict === 'alive') { poolStrikes.delete(address); return true; }
+  if (verdict === 'broken') { poolStrikes.delete(address); return false; }
+  const now = Date.now();
+  const previous = poolStrikes.get(address);
+  const strikes = previous && now - previous.at < POOL_STRIKE_MS ? previous.strikes + 1 : 1;
+  poolStrikes.set(address, { strikes, at: now });
+  return strikes < 2;
+}
+
+async function poolAnswers(address) {
+  return (await poolVerdict(address)) === 'alive';
 }
 
 async function livePool(list) {
@@ -547,7 +574,7 @@ async function livePool(list) {
     return poolProbeCache.live;
   }
   const verdicts = await Promise.all(
-    list.map(async (entry) => ({ entry, alive: await poolAnswers(entry.url) })));
+    list.map(async (entry) => ({ entry, alive: await poolAlive(entry.url) })));
   const live = verdicts.filter((item) => item.alive).map((item) => item.entry);
   poolProbeCache = { at: Date.now(), key, live };
   return live;

@@ -5190,7 +5190,16 @@
                 const probe = await fetchBounded(base + '/health', { cache: 'no-store' }, 4000);
                 answers = probe.ok;
                 if (answers) health = await probe.json().catch(() => null);
-            } catch (err) {}
+            } catch (err) {
+                // One missed probe is a blip, not a dead machine: ask once more before
+                // this chip is allowed to go red.
+                try {
+                    await new Promise(resolve => setTimeout(resolve, 700));
+                    const retry = await fetchBounded(base + '/health', { cache: 'no-store' }, 5000);
+                    answers = retry.ok;
+                    if (answers) health = await retry.json().catch(() => null);
+                } catch (err2) {}
+            }
             // The endpoint chip used to go green on any HTTP answer, which is how it
             // read as connected while the service was up with no model in memory. The
             // model's own report decides: loaded is green, answering-but-loading is
@@ -5255,6 +5264,22 @@
             if (!button) return;
             button.dataset.state = state;
             button.title = title;
+        }
+
+        // The health answer of one machine, with the grace a card gets in the pool: a
+        // first miss is retried after a moment, because a tunnel hiccups for a second and
+        // one missed probe used to move the page to another GPU - or back to this PC.
+        async function healthAnswer(base) {
+            try {
+                const first = await fetchBounded(base + '/health', { cache: 'no-store' }, 12000);
+                if (first.ok) return await first.json();
+            } catch (err) {}
+            await new Promise(resolve => setTimeout(resolve, 700));
+            try {
+                const second = await fetchBounded(base + '/health', { cache: 'no-store' }, 12000);
+                if (second.ok) return await second.json();
+            } catch (err) {}
+            return null;
         }
 
         async function refreshGpu() {
@@ -5350,14 +5375,10 @@
             let answeredBy = '';
             for (const base of bases) {
                 if (!base) continue;
-                try {
-                    // Four seconds was too short right after a boot, and eight is
-                    // only just enough: the service is still importing torch, and
-                    // counting a slow answer as absent is what left the badge on
-                    // "AI off" until the page was reloaded.
-                    const response = await fetchBounded(base + '/health', {}, 12000);
-                    if (response.ok) { info = await response.json(); answeredBy = base; break; }
-                } catch (err) {}
+                // Two attempts per machine, the same grace the site gives a card: a
+                // tunnel that misses one probe must not move the page to another GPU.
+                info = await healthAnswer(base);
+                if (info) { answeredBy = base; break; }
             }
             // Which machine answered is part of the truth. A pooled machine is not
             // this computer's AI, and showing it as this one's is how the header

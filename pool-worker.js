@@ -111,6 +111,10 @@ async function answers(base, timeout = 8000) {
 // because routing must never hand out a card that cannot render; the entry is kept for
 // this long before it is forgotten, so a momentary failure costs nothing.
 const POOL_GRACE_MS = 10 * 60 * 1000;
+// Two misses in a row, not one: a tunnel can time out for a second, and taking the card
+// out of routing on that alone made the page jump to the other GPU - or back to the PC.
+// The clock starts again after this long, so two failures an hour apart are not a pair.
+const POOL_STRIKE_MS = 90 * 1000;
 
 async function livingPool(env) {
   const pool = await readPool(env);
@@ -145,10 +149,15 @@ async function livingPool(env) {
       kept.push(entry);
       return;
     }
-    entry.fail = Number(entry.fail || 0) + 1;
+    const sinceFail = now - Number(entry.fail_at || 0);
+    const strikes = sinceFail < POOL_STRIKE_MS ? Number(entry.fail || 0) + 1 : 1;
+    entry.fail = strikes;
+    entry.fail_at = now;
     dirty = true;
     const last = Math.max(Number(entry.ok_at || 0), Number(entry.seen || 0));
     if (now - last < POOL_GRACE_MS) kept.push(entry);
+    // Still in the pool for one bad poll; out of routing only on the second in a row.
+    if (strikes < 2) living.push(entry);
   });
   if (dirty || kept.length !== pool.length) await writePool(env, kept);
   return living;

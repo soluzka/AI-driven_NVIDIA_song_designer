@@ -1013,14 +1013,8 @@
             <span class="conn-dot"></span>
             <span id="poolText">Pool…</span>
         </div>
-        <!-- Only shown when the pool is empty: Kaggle is the one free service whose
-             API can boot a GPU without a person, so this asks the site to start one. -->
-        <!-- Only when it is needed: with a machine already serving songs the header
-             stays quiet, and the button appears when nothing answers. -->
-        <button class="library-song-btn install-btn" id="startGpuBtn" onclick="startPoolGpu()" hidden
-                title="Starts a free Kaggle GPU that joins the pool by itself">
-            Start a GPU
-        </button>
+        <!-- There is no Start a GPU button here any more: it lives in the Get the AI
+             panel, under the free-GPU option. The header keeps the two pool chips. -->
     </div>
 
     <!-- Search Section -->
@@ -4835,10 +4829,8 @@
                 text.textContent = (count === 1 ? 'Pool · 1 GPU' : 'Pool · ' + count + ' GPUs') + ' · auto';
                 // Hidden while a machine is connected, shown when none is: it is the
                 // control for an empty pool, not another piece of header furniture.
-                for (const id of ['startGpuBtn', 'startGpuBtnPanel']) {
-                    const startBtn = document.getElementById(id);
-                    if (startBtn) startBtn.hidden = count > 0;
-                }
+                const startBtn = document.getElementById('startGpuBtnPanel');
+                if (startBtn) startBtn.hidden = count > 0;
                 if (chip) {
                     // 'live' is the state the stylesheet draws green; 'online' had no
                     // rule, so a pool with machines in it still looked switched off.
@@ -5456,10 +5448,9 @@
         // Worker to push and start the same boot the Colab notebook runs: clone the
         // repo, run the song service, open a tunnel, join this pool.
         async function startPoolGpu() {
-            // The same control sits in the header and in the Get the AI panel, so a
-            // press has to keep both in step: whichever one was pressed says what is
-            // happening, and neither can fire a second push while one is in flight.
-            const buttons = ['startGpuBtn', 'startGpuBtnPanel']
+            // The control lives in the Get the AI panel: it says what is happening and
+            // cannot fire a second push while one is in flight.
+            const buttons = ['startGpuBtnPanel']
                 .map((id) => document.getElementById(id)).filter(Boolean);
             const button = buttons.find((b) => !b.disabled);
             if (!button) return;

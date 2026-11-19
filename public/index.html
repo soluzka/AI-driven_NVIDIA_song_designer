@@ -6152,9 +6152,9 @@
                             stage.appendChild(piece);
                             // The autoplay attribute is a request, not a promise: a browser
                             // that will not start a video with sound leaves a still picture
-                            // where the song should be. It is started here, and if the
-                            // refusal is about the sound, it plays muted and says so rather
-                            // than sitting frozen.
+                            // where the song should be. It is started here, and a refusal
+                            // only says what to press - the element is never muted, because
+                            // silence is exactly the fault this is here to avoid.
                             const started = piece.play();
                             if (started && started.catch) {
                                 started.catch(() => {

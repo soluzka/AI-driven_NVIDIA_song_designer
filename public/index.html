@@ -2573,7 +2573,16 @@
             });
         }
 
+        // The lyric recorder plays the song through Web Audio, which has no element
+        // and no controls: this is its stop handle, so closing the player or
+        // composing again really is silent instead of singing on from nowhere.
+        let lyricRecording = null;
+
         function stopRemixAudio() {
+            if (lyricRecording) {
+                try { lyricRecording.stop(); } catch (err) {}
+                lyricRecording = null;
+            }
             if (!remixAudio) return;
             const { ctx, timer, master } = remixAudio;
             clearInterval(timer);
@@ -4607,6 +4616,16 @@
             };
             const beat = song.bpm ? 60 / song.bpm : 0.5;
             let running = true;
+            let interrupted = false;
+            const stopRecording = () => {
+                interrupted = true;
+                running = false;
+                try { player.stop(); } catch (err) {}
+                try { if (recorder.state !== 'inactive') recorder.stop(); } catch (err) {}
+                try { clockCtx.close(); } catch (err) {}
+                stream.getTracks().forEach(track => track.stop());
+            };
+            lyricRecording = { stop: stopRecording };
             const drawOnce = () => {
                 const at = clock();
                 frame.at = at;
@@ -4658,6 +4677,10 @@
             });
             running = false;
             clearInterval(pump);
+            if (lyricRecording && lyricRecording.stop === stopRecording) lyricRecording = null;
+            // A stopped recording is a part of a song, not a lyric video: it is thrown
+            // away here so it can never be stored over the song's own picture.
+            if (interrupted) throw new Error('the recording was stopped, so nothing was saved');
             await new Promise(resolve => setTimeout(resolve, 250));
             if (recorder.state !== 'inactive') recorder.stop();
             await finished;

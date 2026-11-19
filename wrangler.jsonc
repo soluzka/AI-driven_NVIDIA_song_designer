@@ -28,6 +28,15 @@
   // model), which is what config.js now points at. A tunnel address used to sit
   // here, and it went stale every time the tunnel restarted, leaving the live
   // site calling an address that no longer existed.
+  // The pool's Worker is a service binding, not just a URL: both Workers live on
+  // *.bpiersing.workers.dev, and Cloudflare refuses a Worker's fetch to another
+  // Worker on the same zone (error 1042). The site could never read the pool's
+  // list, so a card that joined the pool - every Colab notebook - stayed invisible
+  // while the one that published to this Worker's KV appeared. A binding answers on
+  // a made-up host instead, which is allowed.
+  "services": [
+    { "binding": "POOL", "service": "song-pool" }
+  ],
   "vars": {
     "DOWNLOAD_API": "",
     // Optional address of the music model when it is reachable from the

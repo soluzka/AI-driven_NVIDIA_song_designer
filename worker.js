@@ -428,28 +428,58 @@ const POOL_KEY = 'song_pool';
 const POOL_LIMIT = 8;                                  // machines kept
 const POOL_TTL_MS = 7 * 24 * 60 * 60 * 1000;           // forgotten after a week
 
+// Which list the last /pool answer came from, reported by /api/song/pool: with two
+// stores and one page, guessing which one was read wasted an afternoon.
+let lastPoolSource = 'none';
+
+// The one way to reach the pool's Worker. Cloudflare refuses a Worker's fetch to
+// another Worker on the same zone (error 1042), and both live on
+// *.bpiersing.workers.dev, so the service binding is what works; the address stays as
+// the fallback for a deployment that has no binding.
+async function poolRequest(env, path, init) {
+  const options = Object.assign({ headers: { accept: 'application/json' } }, init || {});
+  if (env.POOL && typeof env.POOL.fetch === 'function') {
+    return env.POOL.fetch('https://pool' + path, options);
+  }
+  const base = String(env.POOL_API || '').trim().replace(/\/+$/, '').replace(/\/pool$/, '');
+  if (!base) throw new Error('no pool binding and no pool address');
+  return fetch(base + path, options);
+}
+
 async function readPool(env) {
   // A separate pool base wins when it is configured. That Worker holds only the
   // list, so it survives a redeploy of the site and can be run by whoever owns the
   // cards. An unreachable pool base falls through to this Worker's own KV, so one
   // broken address cannot take the site's models offline.
-  const remote = String(env.POOL_API || '').trim().replace(/\/+$/, '');
-  if (remote) {
+  // A base that already names the route (…/pool) is used as written: appending
+  // another /pool asked the pool Worker for /pool/pool and got a 404, which read as
+  // "the pool is unreachable" and quietly hid every machine it held.
+  const remote = String(env.POOL_API || '').trim().replace(/\/+$/, '').replace(/\/pool$/, '');
+  let baseList = null;   // null: the pool base did not answer at all
+  let remoteNote = '';   // why it did not answer, when it did not
+  if (remote || (env.POOL && typeof env.POOL.fetch === 'function')) {
     try {
-      const answer = await fetch(remote + '/pool', { headers: { accept: 'application/json' } });
+      const answer = await poolRequest(env, '/pool');
+      if (!answer.ok) remoteNote = 'status ' + answer.status + ' at ' + answer.url
+        + ' body ' + (await answer.text()).slice(0, 160);
       if (answer.ok) {
         const info = await answer.json();
-        const list = (info.machines || [])
+        baseList = (info.machines || [])
           .map((machine) => ({ url: String(machine.url || '').replace(/\/+$/, ''), seen: machine.seen || Date.now() }))
           .filter((machine) => machine.url);
-        // An empty answer is the pool base saying "nobody is online", and that is
-        // the truth: falling through to this Worker's own KV here resurrected a
-        // tunnel the pool had just pruned, and the site kept routing to it.
-        return list.length ? livePool(list) : [];
       }
-    } catch (err) {}
+    } catch (err) {
+      remoteNote = 'error: ' + ((err && err.message) || err);
+    }
   }
-  if (!env.STATS) return [];
+  // An empty answer is the pool base saying "nobody is online", and that is the
+  // truth: falling through to this Worker's own KV here resurrected a tunnel the
+  // pool had just pruned, and the site kept routing to it.
+  if (baseList && !baseList.length) { lastPoolSource = 'pool-empty'; return []; }
+  if (!env.STATS) {
+    lastPoolSource = baseList ? 'pool' : 'none';
+    return baseList ? livePool(baseList) : [];
+  }
   let entries = [];
   try {
     const raw = await env.STATS.get(POOL_KEY);
@@ -465,7 +495,16 @@ async function readPool(env) {
   if (legacy && !pool.some((entry) => entry.url === legacy)) {
     pool.push({ url: legacy, seen: Date.now(), legacy: true });
   }
-  return livePool(pool);
+  // Two lists hold machines: the pool base, which every boot and notebook joins,
+  // and this Worker's own KV, which older pages and the PC's service publish to.
+  // Reading only one of them hid a card that had joined the other - a Colab T4 in
+  // the pool base never reached the page while the Kaggle machine sat in KV. Both
+  // are now offered when both answer; the pool base still wins when it says empty.
+  const merged = baseList
+    ? baseList.concat(pool.filter((entry) => !baseList.some((known) => known.url === entry.url)))
+    : pool;
+  lastPoolSource = baseList ? 'pool+kv' : (remote ? 'kv-fallback ' + remote + ' ' + remoteNote : 'kv');
+  return livePool(merged);
 }
 
 // --- which of those addresses answers ----------------------------------------
@@ -610,16 +649,13 @@ async function songEndpoint(request, env) {
     // When the pool lives on its own base, the machine belongs there too: this
     // Worker forwards the announcement so both lists agree, and neither the site
     // nor the pool has to be redeployed for the other to keep working.
-    const poolBase = String(env.POOL_API || '').trim().replace(/\/+$/, '');
-    if (poolBase) {
-      try {
-        await fetch(poolBase + '/join', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', 'x-join-key': env.SONG_ENDPOINT_KEY || '' },
-          body: JSON.stringify({ url: value }),
-        });
-      } catch (err) {}
-    }
+    try {
+      await poolRequest(env, '/join', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-join-key': env.SONG_ENDPOINT_KEY || '' },
+        body: JSON.stringify({ url: value }),
+      });
+    } catch (err) {}
     return json({ ok: true, url: value, pool: pool.map((entry) => entry.url) });
   }
 
@@ -628,6 +664,7 @@ async function songEndpoint(request, env) {
     url: pool.length ? pool[0].url : (env.SONG_API || ''),
     urls: pool.map((entry) => entry.url),
     machines: pool.map((entry) => ({ url: entry.url, seen: entry.seen })),
+    source: lastPoolSource,
   });
 }
 

@@ -5113,13 +5113,16 @@
             // the machine that was actually serving the songs had gone away.
             let savedModelAddress = '';
             try { savedModelAddress = (localStorage.getItem('songApi') || '').trim().replace(/\/+$/, ''); } catch (err) {}
+            // A saved loopback address is where this PC's service listens, not a machine
+            // chosen by hand - the same rule the GPU badge follows - so it does not keep
+            // this line on 127.0.0.1 while a pooled card is the one serving.
+            const savedIsLocal = /^https?:\/\/(127\.|localhost|\[::1\])/i.test(savedModelAddress);
+            const pastedAddress = savedIsLocal ? '' : savedModelAddress;
             const fallbackAddress = String(window.SONG_API || 'http://127.0.0.1:8090').trim().replace(/\/+$/, '');
-            const publishedAddress = String(window.remoteSongApi || '').trim().replace(/\/+$/, '');
-            // This chip is the machine's own endpoint unless one was pasted here. The
-            // pool is not "the model endpoint": it is where songs go when no endpoint
-            // of your own is set, and naming it here erased the PC's address.
-            const address = savedModelAddress || fallbackAddress;
-            const source = savedModelAddress ? 'connected by hand' : 'the built-in default';
+            // The machine the site is on now, which is what a song from this page uses
+            // when nothing was pasted: the pool's current tunnel, or the address a
+            // machine published. Read before choosing, so a GPU that joined after the
+            // page opened can be the one named here.
             let tunnel = '';
             try {
                 const answer = await fetchBounded('/api/song/endpoint', { cache: 'no-store' }, 8000);
@@ -5128,6 +5131,14 @@
                     tunnel = String(info.url || '').trim().replace(/\/+$/, '');
                 }
             } catch (err) { }
+            if (tunnel) window.remoteSongApi = tunnel;
+            // A pasted address wins, because that is this browser's choice. With none,
+            // the tunnel that is actually serving is the address this line has to show:
+            // the built-in 127.0.0.1 described a machine no visitor's song went to while
+            // a pooled card was doing the work.
+            const address = pastedAddress || tunnel || savedModelAddress || fallbackAddress;
+            const source = pastedAddress ? 'connected by hand'
+                : (tunnel ? 'the machine the pool is on now' : 'this PC\'s own service');
             baseModelCache = { at: Date.now(), address, tunnel, source };
             return baseModelCache;
         }
@@ -5268,7 +5279,24 @@
             // machines - it is where the local service happens to listen - so it does not
             // outrank the kernel. Only a pasted tunnel (Colab, another PC) does.
             const savedIsLocal = /^https?:\/\/(127\.|localhost|\[::1\])/i.test(savedModel);
-            if ((!savedModel || savedIsLocal) && !String(window.remoteSongApi || '').trim()) {
+            if (!savedModel || savedIsLocal) {
+                // Follow the machine the site is on now. A card that joined after this
+                // page was opened stayed invisible: the header and the address chip kept
+                // naming whatever tunnel was current at load, so a second GPU could not
+                // take over without a reload.
+                try {
+                    const answer = await fetchBounded('/api/song/endpoint', { cache: 'no-store' }, 8000);
+                    if (answer.ok) {
+                        const live = await answer.json();
+                        const now = String((live && live.url) || '').trim().replace(/\/+$/, '');
+                        if (now && !/^https?:\/\/(127\.|localhost|\[::1\])/i.test(now)) {
+                            window.remoteSongApi = now;
+                        }
+                    }
+                } catch (err) {}
+            }
+            if (!savedModel || savedIsLocal) {
+              if (!String(window.remoteSongApi || '').trim()) {
                 try {
                     const pooled = await fetchBounded('/api/song/pool', { cache: 'no-store' }, 8000);
                     if (pooled.ok) {
@@ -5283,6 +5311,7 @@
                         }
                     }
                 } catch (err) {}
+              }
             }
             // The running kernel first, then the locally saved endpoint, then whatever the
             // page is served from: a loopback address saved earlier must not keep the page
@@ -7934,6 +7963,12 @@
             const settling = !chip || chip.dataset.state === 'offline' || chip.dataset.state === 'retrying';
             setTimeout(async () => {
                 await refreshGpu();
+                // The address chip is checked on the same beat: a new GPU joining the
+                // pool changes which tunnel the page calls first, and that line has to
+                // say the one in use rather than the one it saw at load.
+                if (typeof refreshBaseModel === 'function') {
+                    try { await refreshBaseModel(); } catch (err) {}
+                }
                 watchGpu();
             }, settling ? 5000 : 30000);
         })();

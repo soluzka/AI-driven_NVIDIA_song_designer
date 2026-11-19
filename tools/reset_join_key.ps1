@@ -2,8 +2,14 @@
 #
 #   reset_join_key.cmd                 type the key you want, then Enter
 #   reset_join_key.cmd -Key "abc..."   set it in one line
+#   reset_join_key.cmd -Url "https://host"   name that address as the model instead
+#   reset_join_key.cmd -KeepUrl        keep the address this PC already has
 #   reset_join_key.cmd -Show           print the key this PC holds now
 #   reset_join_key.cmd -DryRun         show it, change nothing
+#
+# Every run also opens a new tunnel, so the address the site names is a new one each
+# time: a Quick Tunnel's name lives only as long as the process that opened it, which is
+# why the same address used to come back forever. -KeepUrl skips that.
 #
 # The key is written where join.cmd and the launcher already read it -
 # <app>\build\song_endpoint.key - and then handed to the two Workers, but only on a PC
@@ -24,7 +30,8 @@ param(
     [string]$App = '',
     [switch]$Show,
     [switch]$DryRun,
-    [switch]$NoSync
+    [switch]$NoSync,
+    [switch]$KeepUrl
 )
 
 $ErrorActionPreference = 'Stop'
@@ -193,6 +200,23 @@ function Ensure-Wrangler {
 
 $canSync = -not $NoSync -and (Ensure-Wrangler)
 
+# --- a new address, without a reboot -----------------------------------------
+# A Quick Tunnel's name lives exactly as long as the process that opened it, which is why
+# every run used to keep the address from whenever the model started. Stopping that one
+# process and opening another gives a name nobody has seen, in seconds, with the model,
+# its warmed-up weights and the other services untouched. -KeepUrl leaves it alone.
+function Renew-Tunnel {
+    $cf = Join-Path $App 'tools\bin\cloudflared.exe'
+    $starter = Join-Path $App 'tools\start_services.ps1'
+    if (-not (Test-Path $cf) -or -not (Test-Path $starter)) {
+        Say '  there is no tunnel to replace here, so the address stays as it is'
+        return $false
+    }
+    Say '  opening a new tunnel: a new address, the model keeps running'
+    & $starter -Quiet -NewTunnel | Out-Null
+    return $true
+}
+
 function Push-Secret([string]$label, [string]$name, [string[]]$extra) {
     $line = '"{0}" "{1}" secret put {2}' -f $script:nodePath, $script:wranglerPath, $name
     if ($extra -and $extra.Count) { $line += ' ' + ($extra -join ' ') }
@@ -242,11 +266,29 @@ if ($NoSync) {
 # This names this machine as the model. It is not a pool join: nothing is added to the
 # list of GPUs that take work, which is the pool badge's business, not the header's.
 $tunnelPath = Join-Path $App 'build\tunnel_url.txt'
+# The address of the tunnel this run opens. It wins over every recorded one: a tunnel
+# left running elsewhere keeps answering, so preferring the remembered address would
+# name the old one forever and the new address would never appear to change.
+$fresh = ''
+if ($KeepUrl) {
+    Say ''
+    Say '-KeepUrl: the address this PC already has is kept.'
+} else {
+    Say ''
+    Say 'getting a new address...'
+    $before = if (Test-Path $tunnelPath) { ((Get-Content -Raw -Path $tunnelPath) -as [string]).Trim() } else { '' }
+    Renew-Tunnel | Out-Null
+    if (Test-Path $tunnelPath) {
+        $after = ((Get-Content -Raw -Path $tunnelPath) -as [string]).Trim()
+        if ($after -and $after -ne $before) { $fresh = $after }
+    }
+}
 # An address typed here wins over the tunnel this PC last wrote - it is the one the person
 # chose. But a tunnel name dies when its session ends, and the app writes a new one when it
 # starts again, so a typed address that no longer answers is stepped over for the one the
 # app recorded: naming a dead host is worse than naming the live one beside it.
 $candidates = @()
+if ($fresh) { $candidates += $fresh }
 foreach ($candidate in @($typedUrlPath, $tunnelPath)) {
     if (-not (Test-Path $candidate)) { continue }
     $v = ((Get-Content -Raw -Path $candidate) -as [string]).Trim().TrimEnd('/')
@@ -264,11 +306,17 @@ if (-not $candidates.Count) {
     # tunnel the app opened, and one left over from a session that ended resolves to
     # nothing. Nagging the header with it is worse than leaving it on the pool.
     foreach ($c in $candidates) {
+        # A tunnel that has just been opened is in its log a few seconds before it answers
+        # from the edge, so one quick probe calls a brand-new address dead. Five tries over
+        # about fifteen seconds covers that without hanging on one that really is gone.
         $alive = $false
-        try {
-            $probe = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($c + '/health') -TimeoutSec 6
-            $alive = ($probe.StatusCode -eq 200)
-        } catch { $alive = $false }
+        for ($attempt = 0; $attempt -lt 5 -and -not $alive; $attempt++) {
+            try {
+                $probe = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($c + '/health') -TimeoutSec 6
+                $alive = ($probe.StatusCode -eq 200)
+            } catch { $alive = $false }
+            if (-not $alive) { Start-Sleep -Seconds 3 }
+        }
         if ($alive) { $tunnel = $c; break }
         Say "  $c did not answer, so it is not named."
     }
@@ -302,6 +350,52 @@ if (-not $candidates.Count) {
         if ($status -eq 0) {
             Say "  $tunnel"
             Say '  named as the model, so the header says this PC and not the pool.'
+            # Remembered as the address this PC now has, so the next run starts from it
+            # rather than from one that may have stopped answering.
+            try { Set-Content -Path $typedUrlPath -Value $tunnel -Encoding ascii -NoNewline } catch { }
+
+            # --- and the pool is the list that takes work --------------------------
+            # Naming an address is not joining: the header reads one address, the pool
+            # badge reads this list. The card for this address is added here, and cards
+            # that no longer answer - the tunnels of sessions that have ended - are taken
+            # out, so a dead address cannot sit in the badge for the week the pool keeps a
+            # card. A card younger than five minutes is left alone: a tunnel is in its log
+            # before it answers from the edge, and removing one that is still coming up is
+            # worse than one stale card for a few minutes. A card that does answer is never
+            # touched - that is this PC's own GPU as much as the notebook's.
+            $poolRoot = 'https://song-pool.bpiersing.workers.dev'
+            try {
+                Invoke-RestMethod -Method Post -Uri ($poolRoot + '/join') `
+                    -Headers @{ 'x-join-key' = $Key } -ContentType 'application/json' `
+                    -Body (@{ url = $tunnel } | ConvertTo-Json -Compress) -TimeoutSec 25 | Out-Null
+                Say '  in the pool: this address is one of the GPUs the site can send to'
+                $pool = Invoke-RestMethod -Uri ($poolRoot + '/pool') -TimeoutSec 25
+                foreach ($m in @($pool.machines)) {
+                    $old = [string]$m.url
+                    if (-not $old -or $old -eq $tunnel) { continue }
+                    $ageMin = 0
+                    try {
+                        $ageMin = ((Get-Date).ToUniversalTime() - ([datetimeoffset]::FromUnixTimeMilliseconds([long]$m.joined)).UtcDateTime).TotalMinutes
+                    } catch { $ageMin = 0 }
+                    if ($ageMin -lt 5) { continue }
+                    $answers = $false
+                    for ($a = 0; $a -lt 2 -and -not $answers; $a++) {
+                        try {
+                            $answers = (Invoke-WebRequest -UseBasicParsing -Uri ($old + '/health') -TimeoutSec 6).StatusCode -eq 200
+                        } catch { $answers = $false }
+                    }
+                    if (-not $answers) {
+                        try {
+                            Invoke-RestMethod -Method Post -Uri ($poolRoot + '/remove') `
+                                -Headers @{ 'x-join-key' = $Key } -ContentType 'application/json' `
+                                -Body (@{ url = $old } | ConvertTo-Json -Compress) -TimeoutSec 20 | Out-Null
+                            Say "  taken out of the pool: $old no longer answers"
+                        } catch { }
+                    }
+                }
+            } catch {
+                Say "  the pool was not updated: $($_.Exception.Message)"
+            }
         } elseif ($status -eq 403) {
             Say '  not pointed: the pool still holds a different GPU connect key than this PC.'
             Say '  Run this once on the PC signed in to the Cloudflare account that owns the'
@@ -314,4 +408,4 @@ if (-not $candidates.Count) {
 
 Say ''
 Say 'the song key (SONG_ENDPOINT_KEY) was not touched.'
-Say 'done. restart the song service so it reads the new key: it keeps the one it started with.'
+Say 'done. nothing has to be restarted: the key and the address are read as they are used.'

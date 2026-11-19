@@ -387,7 +387,10 @@ if ($Start) {
     # loaded at start-up, so it is stopped and started again. Installing new
     # packages without this is how a fix looks applied and behaves old.
     Say 'starting the services (restarting any that are already running)'
-    & (Join-Path $root 'tools\start_services.ps1') -Restart
+    # -NewTunnel: the same thing the reset does. A Quick Tunnel's name lives as long as
+    # the process that opened it, so an install that reused a running one would keep the
+    # address from a previous session and never show a new one.
+    & (Join-Path $root 'tools\start_services.ps1') -Restart -NewTunnel
 }
 
 # --- 7. the header says this PC ----------------------------------------------
@@ -402,7 +405,9 @@ if ($Start) {
     $keyFile = Join-Path $buildDir 'song_endpoint.key'
     $candidates = @()
     for ($i = 0; $i -lt 12 -and -not $candidates.Count; $i++) {
-        foreach ($file in @($typedFile, $tunnelFile)) {
+        # The tunnel this install just opened comes first: a tunnel started earlier keeps
+        # answering, and preferring a remembered address would name the old one forever.
+        foreach ($file in @($tunnelFile, $typedFile)) {
             if (-not (Test-Path $file)) { continue }
             $v = ((Get-Content -Raw -Path $file) -as [string]).Trim().TrimEnd('/')
             if ($v -match '^https?://' -and ($candidates -notcontains $v)) { $candidates += $v }
@@ -423,11 +428,17 @@ if ($Start) {
         # leaves every device with a model that cannot render.
         $mine = ''
         foreach ($c in $candidates) {
+            # A tunnel is in its log a few seconds before it answers from the edge, so one
+            # quick probe calls a brand-new address dead. Five tries over about fifteen
+            # seconds covers that without hanging on one that really has gone.
             $alive = $false
-            try {
-                $probe = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($c + '/health') -TimeoutSec 8
-                $alive = ($probe.StatusCode -eq 200)
-            } catch { $alive = $false }
+            for ($attempt = 0; $attempt -lt 5 -and -not $alive; $attempt++) {
+                try {
+                    $probe = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($c + '/health') -TimeoutSec 8
+                    $alive = ($probe.StatusCode -eq 200)
+                } catch { $alive = $false }
+                if (-not $alive) { Start-Sleep -Seconds 3 }
+            }
             if ($alive) { $mine = $c; break }
             Say "  $c did not answer, so it is not named."
         }

@@ -37,7 +37,8 @@ param(
     [switch]$NoTunnel,
     [switch]$Quiet,
     [switch]$Watch,
-    [switch]$Restart
+    [switch]$Restart,
+    [switch]$NewTunnel
 )
 
 $ErrorActionPreference = 'Stop'
@@ -385,6 +386,23 @@ if ($NoTunnel) {
 } else {
     $live = @(Get-Process cloudflared -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -eq $cloudflared })
+    if ($NewTunnel) {
+        # A Quick Tunnel's name lives exactly as long as the process that opened it, so a
+        # new address is not a restart of anything else: stopping that process and opening
+        # another gives a name nobody has seen, with the model left alone. Any cloudflared
+        # is stopped, not only the one under this folder: the tunnel that is serving the
+        # model may have been started from another copy of the app, and leaving it running
+        # is exactly how the same address comes back.
+        $running = @(Get-Process cloudflared -ErrorAction SilentlyContinue)
+        if ($running.Count -gt 0) {
+            foreach ($p in $running) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Seconds 2
+            Say 'tunnel: replacing the running one for a new address'
+        } else {
+            Say 'tunnel: opening a new one'
+        }
+        $live = @()
+    }
     if ($live.Count -gt 0) {
         Say 'tunnel: already running'
     } else {

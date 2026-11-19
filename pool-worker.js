@@ -82,11 +82,11 @@ async function writePool(env, pool) {
 // a machine was dropped after a week of silence, so yesterday's dead tunnel kept
 // being handed out. The site then routed to nothing and its badge sat at "warming"
 // over a machine that had not existed since the day before. So the register asks.
-async function answers(base) {
+async function answers(base, timeout = 8000) {
   try {
     const answer = await fetch(base + '/health', {
       headers: { accept: 'application/json' },
-      signal: AbortSignal.timeout(2500),
+      signal: AbortSignal.timeout(timeout),
     });
     if (!answer.ok) return false;
     const text = await answer.text();
@@ -108,7 +108,22 @@ async function livingPool(env) {
   const pool = await readPool(env);
   if (!pool.length) return pool;
   const answered = await Promise.allSettled(pool.map((entry) => answers(entry.url)));
-  const living = pool.filter((entry, index) => answered[index].status === 'fulfilled' && answered[index].value === true);
+  const alive = pool.map((entry, index) => answered[index].status === 'fulfilled' && answered[index].value === true);
+  // A machine that joined a moment ago has a tunnel nobody has walked through yet, and
+  // the first request to a fresh trycloudflare hostname pays for the TLS handshake.
+  // One miss at 2.5 s therefore deleted machines that were alive, and nothing re-joins
+  // them: the boot joins once. A miss is asked again, slowly, before it is believed.
+  const retry = pool.filter((entry, index) => !alive[index]);
+  if (retry.length) {
+    const again = await Promise.allSettled(retry.map((entry) => answers(entry.url, 12000)));
+    let at = 0;
+    pool.forEach((entry, index) => {
+      if (alive[index]) return;
+      alive[index] = again[at] && again[at].status === 'fulfilled' && again[at].value === true;
+      at += 1;
+    });
+  }
+  const living = pool.filter((entry, index) => alive[index]);
   if (living.length !== pool.length) await writePool(env, living);
   return living;
 }

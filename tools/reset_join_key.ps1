@@ -192,7 +192,7 @@ function Find-LiveAddress {
     return ''
 }
 
-function Renew-Tunnel {
+function Renew-Tunnel([switch]$Retried) {
     $cf = Join-Path $App 'tools\bin\cloudflared.exe'
     $cfg = Join-Path $App 'tools\bin\quick-tunnel.yml'
     # A log of its own for every rotation, named by the minute: a shared one holds the
@@ -286,7 +286,26 @@ function Renew-Tunnel {
         if (-not $alive) { Start-Sleep -Seconds 3 }
     }
     if (-not $alive) {
-        Say "  $new was opened but never answered, so nothing was stopped and the address is unchanged"
+        Say "  $new was opened but never answered"
+        # That is what Cloudflare's throttle looks like: the tunnel registers, then the edge
+        # answers 530 for the name. When this PC has already piled up five of them, every
+        # cloudflared is pruned and the address is tried once more from a single tunnel -
+        # the first one it tried, with the dead pile out of the way.
+        $all = @(Get-Process cloudflared -ErrorAction SilentlyContinue)
+        if (-not $Retried -and $all.Count -ge 5) {
+            Say "  pruning old tunnels ($($all.Count) running, all of them), then trying once more"
+            foreach ($p in $all) {
+                try {
+                    Stop-Process -Id $p.Id -Force -ErrorAction Stop
+                    Say "  pruned the tunnel running as pid $($p.Id)"
+                } catch {
+                    Say "  pid $($p.Id) belongs to another account and cannot be stopped from here"
+                }
+            }
+            Start-Sleep -Seconds 3
+            return (Renew-Tunnel -Retried)
+        }
+        Say '  nothing was stopped and the address is unchanged'
         return ''
     }
 

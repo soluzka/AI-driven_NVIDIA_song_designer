@@ -31,7 +31,8 @@ param(
     [switch]$Show,
     [switch]$DryRun,
     [switch]$NoSync,
-    [switch]$KeepUrl
+    [switch]$KeepUrl,
+    [switch]$PointOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -126,6 +127,27 @@ if ($Url) {
     }
 }
 
+# -PointOnly: do the last half only - a new tunnel, the address named, the card joined
+# to the pool, dead cards taken out - using the key this PC already has. The installer
+# calls it that way, so both commands point, join and prune through this one script
+# instead of two that can drift apart.
+if ($PointOnly) {
+    if (-not (Test-Path $keyPath)) {
+        Say ''
+        Say 'there is no join key on this PC yet, so the pool would refuse a card from it.'
+        Say 'Run this once with the key first.'
+        exit 1
+    }
+    $Key = ((Get-Content -Raw -Path $keyPath) -as [string]).Trim()
+    if (-not $Key) {
+        Say ''
+        Say 'the join key on this PC is empty; run this once with the key first.'
+        exit 1
+    }
+}
+
+if (-not $PointOnly) {
+
 if ($Show -and -not $Key) {
     if (-not (Test-Path $keyPath)) { Say 'this PC has no key yet'; exit 1 }
     Say ''
@@ -207,14 +229,69 @@ $canSync = -not $NoSync -and (Ensure-Wrangler)
 # its warmed-up weights and the other services untouched. -KeepUrl leaves it alone.
 function Renew-Tunnel {
     $cf = Join-Path $App 'tools\bin\cloudflared.exe'
-    $starter = Join-Path $App 'tools\start_services.ps1'
-    if (-not (Test-Path $cf) -or -not (Test-Path $starter)) {
-        Say '  there is no tunnel to replace here, so the address stays as it is'
-        return $false
+    $cfg = Join-Path $App 'tools\bin\quick-tunnel.yml'
+    $log = Join-Path $App 'build\tunnel-new.log'
+    if (-not (Test-Path $cf)) {
+        Say '  there is no cloudflared on this PC, so the address stays as it is'
+        return ''
     }
-    Say '  opening a new tunnel: a new address, the model keeps running'
-    & $starter -Quiet -NewTunnel | Out-Null
-    return $true
+
+    # Open the second tunnel first, beside the one that is serving. Nothing is stopped
+    # until the new address answers: a rotation that stops the old one first is a
+    # disconnection, not a change of address, and the model stops being reachable while
+    # the new one comes up.
+    $oldIds = @(Get-Process cloudflared -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+    Say '  opening a second tunnel beside the one that is serving...'
+    Remove-Item $log -ErrorAction SilentlyContinue
+    # Start-Process, not a child of this window: a tunnel that is a child of this console
+    # stops the moment the window closes, which is how an address appears and then dies.
+    try {
+        Start-Process -FilePath $cf -WorkingDirectory $App -WindowStyle Hidden -ArgumentList @(
+            'tunnel', '--config', $cfg, '--url', 'http://127.0.0.1:8090',
+            '--no-autoupdate', '--logfile', $log, '--loglevel', 'info'
+        ) -PassThru | Out-Null
+    } catch {
+        Say "  cloudflared did not start: $($_.Exception.Message)"
+        return ''
+    }
+
+    $new = ''
+    for ($i = 0; $i -lt 20 -and -not $new; $i++) {
+        Start-Sleep -Seconds 3
+        if (Test-Path $log) {
+            $new = (Select-String -Path $log -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' |
+                ForEach-Object { $_.Matches[0].Value } | Select-Object -Last 1)
+        }
+    }
+    if (-not $new) {
+        Say '  no new tunnel appeared, so nothing was stopped and the address is unchanged'
+        return ''
+    }
+
+    $alive = $false
+    for ($a = 0; $a -lt 10 -and -not $alive; $a++) {
+        try {
+            $alive = (Invoke-WebRequest -UseBasicParsing -Uri ($new + '/health') -TimeoutSec 8).StatusCode -eq 200
+        } catch { $alive = $false }
+        if (-not $alive) { Start-Sleep -Seconds 3 }
+    }
+    if (-not $alive) {
+        Say "  $new was opened but never answered, so nothing was stopped and the address is unchanged"
+        return ''
+    }
+
+    # Only now: the new one answers, so the old ones can go without anybody noticing.
+    Say "  new address: $new (the old one answers until it is closed)"
+    $closed = 0
+    foreach ($id in $oldIds) {
+        try { Stop-Process -Id $id -Force -ErrorAction Stop; $closed++ } catch { }
+    }
+    if ($closed -lt $oldIds.Count) {
+        Say '  one old tunnel runs under another account and cannot be closed from here;'
+        Say '  the pool drops its card as soon as it stops answering'
+    }
+    try { Set-Content -Path (Join-Path $App 'build\tunnel_url.txt') -Value $new -Encoding ascii -NoNewline } catch { }
+    return $new
 }
 
 function Push-Secret([string]$label, [string]$name, [string[]]$extra) {
@@ -259,6 +336,8 @@ if ($NoSync) {
     }
 }
 
+} # end of the key half ($PointOnly skips it)
+
 # --- and the header has to name this PC ----------------------------------
 # "AI ready · CUDA · this PC" is the address the site publishes; every device reads it
 # from GET /api/song/endpoint. The site's own KV runs out of writes daily, so the address
@@ -276,13 +355,9 @@ if ($KeepUrl) {
 } else {
     Say ''
     Say 'getting a new address...'
-    $before = if (Test-Path $tunnelPath) { ((Get-Content -Raw -Path $tunnelPath) -as [string]).Trim() } else { '' }
-    Renew-Tunnel | Out-Null
-    if (Test-Path $tunnelPath) {
-        $after = ((Get-Content -Raw -Path $tunnelPath) -as [string]).Trim()
-        if ($after -and $after -ne $before) { $fresh = $after }
-    }
+    $fresh = Renew-Tunnel
 }
+
 # An address typed here wins over the tunnel this PC last wrote - it is the one the person
 # chose. But a tunnel name dies when its session ends, and the app writes a new one when it
 # starts again, so a typed address that no longer answers is stepped over for the one the

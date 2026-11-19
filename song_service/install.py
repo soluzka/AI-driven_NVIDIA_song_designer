@@ -143,7 +143,7 @@ def enable_parallel_transfer():
     return True
 
 
-def download_weights(manifest):
+def download_weights(manifest, only=''):
     try:
         from huggingface_hub import snapshot_download
     except ImportError:
@@ -154,6 +154,20 @@ def download_weights(manifest):
     # turns a 10 GB install into an hour and a half.
     if enable_parallel_transfer():
         print('parallel transfer: on (hf_transfer, 8 concurrent files)')
+
+    # --only narrows the run to the models a caller actually needs: the offline
+    # boot fetches the music model first because the service cannot start without
+    # it, and only takes the optional lyricist when the disk has room for both.
+    wanted = only.strip().lower()
+    if wanted:
+        picked = [m for m in manifest['models']
+                  if wanted in (m.get('name') or '').lower()
+                  or wanted in (m.get('repo') or '').lower()
+                  or wanted in (m.get('target') or '').lower()]
+        if not picked:
+            raise SystemExit('no model in the manifest matches --only ' + only)
+        manifest = dict(manifest, models=picked)
+        print('only:', ', '.join(m['name'] for m in picked))
 
     for model in manifest['models']:
         repo = model.get('repo')
@@ -175,6 +189,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--packages', action='store_true', help='install packages only')
     parser.add_argument('--weights', action='store_true', help='download weights only')
+    parser.add_argument('--only', default='',
+                        help='with --weights: only models whose name, repo or target '
+                             'contains this text (e.g. --only ACE-Step)')
     parser.add_argument('--check', action='store_true', help='report what is installed, change nothing')
     args = parser.parse_args()
 
@@ -185,7 +202,7 @@ def main():
     if both or args.packages:
         install_packages(manifest)
     if both or args.weights:
-        download_weights(manifest)
+        download_weights(manifest, args.only)
     print('\nDone. Check the GPU with:')
     print(f'  {sys.executable} -c "import torch; print(torch.__version__, torch.cuda.is_available())"')
     print('Then start the service with: python song_service\\app.py')

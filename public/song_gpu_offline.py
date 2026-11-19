@@ -54,6 +54,14 @@ def mount(name):
     return direct if os.path.exists(direct) else ''
 
 
+def free_gb(path):
+    """Space left under a path; /kaggle/working is a fixed-size disk."""
+    try:
+        return shutil.disk_usage(path).free / (1024 ** 3)
+    except OSError:
+        return 0.0
+
+
 def unzip_all(folder, dest, names=None):
     """Extract every .zip in a mounted dataset into dest, and return dest.
 
@@ -163,10 +171,22 @@ if not weights and NETWORK:
     # Nothing mounted to read, but this kernel can still fetch: the dataset is the
     # offline path, not the only one. install.py is what a PC runs, so the versions it
     # resolves are the same ones.
-    say('no mounted weights, and the kernel has internet: fetching them from Hugging Face')
+    # The music model is the one the service cannot start without, and it is the
+    # larger of the two; the lyricist is optional, so it is fetched only when the disk
+    # has room for both. Filling the working disk half way through would leave the
+    # kernel with nothing to serve, which is worse than starting without lyrics.
+    room = free_gb(WORK)
+    say('no mounted weights, and the kernel has internet: fetching them from Hugging Face',
+        '(%.1f GB free in %s)' % (room, WORK))
+    if room < 10:
+        raise SystemExit('only %.1f GB free in %s, and the ACE-Step weights are ~8 GB: '
+                         'attach the weights dataset instead of downloading them'
+                         % (room, WORK))
     os.environ['HF_HOME'] = os.path.join(WORK, 'hf')
-    fetched = subprocess.run([sys.executable, os.path.join(SERVICE, 'install.py'), '--weights'],
-                             cwd=REPO)
+    installer = os.path.join(SERVICE, 'install.py')
+    only = [] if room >= 14 else ['--only', 'ACE-Step']
+    say('fetching:', 'everything the manifest lists' if not only else 'the music model only')
+    fetched = subprocess.run([sys.executable, installer, '--weights'] + only, cwd=REPO)
     candidate = os.path.join(SERVICE, 'models', 'ACE-Step-v1-3.5B')
     if fetched.returncode == 0 and os.path.isdir(candidate):
         weights = candidate

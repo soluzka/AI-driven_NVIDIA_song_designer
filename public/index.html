@@ -4834,9 +4834,10 @@
                 const startBtn = document.getElementById('startGpuBtnPanel');
                 if (startBtn) startBtn.hidden = count > 0;
                 if (chip) {
-                    // 'live' is the state the stylesheet draws green, and it means the pool
-                    // answered - the number is the count, not a comment on the count.
-                    chip.dataset.state = 'live';
+                    // Green means the pool has a machine in it and is drawn green by the
+                    // stylesheet; an empty pool is red, because nothing can render a song
+                    // however healthy the Worker answering this count is.
+                    chip.dataset.state = count ? 'live' : 'offline';
                     chip.title = count
                         ? 'This site connects to these by itself: ' + (info.machines || []).map(m => m.url).join(', ')
                         : 'No machine has joined yet. Press Start Kaggle, or run the free-GPU notebook.';

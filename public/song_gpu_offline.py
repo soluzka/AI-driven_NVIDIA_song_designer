@@ -19,6 +19,7 @@ The kernel text the site pushes is a dozen lines that find this file and run it,
 the pushed code never changes when this one does.
 """
 
+import json
 import os
 import re
 import shutil
@@ -35,6 +36,27 @@ VOICE_PORT = 8095
 
 def say(*parts):
     print(' '.join(str(p) for p in parts), flush=True)
+
+
+def health_summary(state):
+    """One line saying whether the model is loaded, and on which card.
+
+    /health is a whole document, and the log used to cut it at 200 characters - which
+    stopped before "loaded", so a run could not be judged from its own log.
+    """
+    if not state:
+        return 'no readable /health JSON'
+    loaded = 'loaded=' + str(bool(state.get('loaded')))
+    if state.get('warming'):
+        loaded += ' (warming, ' + str(state.get('warming_seconds') or 0) + 's)'
+    if state.get('warm_failed'):
+        loaded += ' (the warm failed)'
+    card = 'device=' + str(state.get('device')) + ' gpu=' + str(state.get('gpu'))
+    if state.get('vram_gb'):
+        card += ' ' + str(state['vram_gb']) + 'GB'
+    return (loaded + ' ' + card
+            + ' dtype=' + str(state.get('dtype'))
+            + ' checkpoint_present=' + str(state.get('checkpoint_present')))
 
 
 def mount(name):
@@ -220,15 +242,30 @@ log = open(os.path.join(WORK, 'song.log'), 'w')
 proc = subprocess.Popen([sys.executable, 'app.py', '--role', 'song'], cwd=SERVICE,
                         stdout=log, stderr=subprocess.STDOUT)
 health = ''
+state = {}
 for attempt in range(36):
+    answered = False
     try:
         with urllib.request.urlopen('http://127.0.0.1:%d/health' % PORT, timeout=5) as answer:
             health = answer.read().decode()
-        break
+        answered = True
     except Exception:
-        if attempt and attempt % 6 == 0:
-            say('  waiting for /health ...', str(attempt * 5) + 's')
-        time.sleep(5)
+        pass
+    try:
+        state = json.loads(health) if health.strip().startswith('{') else {}
+    except ValueError:
+        state = {}
+    # /health answers while the model is still warming, so the first reply proves the
+    # service is up and nothing more: stay in the loop until "loaded" is true, or the
+    # service stops claiming it is warming, or the three minutes are gone.
+    if answered and (state.get('loaded') or not state.get('warming')):
+        break
+    if attempt and attempt % 6 == 0:
+        say('  waiting for', 'the model to load' if answered else '/health', '...',
+            str(attempt * 5) + 's')
+        if answered:
+            say('   ', health_summary(state))
+    time.sleep(5)
 if not health:
     say('the service did not answer within 3 minutes. End of song.log:')
     try:
@@ -236,7 +273,18 @@ if not health:
     except OSError:
         pass
     raise SystemExit(2)
-say('service:', health[:200])
+say('service:', health_summary(state))
+if not state.get('loaded'):
+    if state.get('warm_failed'):
+        say('the model failed to load, so a song would not render. End of song.log:')
+        try:
+            say(open(os.path.join(WORK, 'song.log')).read()[-2000:])
+        except OSError:
+            pass
+    else:
+        say('the model is not loaded yet; the first song request will load it (song.log has the warm)')
+else:
+    say('model loaded on', state.get('gpu') or state.get('device'), '- songs can render now')
 
 # --- the voice service ------------------------------------------------------
 voice_log = open(os.path.join(WORK, 'voice.log'), 'w')

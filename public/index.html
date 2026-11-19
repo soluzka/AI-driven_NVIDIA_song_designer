@@ -1122,6 +1122,11 @@
                     joins by itself. Without that secret the card stays private and its last cell prints
                     one address for <strong>Connect my model</strong>. The card leaves when the session ends.
                     <br><br>
+                    Both routes join the same pool, and the join key is the only door: this notebook is
+                    public, so anyone can run it, but a card without <strong>SONG_JOIN_KEY</strong> in
+                    their own Colab secrets never joins this pool — their address is theirs alone.
+                    Nobody can put a GPU in this pool without the key.
+                    <br><br>
                     <strong>Start Kaggle</strong> — this card is shared instead: it runs here for
                     everybody and joins this pool, so it needs a Kaggle account. Kaggle caps a session
                     at <strong>12 hours</strong>: when that runs out the card stops, the tunnel closes and

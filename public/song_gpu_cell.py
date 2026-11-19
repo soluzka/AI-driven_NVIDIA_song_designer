@@ -15,6 +15,11 @@
 #   4. a hidden prompt, when this is a terminal rather than a notebook.
 # With none of those the card stays private and the address it prints is pasted into
 # Connect my model.
+#
+# Both routes join the same pool - this notebook, and the Kaggle kernel the site's Start
+# Kaggle pushes - and the key is the only door. This file is public, so anyone may run
+# it; a card without SONG_JOIN_KEY in that person's own Colab secrets never joins your
+# pool, and the address it prints is theirs alone.
 JOIN_KEY = ''
 
 import json

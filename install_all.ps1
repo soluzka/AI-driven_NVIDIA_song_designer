@@ -389,3 +389,57 @@ if ($Start) {
     Say 'starting the services (restarting any that are already running)'
     & (Join-Path $root 'tools\start_services.ps1') -Restart
 }
+
+# --- 7. the header says this PC ----------------------------------------------
+# Starting the services is not the same as the header saying "AI ready - this PC".
+# The header reads one address that the site hands to every device, and a machine is
+# that model only when it names its address there. The address is this PC's own
+# tunnel, named only if it answers: a tunnel from a session that has ended resolves
+# to nothing, and naming it leaves every device with a model that cannot render.
+if ($Start) {
+    $tunnelFile = Join-Path $buildDir 'tunnel_url.txt'
+    $keyFile = Join-Path $buildDir 'song_endpoint.key'
+    $mine = ''
+    for ($i = 0; $i -lt 12 -and -not $mine; $i++) {
+        if (Test-Path $tunnelFile) { $mine = ((Get-Content $tunnelFile -Raw) -as [string]).Trim() }
+        if (-not $mine) { Start-Sleep -Seconds 5 }
+    }
+    Say ''
+    if (-not $mine) {
+        Say 'the header was not pointed at this PC: the tunnel has not written its address yet'
+        Say '(build\tunnel_url.txt). Start the model once, then run reset_join_key.cmd.'
+    } elseif (-not (Test-Path $keyFile)) {
+        Say 'the header was not pointed at this PC: there is no join key here, and naming an'
+        Say 'address needs one. Run reset_join_key.cmd with the key.'
+    } else {
+        Say 'pointing the site at this PC for "AI ready - this PC"...'
+        $alive = $false
+        try {
+            $probe = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($mine + '/health') -TimeoutSec 8
+            $alive = ($probe.StatusCode -eq 200)
+        } catch { $alive = $false }
+        if (-not $alive) {
+            Say "  not pointed: $mine did not answer, so the header keeps what it uses now."
+        } else {
+            try {
+                $held = ((Get-Content $keyFile -Raw) -as [string]).Trim()
+                Invoke-RestMethod -Method Post `
+                    -Uri 'https://song-pool.bpiersing.workers.dev/state/site:endpoint' `
+                    -Headers @{ 'x-join-key' = $held } -ContentType 'application/json' `
+                    -Body (@{ value = $mine } | ConvertTo-Json -Compress) -TimeoutSec 25 | Out-Null
+                Say "  $mine"
+                Say '  named as the model, so the header says this PC and not the pool.'
+            } catch {
+                Say "  not pointed: $($_.Exception.Message)"
+                $code = 0
+                try { $code = [int]$_.Exception.Response.StatusCode } catch { $code = 0 }
+                if ($code -eq 403) {
+                    Say '  403: the pool holds a different GPU connect key than this PC. JOIN_KEY'
+                    Say '  on the pool and POOL_JOIN_KEY on the site have to match this key.'
+                } else {
+                    Say '  nothing on the Workers was changed by this step.'
+                }
+            }
+        }
+    }
+}

@@ -135,12 +135,13 @@ if ($Packages) {
             $lines += $trimmed
         }
     }
-    # transformers 4.57.6 (pinned by ACE-Step) refuses to import with a tokenizers
-    # older than 0.23.1: a run bundled with 0.22.1 warmed all the way to
-    # warm_failed="tokenizers>=0.23.1,<0.24.0 is required", so the model never loaded.
-    # 0.23.3 is the version Kaggle's own image carries, so nothing else shifts.
+    # transformers 4.57.6 states its own window in dependency_versions_table.py
+    # (tokenizers>=0.22.0,<=0.23.0) and require_version enforces it at import, so both
+    # edges cost a run: 0.22.1 tripped the image's newer transformers, and 0.23.3
+    # tripped our own with "found tokenizers==0.23.3". 0.23.0 was never published to
+    # PyPI (only 0.23.0rc0), so 0.22.2 is the newest release inside that window.
     $lines = @($lines | Where-Object { $_ -notmatch '^tokenizers' })
-    $lines += 'tokenizers==0.23.3'
+    $lines += 'tokenizers==0.22.2'
     Set-Content -Path $filtered -Value $lines -Encoding utf8
     Say ("unpacking {0} requirements for Python {1} / {2} (this is the slow part) ..." -f $lines.Count, $PythonVersion, $Platform)
     if (Test-Path $pylibs) { Remove-Item $pylibs -Recurse -Force }

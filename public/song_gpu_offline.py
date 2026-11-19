@@ -38,6 +38,42 @@ def say(*parts):
     print(' '.join(str(p) for p in parts), flush=True)
 
 
+# A cancelled session keeps nothing but its Output, so the boot's own lines go there
+# too: "your session was cancelled" with no reason is what a run leaves behind
+# otherwise, and boot.log is then the only place the last thing it printed survives.
+def tee_boot_log():
+    try:
+        handle = open(os.path.join(WORK, 'boot.log'), 'w', encoding='utf-8',
+                      errors='replace', buffering=1)
+    except OSError:
+        return
+
+    class Tee:
+        def __init__(self, *streams):
+            self.streams = streams
+
+        def write(self, text):
+            for stream in self.streams:
+                try:
+                    stream.write(text)
+                except Exception:
+                    pass
+            return len(text)
+
+        def flush(self):
+            for stream in self.streams:
+                try:
+                    stream.flush()
+                except Exception:
+                    pass
+
+    sys.stdout = Tee(sys.__stdout__, handle)
+    sys.stderr = Tee(sys.__stderr__, handle)
+
+
+tee_boot_log()
+
+
 def health_summary(state):
     """One line saying whether the model is loaded, and on which card.
 
@@ -82,6 +118,21 @@ def free_gb(path):
         return shutil.disk_usage(path).free / (1024 ** 3)
     except OSError:
         return 0.0
+
+
+def scratch_dir(want_gb):
+    """A place for a download that is not the output.
+
+    /kaggle/working is the Output and it is capped at 20 GB. The Hugging Face cache
+    and the model it was fetched from are two copies of the same 10 GB, so keeping
+    both there crossed the cap while the download was still running, and Kaggle
+    cancelled the session before the model could ever load. The cache only has to
+    outlive the download, and this disk is not saved, so it goes here instead.
+    """
+    for candidate in ('/kaggle/temp', '/tmp'):
+        if os.path.isdir(candidate) and free_gb(candidate) >= want_gb:
+            return candidate
+    return WORK
 
 
 def unzip_all(folder, dest, names=None):
@@ -213,7 +264,9 @@ if not weights and NETWORK:
         raise SystemExit('only %.1f GB free in %s, and the ACE-Step weights are ~8 GB: '
                          'attach the weights dataset instead of downloading them'
                          % (room, WORK))
-    os.environ['HF_HOME'] = os.path.join(WORK, 'hf')
+    os.environ['HF_HOME'] = os.path.join(scratch_dir(12), 'hf')
+    say('the Hugging Face cache goes to', os.environ['HF_HOME'],
+        'so the output holds one copy of the weights, not two')
     installer = os.path.join(SERVICE, 'install.py')
     only = [] if room >= 14 else ['--only', 'ACE-Step']
     say('fetching:', 'everything the manifest lists' if not only else 'the music model only')
@@ -245,18 +298,19 @@ if weights.startswith(os.path.join(SERVICE, 'models')):
         say('stop this run, then New Dataset from the Output tab and pick models/')
     except OSError as exc:
         say('left the weights where they were:', exc)
-# The Hub cache keeps its own copy of every file it fetched, and a run's output is
-# capped: two copies of 11 GB can push the save past that cap, and the save is the
-# only reason the weights are reusable at all. models/ is complete on its own.
+# The Hub cache keeps its own copy of every file it fetched, and the output is
+# capped: two copies of 11 GB crossed that cap while the download was still running.
+# The cache now lives on the scratch disk, so this only has to clear what an older
+# boot left in the output, and what is left on the scratch disk either way.
 cache = os.environ.get('HF_HOME') or ''
-if cache.startswith(WORK) and os.path.isdir(cache):
+if cache and os.path.isdir(cache):
     shutil.rmtree(cache, ignore_errors=True)
-    say('dropped the Hugging Face cache, so the output holds one copy of the weights')
+    say('dropped the Hugging Face cache now the model is in place')
 lyrics = mount('Qwen2.5-1.5B-Instruct')
 if lyrics:
     # transformers reads this directory instead of reaching for the hub.
     os.environ['SONG_LYRICS_MODEL'] = lyrics
-    os.environ['HF_HOME'] = os.path.join(WORK, 'hf')
+    os.environ['HF_HOME'] = os.path.join(scratch_dir(2), 'hf')
     os.environ['TRANSFORMERS_OFFLINE'] = '1'
     os.environ['HF_HUB_OFFLINE'] = '1'
 say('weights:', weights)

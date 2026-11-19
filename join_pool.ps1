@@ -2,6 +2,7 @@
 #
 #   join_pool.cmd                 install if needed, start the models, join the pool
 #   join_pool.cmd -NoStart        use the services that are already running
+#   join_pool.cmd -Leave          take this machine back out of the pool
 #
 # Everything the models need - the portable Python, the .venv, the packages and the
 # ~10 GB of weights - is installed by install_all.ps1, which is what install.cmd
@@ -14,7 +15,8 @@
 
 [CmdletBinding()]
 param(
-    [switch]$NoStart
+    [switch]$NoStart,
+    [switch]$Leave
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +25,7 @@ $python = Join-Path $root 'song_service\.venv\Scripts\python.exe'
 $keyFile = Join-Path $root 'build\song_endpoint.key'
 $tunnelFile = Join-Path $root 'build\tunnel_url.txt'
 $poolJoin = 'https://song-pool.bpiersing.workers.dev/join'
+$poolRemove = 'https://song-pool.bpiersing.workers.dev/remove'
 
 function Say([string]$text) { Write-Host $text }
 
@@ -37,6 +40,29 @@ $key = (Get-Content -Raw -Path $keyFile).Trim()
 if (-not $key) {
     Say "$keyFile is empty."
     exit 1
+}
+
+# --- leaving ----------------------------------------------------------------
+# One command out, because a card in the pool is the card strangers' songs are sent
+# to: whoever joined it must be able to take it back without editing anything.
+if ($Leave) {
+    $mine = ''
+    if (Test-Path $tunnelFile) { $mine = (Get-Content -Raw -Path $tunnelFile).Trim() }
+    if (-not $mine) {
+        Say "No tunnel address in $tunnelFile, so there is no card to take out."
+        exit 1
+    }
+    $body = @{ url = $mine } | ConvertTo-Json -Compress
+    try {
+        $answer = Invoke-RestMethod -Uri $poolRemove -Method Post -Body $body `
+            -ContentType 'application/json' -Headers @{ 'x-join-key' = $key } -TimeoutSec 30
+    } catch {
+        Say "The pool refused the removal: $($_.Exception.Message)"
+        exit 1
+    }
+    Say "left the pool. it now holds $($answer.count) card(s):"
+    foreach ($machine in $answer.pool) { Say "  $machine" }
+    exit 0
 }
 
 # --- the models --------------------------------------------------------------

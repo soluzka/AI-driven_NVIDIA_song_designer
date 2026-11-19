@@ -103,5 +103,4 @@ Say "written to $keyPath"
 Say ''
 Say 'done. this PC will use that key the next time it starts and publishes.'
 Say 'Nothing was sent anywhere: the website was not asked, and it still holds the key its'
-Say 'owner set. If the two do not match, the launcher will say 403 Wrong key. when it'
-Say 'publishes.'
+Say 'owner set.'

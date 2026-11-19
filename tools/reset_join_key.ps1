@@ -255,7 +255,18 @@ if ($tunnel -notmatch '^https?://') {
         Say '  named as the model, so the header says this PC and not the pool.'
     } catch {
         Say "  not pointed: $($_.Exception.Message)"
-        Say '  the key is still written on this PC; nothing on the Workers was changed by this step.'
+        $code = 0
+        try { $code = [int]$_.Exception.Response.StatusCode } catch { $code = 0 }
+        if ($code -eq 403) {
+            # 403 here is never about the address: the address already answered above. It is
+            # the key. The pool refuses one it does not hold, which means this PC and the
+            # Worker disagree - the key was typed here but never set there.
+            Say '  403 means the pool holds a different GPU connect key than this PC, so it would'
+            Say '  not accept the address. The key is right here; the Workers are the ones behind:'
+            Say '  JOIN_KEY on the pool Worker and POOL_JOIN_KEY on the site have to match it.'
+        } else {
+            Say '  the key is still written on this PC; nothing on the Workers was changed by this step.'
+        }
     } }
 }
 

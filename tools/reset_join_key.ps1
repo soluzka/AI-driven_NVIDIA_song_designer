@@ -6,14 +6,14 @@
 #   reset_join_key.cmd -DryRun            show what would be set, change nothing live
 #
 # The key is shown because it is yours: it is the string you hand to whoever joins a
-# machine, so you have to be able to read it off. It is also written to
-# build\song_endpoint.key (git-ignored) and pushed to the two Workers that check it:
+# machine, so you have to be able to read it off. It is written to build\song_endpoint.key
+# (git-ignored) and set on the one thing that checks it:
 #
-#   song-pool  JOIN_KEY           what /join and /remove verify
-#   browser    SONG_ENDPOINT_KEY  what the site verifies when a machine publishes an address
+#   browser  SONG_ENDPOINT_KEY  what the site verifies when a machine publishes its address
 #
-# Machines already in the pool stay in it; the key is only checked when a machine joins.
-# Anyone joining from now on pastes the new key into join.cmd, and the old one gets 403.
+# That is the key that lets a GPU connect to the website: with it, a machine can tell the
+# site "send the songs to me". After a reset the old key is refused with 403 and the next
+# publish has to use the new one.
 
 [CmdletBinding()]
 param(
@@ -59,7 +59,7 @@ if (-not $Key) {
     # join.cmd, and a string a person can pass on is easier to live with than a random
     # one nobody can remember. Enter with nothing typed makes a random key instead.
     Say 'Type the join key to use, or press Enter for a random one.'
-    Say 'It needs at least 24 characters and no spaces - it is what join.cmd asks for.'
+    Say 'Any text works, with no spaces. Shorter is easier to type and easier to guess.'
     $typed = Read-Host 'Join key'
     if ($typed -and $typed.Trim()) {
         $Key = $typed.Trim()
@@ -73,8 +73,8 @@ if (-not $Key) {
     }
 }
 
-if ($Key.Length -lt 24) {
-    Say 'that key is too short: it has to be at least 24 characters'
+if ($Key.Length -lt 4) {
+    Say 'that key is too short: use at least 4 characters'
     exit 1
 }
 if ($Key -match '\s') {
@@ -89,7 +89,7 @@ Say $Key
 Say ''
 
 if ($DryRun) {
-    Say '-DryRun: nothing was written and neither Worker was touched'
+    Say '-DryRun: nothing was written and the Worker was not touched'
     Say 'the key that works right now is unchanged'
     exit 0
 }
@@ -100,24 +100,19 @@ Say "written to build\song_endpoint.key ($($Key.Length) characters)"
 
 Push-Location $root
 try {
-    foreach ($target in @(
-        @{ Config = 'wrangler.pool.jsonc'; Name = 'JOIN_KEY' },
-        @{ Config = 'wrangler.jsonc'; Name = 'SONG_ENDPOINT_KEY' }
-    )) {
-        Say "setting $($target.Name) on $($target.Config) ..."
-        $Key | & $wrangler secret put $target.Name --config $target.Config 2>&1 | ForEach-Object {
-            if ($_ -match 'Success|success|Uploaded|created|updated') { Say '  ' + $_ }
-        }
-        if ($LASTEXITCODE -ne 0) {
-            Say "  wrangler exited $LASTEXITCODE"
-            Say '  the file now holds the new key, so joins will be refused until this succeeds'
-            exit 1
-        }
+    Say 'setting SONG_ENDPOINT_KEY on wrangler.jsonc ...'
+    $Key | & $wrangler secret put SONG_ENDPOINT_KEY --config wrangler.jsonc 2>&1 | ForEach-Object {
+        if ($_ -match 'Success|success|Uploaded|created|updated') { Say '  ' + $_ }
+    }
+    if ($LASTEXITCODE -ne 0) {
+        Say "  wrangler exited $LASTEXITCODE"
+        Say '  the file now holds the new key, so publishing will be refused until this succeeds'
+        exit 1
     }
 } finally {
     Pop-Location
 }
 
 Say ''
-Say 'done. this is the key to paste into join.cmd when a machine joins.'
-Say 'Machines already in the pool stay in it.'
+Say 'done. that is the key a machine needs to connect its GPU to the site.'
+Say 'The machine already connected keeps its connection; the next publish uses this key.'

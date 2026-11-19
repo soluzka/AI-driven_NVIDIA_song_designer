@@ -124,6 +124,31 @@
         .conn-chip[data-state="retrying"] .conn-dot { background: #fbbf24; animation: conn-pulse 1.2s ease-in-out infinite; }
         .conn-chip[data-state="snapshot"] { color: #60a5fa; border-color: rgba(96, 165, 250, 0.4); }
         .conn-chip[data-state="snapshot"] .conn-dot { background: #60a5fa; }
+        /* The pool chip opens this: one line per machine, each its own address. */
+        .pool-menu {
+            position: fixed;
+            z-index: 80;
+            min-width: 280px;
+            max-width: min(460px, 92vw);
+            max-height: 42vh;
+            overflow: auto;
+            padding: 6px;
+            border-radius: 12px;
+            border: 1px solid var(--surface2);
+            background: var(--surface);
+            box-shadow: 0 16px 34px rgba(0, 0, 0, 0.45);
+            font-size: 12px;
+        }
+        .pool-menu a {
+            display: block;
+            padding: 7px 9px;
+            border-radius: 8px;
+            color: #9fd0ff;
+            text-decoration: none;
+            word-break: break-all;
+        }
+        .pool-menu a:hover { background: rgba(255, 255, 255, 0.08); }
+        .pool-menu .pool-none { padding: 7px 9px; color: var(--text-dim); }
         .conn-chip[data-state="offline"] { color: #f87171; border-color: rgba(248, 113, 113, 0.45); }
         .conn-chip[data-state="offline"] .conn-dot { background: #f87171; }
         @keyframes conn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
@@ -1013,11 +1038,13 @@
              agent through songsvc://, which is registered per-user, so no
              administrator prompt is involved. -->
         <div class="conn-chip gpu-chip" id="poolChip" data-state="connecting"
-             onclick="wakeLocalAI()" style="cursor:pointer"
-             title="GPUs in the pool that can render a song, on any PC">
+             onclick="togglePoolMenu(event)" style="cursor:pointer"
+             title="GPUs in the pool that can render a song, on any PC. Click for each machine's link">
             <span class="conn-dot"></span>
             <span id="poolText">Pool…</span>
         </div>
+        <!-- Filled from /api/song/pool whenever it is opened. -->
+        <div class="pool-menu" id="poolMenu" hidden></div>
         <!-- There is no Start Kaggle button here: it lives in the Get the AI panel,
              under the free-GPU option. The header keeps the two pool chips. -->
     </div>
@@ -4865,6 +4892,50 @@
             container.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
 
+        // The pool chip is a list, not only a number: every machine that has joined, with
+        // the address it answers on. A count of 2 was all there was to go on before, and
+        // the addresses lived in a title attribute nobody can click. Each row opens the
+        // card, so a tunnel can be checked without typing its hostname.
+        window.poolMachines = [];
+        function poolEscape(value) {
+            return String(value).replace(/[&<>"']/g, (c) => (
+                { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        }
+        function renderPoolMenu() {
+            const menu = document.getElementById('poolMenu');
+            if (!menu) return;
+            const rows = (window.poolMachines || []).filter((m) => m && m.url);
+            menu.innerHTML = rows.length
+                ? rows.map((m) => '<a href="' + poolEscape(m.url) + '" target="_blank" rel="noopener">'
+                    + poolEscape(m.url) + '</a>').join('')
+                : '<div class="pool-none">No machine has joined the pool yet.</div>';
+        }
+        function togglePoolMenu(event) {
+            if (event) { event.preventDefault(); event.stopPropagation(); }
+            const menu = document.getElementById('poolMenu');
+            const chip = document.getElementById('poolChip');
+            if (!menu || !chip) return;
+            if (!menu.hidden) { menu.hidden = true; return; }
+            renderPoolMenu();
+            const rect = chip.getBoundingClientRect();
+            menu.hidden = false;
+            const width = Math.min(menu.offsetWidth || 300, window.innerWidth - 24);
+            menu.style.left = Math.round(Math.max(12, Math.min(rect.left, window.innerWidth - width - 12))) + 'px';
+            menu.style.top = Math.round(rect.bottom + 6) + 'px';
+        }
+        document.addEventListener('click', (event) => {
+            const menu = document.getElementById('poolMenu');
+            const chip = document.getElementById('poolChip');
+            if (!menu || menu.hidden) return;
+            if (menu.contains(event.target) || (chip && chip.contains(event.target))) return;
+            menu.hidden = true;
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape') return;
+            const menu = document.getElementById('poolMenu');
+            if (menu) menu.hidden = true;
+        });
+
         // The pool badge: how many machines can render a song right now, and with
         // no GPU online it is the thing to press — the wake path goes through
         // songsvc://, a per-user registration, so it never asks for administrator.
@@ -4877,6 +4948,10 @@
                 if (!answer.ok) throw new Error('pool ' + answer.status);
                 const info = await answer.json();
                 const count = Number(info.count || 0);
+                // Kept for the dropdown, so opening it never waits on the network.
+                window.poolMachines = (info.machines || []).map((m) => ({ url: String((m && m.url) || '') }));
+                const openMenu = document.getElementById('poolMenu');
+                if (openMenu && !openMenu.hidden) renderPoolMenu();
                 // A machine that joined (or was started) since the page loaded has a
                 // different host; pick it up here so Connect my model and the header
                 // name the one that is live now.

@@ -464,22 +464,35 @@ subprocess.Popen([sys.executable, 'app.py'], cwd=os.path.join(REPO, 'voice_servi
 # public/song_gpu_cell.py, is where a downloader always starts.
 DOWNLOAD_PORT = 8080
 say()
+missing_download_package = ''
 try:
     import flask_cors  # noqa: F401
     import imageio_ffmpeg  # noqa: F401
     import yt_dlp  # noqa: F401
-    packed_downloader = True
 except ModuleNotFoundError as missing:
-    packed_downloader = False
-    say('video downloads: not started -', missing.name, 'is not in the packed wheels beside the repo')
-if not packed_downloader:
-    say('                 songs and the voice are unaffected; repack with')
-    say('                 downloader_service/requirements.txt added to tools\\kaggle_pack.ps1')
-    say('                 to have it here on a kernel that has internet')
-elif not NETWORK:
-    say('video downloads: not started - this kernel has no internet, so yt-dlp could not')
-    say('                 fetch a video even though its package is here')
-else:
+    missing_download_package = missing.name
+
+if not NETWORK:
+    # The normal case for a kernel pushed through the API: no network at all, so
+    # yt-dlp could not fetch a video even with its package sitting in pylibs.
+    say('video downloads: not started - this kernel has no internet, so a download')
+    say('                 could not complete here. Songs and the voice are unaffected.')
+elif missing_download_package:
+    # A kernel that does have internet can fetch the downloader's own packages: the
+    # packed wheels beside the repo are built from song_service and voice_service, so
+    # these are normally absent. gunicorn is skipped - app.py runs on its own here.
+    say('video downloads: installing its packages (' + missing_download_package, 'is missing) ...')
+    download_specs = []
+    for line in open(os.path.join(REPO, 'downloader_service', 'requirements.txt')):
+        line = line.split('#')[0].strip()
+        if line and not line.lower().startswith('gunicorn'):
+            download_specs.append(line)
+    fetched = subprocess.run([sys.executable, '-m', 'pip', 'install', '-q'] + download_specs)
+    if fetched.returncode != 0:
+        say('video downloads: pip could not install them (' + str(fetched.returncode) + ')')
+        missing_download_package = 'still missing'
+
+if NETWORK and not missing_download_package:
     say('starting the video downloader on 8080 ...')
     download_log = open(os.path.join(WORK, 'downloads.log'), 'w')
     download_proc = subprocess.Popen([sys.executable, 'app.py'],

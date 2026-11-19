@@ -226,7 +226,25 @@ if not weights and NETWORK:
 if not weights:
     raise SystemExit('no ACE-Step weights: attach the weights dataset to this kernel, '
                      'or run it in one that has the internet')
+# --- keep the weights where Kaggle can save them ----------------------------
+# /kaggle/working is the only directory a run writes back as its Output, and an
+# Output dataset is the one way the weights survive a session without uploading them
+# from a PC. Six folders down (repo/song_service/models) they are hard to pick in the
+# Output tab, so the directory moves to the root of the output under the name a
+# dataset needs, ACE-Step-v1-3.5B at its top. A rename on the same disk: no bytes are
+# copied and nothing is fetched again.
 os.environ['ACE_CHECKPOINT'] = weights
+if weights.startswith(os.path.join(SERVICE, 'models')):
+    beside_output = os.path.join(WORK, 'models')
+    try:
+        if not os.path.isdir(beside_output):
+            os.rename(os.path.join(SERVICE, 'models'), beside_output)
+        weights = weights.replace(os.path.join(SERVICE, 'models'), beside_output, 1)
+        os.environ['ACE_CHECKPOINT'] = weights
+        say('weights are in the output at', weights)
+        say('stop this run, then New Dataset from the Output tab and pick models/')
+    except OSError as exc:
+        say('left the weights where they were:', exc)
 lyrics = mount('Qwen2.5-1.5B-Instruct')
 if lyrics:
     # transformers reads this directory instead of reaching for the hub.

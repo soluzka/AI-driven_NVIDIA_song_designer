@@ -4651,28 +4651,52 @@
             };
             const beat = song.bpm ? 60 / song.bpm : 0.5;
             let running = true;
-            const paint = () => {
-                if (!running) return;
+            const drawOnce = () => {
                 const at = audio.currentTime || 0;
                 frame.at = at;
                 frame.pulse = Math.exp(-6 * ((at % beat) / beat));
                 const slot = schedule.findIndex(entry => at >= entry.start && at < entry.end);
                 frame.current = slot < 0 ? lines.length - 1 : slot;
                 drawLyricFrame(draw, canvas.width, canvas.height, frame);
+            };
+            const paint = () => {
+                if (!running) return;
+                drawOnce();
                 requestAnimationFrame(paint);
             };
-            drawLyricFrame(draw, canvas.width, canvas.height, frame);
+            drawOnce();
 
             recorder.start(1000);
             audio.currentTime = 0;
             await audio.play();
             requestAnimationFrame(paint);
+            // A browser stops requestAnimationFrame in a tab that is not in front, and a
+            // canvas that stops producing frames makes the recorder end the video track:
+            // that is how a three-minute song came back as a thirteen-second file while
+            // the song kept singing. A timer keeps the picture coming while the tab is
+            // hidden, at ten frames a second, which is enough to hold the track open.
+            const pump = setInterval(() => {
+                if (!running || !document.hidden) return;
+                drawOnce();
+            }, 100);
 
             await new Promise(resolve => {
-                audio.addEventListener('ended', resolve, { once: true });
-                setTimeout(resolve, (duration + 1.5) * 1000);
+                // The real length of the audio decides when this ends, not a timer that a
+                // seek or a pause can cut short: the recording stops when the element is
+                // at the end of its own duration.
+                let done = false;
+                const finish = () => { if (done) return; done = true; clearInterval(watch); clearTimeout(cap); resolve(); };
+                const watch = setInterval(() => {
+                    if (!running) return finish();
+                    const at = audio.currentTime || 0;
+                    if (at > 0 && Number.isFinite(duration) && at >= duration - 0.25) finish();
+                    if (audio.ended) finish();
+                }, 250);
+                const cap = setTimeout(finish, (duration + 3) * 1000);
+                audio.addEventListener('ended', finish, { once: true });
             });
             running = false;
+            clearInterval(pump);
             await new Promise(resolve => setTimeout(resolve, 250));
             if (recorder.state !== 'inactive') recorder.stop();
             await finished;
@@ -6120,6 +6144,21 @@
                             piece.src = played;
                             stage.innerHTML = '';
                             stage.appendChild(piece);
+                            // The autoplay attribute is a request, not a promise: a browser
+                            // that will not start a video with sound leaves a still picture
+                            // where the song should be. It is started here, and if the
+                            // refusal is about the sound, it plays muted and says so rather
+                            // than sitting frozen.
+                            const started = piece.play();
+                            if (started && started.catch) {
+                                started.catch(() => {
+                                    piece.muted = true;
+                                    piece.play().catch(() => {});
+                                    if (window.showToast) {
+                                        showToast('info', 'Video ready', 'press play or unmute the video to hear it');
+                                    }
+                                });
+                            }
                         }
                         return blob;
                     } catch (err) {

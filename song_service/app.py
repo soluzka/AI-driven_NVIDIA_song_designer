@@ -1216,6 +1216,12 @@ def health():
     })
 
 
+# What Cloudflare's edge accepts. urllib's own "Python-urllib/3.x" is refused with
+# error 1010 on both Workers, which reads as a rejected key.
+BROWSER_AGENT = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                 '(KHTML, like Gecko) Chrome/125.0 Safari/537.36')
+
+
 def _pool_join_key():
     """The key that lets a machine into the pool, kept on this machine only."""
     from_env = (os.environ.get('SONG_JOIN_KEY') or '').strip()
@@ -1269,8 +1275,15 @@ def api_pool_join():
         ('pool', 'https://song-pool.bpiersing.workers.dev/join', 'x-join-key'),
     ):
         try:
+            # The user agent matters: Cloudflare answers a bare urllib request with
+            # "error code: 1010" and a 403 before the key is looked at, so a join from this
+            # service was refused while the identical request from a browser-shaped client
+            # was accepted. That looked exactly like a wrong key on the pool Worker.
             ask = urllib.request.Request(target, data=body, headers={
-                'Content-Type': 'application/json', header: key})
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'User-Agent': BROWSER_AGENT,
+                header: key})
             with urllib.request.urlopen(ask, timeout=20) as answer:
                 answers[name] = answer.read().decode('utf-8', 'replace')[:300]
         except Exception as exc:  # noqa: BLE001

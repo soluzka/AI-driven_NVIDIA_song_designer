@@ -6,9 +6,9 @@
 #   reset_join_key.cmd -DryRun         show it, change nothing
 #
 # This works for anybody, on any PC that has the app installed: it needs no Cloudflare
-# login and touches no server. It writes the key where join.cmd and the launcher already
-# read it - <app>\build\song_endpoint.key - and then asks the site whether it accepts that
-# key, so "saved" and "connected" are not the same thing in the output.
+# login and touches nothing but the file. It writes the key where join.cmd and the
+# launcher already read it - <app>\build\song_endpoint.key - and nothing else on this
+# machine, no server, no website.
 #
 # It changes this PC only. Nobody can change the key the site itself holds from a
 # download: that is a secret on the Worker, and only the Cloudflare account that owns it
@@ -100,37 +100,8 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $keyPath) | Out-Nu
 Set-Content -Path $keyPath -Value $Key -Encoding ascii -NoNewline
 Say "written to $keyPath"
 
-# --- does the site accept it? ------------------------------------------------
-# The site answers 200 when this key is the one it holds, and 403 when it is not. It knows
-# the answer; this PC can only guess. The address is only sent so the check is the same
-# request the launcher makes.
-$address = if (Test-Path $tunnelPath) { (Get-Content -Raw -Path $tunnelPath).Trim() } else { '' }
-if (-not $address) {
-    Say ''
-    Say 'no tunnel address yet, so the key could not be checked. Start the app (start.cmd in'
-    Say 'the app folder), then run this again to see whether the site accepts the key.'
-    exit 0
-}
-try {
-    $body = @{ url = $address } | ConvertTo-Json -Compress
-    $reply = Invoke-WebRequest -UseBasicParsing -Uri 'https://browser.bpiersing.workers.dev/api/song/endpoint' `
-        -Method Post -Body $body -ContentType 'application/json' `
-        -Headers @{ 'x-song-key' = $Key } -TimeoutSec 25
-    if ($reply.StatusCode -ge 200 -and $reply.StatusCode -lt 300) {
-        Say ''
-        Say "the site accepted the key and knows this PC at $address"
-    }
-} catch {
-    $status = $null
-    if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
-    Say ''
-    if ($status -eq 403) {
-        Say 'the site refused this key (403): it is not the key the site holds.'
-        Say 'The key is saved on this PC, but publishing will fail until it matches.'
-        Say 'Only the owner of the site can change which key it holds.'
-    } else {
-        Say "could not check the key against the site: $($_.Exception.Message)"
-    }
-}
 Say ''
-Say 'done.'
+Say 'done. this PC will use that key the next time it starts and publishes.'
+Say 'Nothing was sent anywhere: the website was not asked, and it still holds the key its'
+Say 'owner set. If the two do not match, the launcher will say 403 Wrong key. when it'
+Say 'publishes.'

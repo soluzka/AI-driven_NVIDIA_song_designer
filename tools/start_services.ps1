@@ -384,6 +384,31 @@ if ($NoTunnel) {
 } elseif (-not (Test-Path $cloudflared) -and -not (Get-Cloudflared $cloudflared)) {
     Say 'tunnel: cloudflared is missing, so the model stays on this network'
 } else {
+    # A cap of five. Every run that asked for a new address left its cloudflared behind, and
+    # a pile of them is what makes Cloudflare refuse to route the next quick tunnel: it
+    # opens, registers, and then answers 530 from the edge. So the pile is pruned here, in
+    # the window join.cmd prints, before anything is started: the five newest are kept, the
+    # older ones are stopped, and the line says so.
+    $keep = 5
+    $running = @(Get-Process cloudflared -ErrorAction SilentlyContinue | ForEach-Object {
+            $started = $null
+            try { $started = $_.StartTime } catch { $started = $null }
+            [pscustomobject]@{ Id = $_.Id; Started = $started }
+        } | Sort-Object Started, Id)
+    if ($running.Count -ge $keep) {
+        $prune = $running.Count - $keep + 1
+        Say "tunnel: pruning old tunnels ($($running.Count) running, $prune to stop so a new one can start)"
+        foreach ($p in ($running | Select-Object -First $prune)) {
+            try {
+                Stop-Process -Id $p.Id -Force -ErrorAction Stop
+                Say "tunnel: pruned the one running as pid $($p.Id)"
+            } catch {
+                Say "tunnel: pid $($p.Id) belongs to another account and cannot be stopped from here"
+            }
+        }
+        Start-Sleep -Seconds 1
+    }
+
     $live = @(Get-Process cloudflared -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -eq $cloudflared })
     if ($NewTunnel) {

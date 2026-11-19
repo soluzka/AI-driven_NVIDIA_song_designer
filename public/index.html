@@ -3080,6 +3080,23 @@
             });
         }
 
+        // A video recorded by MediaRecorder has no duration in its header, so the
+        // browser reports Infinity: the seek bar is dead and pressing play on it goes
+        // nowhere, which reads exactly like a card that is not attached to its music.
+        // Seeking far past the end once makes it measure the real length; then it is
+        // put back at the start. The remix player already did this for itself.
+        function wearRecordingDuration(video) {
+            video.addEventListener('loadedmetadata', () => {
+                if (video.duration !== Infinity) return;
+                video.currentTime = 1e6;
+                const settle = () => {
+                    video.currentTime = 0;
+                    video.removeEventListener('timeupdate', settle);
+                };
+                video.addEventListener('timeupdate', settle);
+            });
+        }
+
         window.applyAILyrics = applyAILyrics;
         window.lyricSkeleton = lyricSkeleton;
 
@@ -6230,6 +6247,7 @@
                             piece.playsInline = true;
                             piece.className = 'gen-video';
                             piece.src = played;
+                            wearRecordingDuration(piece);
                             stage.innerHTML = '';
                             stage.appendChild(piece);
                             // The autoplay attribute is a request, not a promise: a browser
@@ -7438,6 +7456,7 @@
                     });
                     video.insertBefore(player, back);
                     player.src = URL.createObjectURL(blob);
+                    wearRecordingDuration(player);
                     // A file the browser cannot decode shows a black frame forever and
                     // fires no error, so give it eight seconds and then put the picture
                     // back with the way out. A black screen is never the answer.

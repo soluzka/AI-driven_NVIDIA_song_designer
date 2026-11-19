@@ -75,7 +75,14 @@ async function readPool(env) {
 }
 
 async function writePool(env, pool) {
-  await env.POOL.put(POOL_KEY, JSON.stringify(pool.slice(0, POOL_LIMIT)));
+  // KV has a daily write allowance. Hitting it must not take the pool down: the list this
+  // isolate already holds is still good for routing, and the next write that fits saves it.
+  try {
+    await env.POOL.put(POOL_KEY, JSON.stringify(pool.slice(0, POOL_LIMIT)));
+    return true;
+  } catch (err) {
+    return false;
+  }
 }
 
 // A tunnel dies with the session that opened it, but the register only knew time:
@@ -143,13 +150,15 @@ async function livingPool(env) {
   let dirty = false;
   pool.forEach((entry, index) => {
     if (alive[index]) {
-      // Only written once a minute: /pool is read by every page, and this entry is only
-      // the clock that decides how long a silent machine is remembered.
-      if (!entry.ok_at || now - entry.ok_at > 60000) {
-        entry.ok_at = now;
+      // Kept in memory, never written: refreshing this clock every minute cost a KV write
+      // per card per minute, which is thousands a day - the free allowance is 1,000, and
+      // running out of it is what made the pool answer with an error instead of a list.
+      entry.ok_at = now;
+      if (Number(entry.fail || 0) !== 0) {
+        entry.fail = 0;
+        entry.fail_at = 0;
         dirty = true;
       }
-      entry.fail = 0;
       living.push(entry);
       kept.push(entry);
       return;

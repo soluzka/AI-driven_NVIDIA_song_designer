@@ -1126,6 +1126,14 @@
                     it does anything, and it needs no notebook file to load.
                 </div>
                 <a class="fit-act install-act" href="https://colab.research.google.com/github/soluzka/AI-driven_NVIDIA_song_designer/blob/main/deploy/colab/song_gpu.ipynb" target="_blank" rel="noopener">Open the free-GPU notebook</a>
+                <button class="library-song-btn install-btn" id="startGpuBtnPanel" onclick="startPoolGpu()" hidden
+                        title="Starts a free Kaggle GPU that runs the song model, opens a tunnel and joins the pool">
+                    Start a GPU
+                </button>
+                <!-- Kaggle, as this deployment sees it. The account name and the
+                     dataset addresses stay out of the page on purpose: they are the
+                     same thing the join key protects. -->
+                <div class="install-note" id="kaggleDetails">Checking Kaggle…</div>
             </div>
             <div class="install-item">
                 <div class="install-name">Linux, or a server that stays on</div>
@@ -4827,8 +4835,10 @@
                 text.textContent = (count === 1 ? 'Pool · 1 GPU' : 'Pool · ' + count + ' GPUs') + ' · auto';
                 // Hidden while a machine is connected, shown when none is: it is the
                 // control for an empty pool, not another piece of header furniture.
-                const startBtn = document.getElementById('startGpuBtn');
-                if (startBtn) startBtn.hidden = count > 0;
+                for (const id of ['startGpuBtn', 'startGpuBtnPanel']) {
+                    const startBtn = document.getElementById(id);
+                    if (startBtn) startBtn.hidden = count > 0;
+                }
                 if (chip) {
                     // 'live' is the state the stylesheet draws green; 'online' had no
                     // rule, so a pool with machines in it still looked switched off.
@@ -4855,6 +4865,29 @@
             if (typeof closeFitPanel === 'function') closeFitPanel();
             panel.hidden = false;
             refreshInstallState();
+            refreshKaggleDetails();
+        }
+        // What Kaggle is doing, as readouts rather than links: the account that runs
+        // the kernel is not named here, the same way the join key is not printed.
+        async function refreshKaggleDetails() {
+            const box = document.getElementById('kaggleDetails');
+            if (!box) return;
+            try {
+                const answer = await fetchBounded('/api/gpu/status', { cache: 'no-store' }, 8000);
+                const info = await answer.json();
+                const started = Number(info.lastStart) || 0;
+                const cooldown = started
+                    ? Math.max(0, Math.round((started + 30 * 60000 - Date.now()) / 60000)) : 0;
+                const lastRun = info.status && info.status.lastRunTime
+                    ? new Date(info.status.lastRunTime).toLocaleString() : 'none yet';
+                box.textContent = 'Kaggle: '
+                    + (info.configured ? 'account connected' : 'no account set on this deployment')
+                    + ' · kernel last ran ' + lastRun
+                    + (cooldown ? ' · next start opens in ' + cooldown + ' min' : ' · a start is available now');
+            } catch (err) {
+                box.textContent = 'Kaggle: status unavailable ('
+                    + (err && err.message ? err.message : err) + ')';
+            }
         }
         function closeInstallPanel() {
             const panel = document.getElementById('installPanel');
@@ -5423,32 +5456,38 @@
         // Worker to push and start the same boot the Colab notebook runs: clone the
         // repo, run the song service, open a tunnel, join this pool.
         async function startPoolGpu() {
-            const button = document.getElementById('startGpuBtn');
-            if (!button || button.disabled) return;
+            // The same control sits in the header and in the Get the AI panel, so a
+            // press has to keep both in step: whichever one was pressed says what is
+            // happening, and neither can fire a second push while one is in flight.
+            const buttons = ['startGpuBtn', 'startGpuBtnPanel']
+                .map((id) => document.getElementById(id)).filter(Boolean);
+            const button = buttons.find((b) => !b.disabled);
+            if (!button) return;
             const was = button.textContent;
-            button.disabled = true;
-            button.textContent = 'Asking Kaggle…';
+            const label = (text, busy, forButton) => {
+                forButton.textContent = text;
+                forButton.disabled = busy;
+            };
+            label('Asking Kaggle…', true, button);
             try {
                 const answer = await fetchBounded('/api/gpu/start', { method: 'POST' }, 40000);
                 const said = await answer.json().catch(() => ({}));
                 if (answer.ok && said.started) {
-                    button.textContent = 'GPU starting…';
+                    label('GPU starting…', true, button);
                     showToast('success', 'A GPU is starting',
                         'Kaggle is booting a free GPU. It joins the pool by itself once its model is '
                         + 'loaded, which takes a few minutes on a fresh machine; this page picks it up '
                         + 'on the next check.');
-                    setTimeout(() => { button.textContent = was; button.disabled = false; }, 20000);
+                    setTimeout(() => label(was, false, button), 20000);
                 } else {
-                    button.textContent = was;
-                    button.disabled = false;
+                    label(was, false, button);
                     const wait = said.retryInSeconds ? Math.ceil(said.retryInSeconds / 60) + ' minutes' : '';
                     showToast(answer.status === 429 ? 'info' : 'error', 'No GPU was started',
                         (said.error || ('the site answered ' + answer.status))
                         + (wait ? ' Try again in about ' + wait + '.' : ''));
                 }
             } catch (err) {
-                button.textContent = was;
-                button.disabled = false;
+                label(was, false, button);
                 showToast('error', 'No GPU was started', (err && err.message) || 'the request failed');
             }
             if (typeof refreshPoolBadge === 'function') refreshPoolBadge();

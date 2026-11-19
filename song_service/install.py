@@ -13,6 +13,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -128,6 +130,37 @@ def weights_complete(target, expected_gb):
     return actual >= expected_gb * 0.9, actual
 
 
+def snapshot_with_progress(snapshot_download, repo, target, expected, already, every=30):
+    """snapshot_download, with a line every `every` seconds.
+
+    The transfer prints nothing while it runs, so a 10 GB fetch is indistinguishable
+    from a hang: the offline kernel's log sat on "parallel transfer: on" for twenty
+    minutes with no way to tell a slow download from a dead one.
+    """
+    state = {'done': threading.Event()}
+
+    def run():
+        try:
+            snapshot_download(repo_id=repo, local_dir=target, max_workers=8)
+        except Exception as exc:      # noqa: BLE001 - raised below, not swallowed
+            state['error'] = exc
+        finally:
+            state['done'].set()
+
+    thread = threading.Thread(target=run, name='weights', daemon=True)
+    started = time.time()
+    thread.start()
+    while not state['done'].wait(every):
+        seconds = max(1.0, time.time() - started)
+        grew = folder_gb(target) - already
+        print('   %.1f of ~%.1f GB in %ds (%.1f MB/s)'
+              % (grew, max(0.0, expected - already), int(seconds),
+                 grew * 1024 / seconds), flush=True)
+    thread.join()
+    if 'error' in state:
+        raise state['error']
+
+
 def enable_parallel_transfer():
     """Use hf_transfer's chunked parallel download; it is several times faster.
 
@@ -182,7 +215,7 @@ def download_weights(manifest, only=''):
         os.makedirs(target, exist_ok=True)
         print(f'\n== weights for {model["name"]}: {repo} -> {target}')
         print(f'   {actual:.1f} of ~{expected:.1f} GB present, resuming ==')
-        snapshot_download(repo_id=repo, local_dir=target, max_workers=8)
+        snapshot_with_progress(snapshot_download, repo, target, expected, actual)
 
 
 def main():

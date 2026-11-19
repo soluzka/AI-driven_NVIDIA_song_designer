@@ -491,6 +491,18 @@ elif missing_download_package:
     if fetched.returncode != 0:
         say('video downloads: pip could not install them (' + str(fetched.returncode) + ')')
         missing_download_package = 'still missing'
+    else:
+        # Cleared only when the import works: pip exits 0 for a wheel built for a
+        # different Python too, and the start below keys off this name, so an empty
+        # name here has to mean "it imports", not "pip said ok".
+        try:
+            import importlib
+            importlib.invalidate_caches()
+            import yt_dlp  # noqa: F401
+            missing_download_package = ''
+        except Exception as exc:
+            say('video downloads: pip finished but the import still fails:', exc)
+            missing_download_package = 'still unusable'
 
 if NETWORK and not missing_download_package:
     say('starting the video downloader on 8080 ...')

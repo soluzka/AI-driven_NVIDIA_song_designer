@@ -6,8 +6,15 @@
 # print, and the first one appears immediately. That first line is the point - if
 # even it does not appear, the runtime is not attached and no code is running.
 #
-# Put the site owner's join key between the quotes below to add this card to the
-# pool. Leave it empty and the address it prints is used with Connect my model.
+# The join key is what lets this card into the pool. It is found in this order, and the
+# first one wins:
+#   1. a value typed between the quotes below (a fork of this file, never the repo);
+#   2. SONG_JOIN_KEY in the environment;
+#   3. the Colab secret called SONG_JOIN_KEY (Secrets panel, one paste, every run joins
+#      by itself - this is the automatic one);
+#   4. a hidden prompt, when this is a terminal rather than a notebook.
+# With none of those the card stays private and the address it prints is pasted into
+# Connect my model.
 JOIN_KEY = ''
 
 import json
@@ -17,6 +24,42 @@ import subprocess
 import sys
 import time
 import urllib.request
+
+
+def find_join_key():
+    """The join key for this session, or '' to stay private.
+
+    A notebook cannot be shipped with the key inside it: the file is public, and the key
+    is the only thing standing between the pool and anyone's GPU. So the key is read from
+    somewhere the person running the cell already has it - a Colab secret survives every
+    run, which is what makes joining automatic after one paste.
+    """
+    typed_here = (globals().get('JOIN_KEY') or '').strip()
+    if typed_here:
+        say('join key: from JOIN_KEY at the top of this cell')
+        return typed_here
+    from_env = (os.environ.get('SONG_JOIN_KEY') or '').strip()
+    if from_env:
+        say('join key: from SONG_JOIN_KEY in the environment')
+        return from_env
+    try:
+        from google.colab import userdata
+        secret = (userdata.get('SONG_JOIN_KEY') or '').strip()
+        if secret:
+            say('join key: from the Colab secret SONG_JOIN_KEY')
+            return secret
+    except Exception:
+        pass
+    try:
+        import getpass
+        if sys.stdin and sys.stdin.isatty():
+            entered = getpass.getpass('Join key (hidden, Enter to stay private): ').strip()
+            if entered:
+                say('join key: typed here, kept in this session only')
+                return entered
+    except Exception:
+        pass
+    return ''
 
 # Colab keeps its session disk at /content, Kaggle uses /kaggle/working, and a
 # plain Linux GPU box uses whatever directory this was started in. Everything is
@@ -297,11 +340,12 @@ say()
 say('On the site: press Connect my model in the header and paste that address.')
 say('This card is reachable while this cell and session stay running.')
 
-if JOIN_KEY.strip():
+join_key = find_join_key()
+if join_key:
     body = json.dumps({'url': url, 'note': 'colab t4'}).encode()
     request = urllib.request.Request(
         'https://song-pool.bpiersing.workers.dev/join', data=body,
-        headers={'content-type': 'application/json', 'x-join-key': JOIN_KEY.strip()})
+        headers={'content-type': 'application/json', 'x-join-key': join_key})
     try:
         with urllib.request.urlopen(request, timeout=20) as answer:
             say('pool:', answer.read().decode())
@@ -310,4 +354,6 @@ if JOIN_KEY.strip():
         say('join refused:', exc)
         say('Use the address above with Connect my model instead.')
 else:
-    say('No JOIN_KEY set, so this card is not in the pool: use the address above.')
+    say('No join key found, so this card is not in the pool: use the address above.')
+    say('To join it next time, add SONG_JOIN_KEY to Colab Secrets (Secrets panel, left):')
+    say('one paste there and every run of this cell puts the card in the pool by itself.')

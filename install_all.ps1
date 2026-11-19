@@ -394,17 +394,21 @@ if ($Start) {
 }
 
 # --- 7. the header says this PC, and the pool lists it -----------------------
-# The same step the reset runs, from one implementation: a new tunnel opened beside the
-# one already serving, the new address named as the model, the card joined to the pool,
-# and cards that no longer answer taken out. Calling the reset with -PointOnly is what
-# keeps this installer and that command from drifting apart.
+# The same step the reset command runs, called with the key this PC already holds: one
+# implementation of opening a tunnel, naming the address, joining the card and dropping
+# the cards this PC replaced, so the installer cannot drift from that command.
 if ($Start) {
     $reset = Join-Path $root 'tools\reset_join_key.ps1'
+    $keyFile = Join-Path $root 'build\song_endpoint.key'
     Say ''
-    if (Test-Path $reset) {
-        & $reset -PointOnly -App $root
-    } else {
+    if (-not (Test-Path $reset)) {
         Say 'the reset script is missing from this install, so the header was not pointed'
         Say 'at this PC. Run reset_join_key.cmd once the install has finished.'
+    } else {
+        # -PointOnly: the tunnel half of that same script, with the key this PC already
+        # holds. A new address every run, named as the model, this PC's card joined to the
+        # pool and its older cards dropped - the same code the reset command runs, so the
+        # two can never do different things.
+        & $reset -PointOnly -App $root
     }
 }

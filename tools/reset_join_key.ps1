@@ -149,64 +149,10 @@ if ($PointOnly) {
     }
 }
 
-if (-not $PointOnly) {
-
-if ($Show -and -not $Key) {
-    if (-not (Test-Path $keyPath)) { Say 'this PC has no key yet'; exit 1 }
-    Say ''
-    Say 'the key this PC holds now:'
-    Say ''
-    Say ((Get-Content -Raw -Path $keyPath).Trim())
-    exit 0
-}
-
-if (-not $Key) {
-    Say ''
-    Say 'Type the key that connects this PC to the site.'
-    Say 'Any text works, with no spaces. Shorter is easier to type and easier to guess.'
-    $typed = Read-Host 'Key'
-    if (-not $typed) { Say 'no key given, nothing changed'; exit 1 }
-    $Key = $typed.Trim()
-}
-if ($Key.Length -lt 4) {
-    Say 'that key is too short: use at least 4 characters'
-    exit 1
-}
-if ($Key -match '\s') {
-    Say 'the key cannot contain spaces or line breaks'
-    exit 1
-}
-
-Say ''
-Say 'the key:'
-Say ''
-Say $Key
-Say ''
-
-if ($DryRun) {
-    Say '-DryRun: nothing was written and nothing was contacted'
-    exit 0
-}
-
-New-Item -ItemType Directory -Force -Path (Split-Path -Parent $keyPath) | Out-Null
-Set-Content -Path $keyPath -Value $Key -Encoding ascii -NoNewline
-Say "written to $keyPath"
-
-# --- and the Workers have to agree with it --------------------------------
-# A join is checked against the pool Worker's JOIN_KEY and a publish against the site's
-# key, so the file by itself can leave a machine that runs perfectly and never appears in
-# the pool. Both secrets are set here from the value just written, with stdin taken from
-# the file so the key is never retyped and a stray newline cannot get into the secret.
 $script:nodePath = Join-Path $App 'tools\node\node.exe'
 $script:wranglerPath = Join-Path $App 'build\wrangler-tool\node_modules\wrangler\bin\wrangler.js'
 $script:npmPath = Join-Path $App 'tools\node\npm.cmd'
 
-# --- wrangler, fetched once if it is missing --------------------------------
-# Setting the key on the Workers is the one thing this script cannot do without
-# wrangler, and an install does not carry it: without this a person types a key here,
-# the Workers never hear it, and the pool refuses the address with a 403 that looks
-# like a wrong key but is a key that was never set. npm sits beside node, so it is
-# fetched from there once into build\wrangler-tool and kept.
 function Ensure-Wrangler {
     if ((Test-Path $script:nodePath) -and (Test-Path $script:wranglerPath)) { return $true }
     if (-not (Test-Path $script:npmPath)) { return $false }
@@ -223,13 +169,6 @@ function Ensure-Wrangler {
     return $false
 }
 
-$canSync = -not $NoSync -and (Ensure-Wrangler)
-
-# --- a new address, without a reboot -----------------------------------------
-# A Quick Tunnel's name lives exactly as long as the process that opened it, which is why
-# every run used to keep the address from whenever the model started. Stopping that one
-# process and opening another gives a name nobody has seen, in seconds, with the model,
-# its warmed-up weights and the other services untouched. -KeepUrl leaves it alone.
 function Find-LiveAddress {
     # Every address this PC has recorded, newest first, plus the last address in each tunnel
     # log. A tunnel that is running but was never written down still printed its name.
@@ -260,16 +199,12 @@ function Renew-Tunnel {
     # addresses of tunnels that have already gone, and reading the last line of it named
     # an older address that no longer answered.
     $log = Join-Path $App ('build\tunnel-{0}.log' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
-    # A working tunnel is kept. Opening a new one on every run was making a stream of
-    # throwaway tunnels, and Cloudflare stops serving new quick tunnels when they come
-    # that fast - the new address then never answers and nothing gets pointed anywhere.
-    # A new address is opened only when the one this PC has is gone, or with -NewUrl.
+    # A new address every run, as asked: the old tunnel is closed only after the new one
+    # answers, so the change is never a disconnection. If Cloudflare will not serve a new
+    # quick tunnel just now (it throttles them when they come quickly), the run says so and
+    # leaves the working address alone rather than breaking the one that answers.
     $live = Find-LiveAddress
-    if ($live -and -not $NewUrl) {
-        Say "  the address this PC has still answers, so it is kept: $live"
-        $script:previousTunnel = $live
-        return $live
-    }
+    $script:previousTunnel = $live
     if (-not (Test-Path $cf)) {
         Say '  there is no cloudflared on this PC, so the address stays as it is'
         return ''
@@ -363,6 +298,75 @@ function Push-Secret([string]$label, [string]$name, [string[]]$extra) {
     Say "  $label : not set - $why"
     return $false
 }
+
+if (-not $PointOnly) {
+
+if ($Show -and -not $Key) {
+    if (-not (Test-Path $keyPath)) { Say 'this PC has no key yet'; exit 1 }
+    Say ''
+    Say 'the key this PC holds now:'
+    Say ''
+    Say ((Get-Content -Raw -Path $keyPath).Trim())
+    exit 0
+}
+
+if (-not $Key) {
+    Say ''
+    Say 'Type the key that connects this PC to the site.'
+    Say 'Any text works, with no spaces. Shorter is easier to type and easier to guess.'
+    $typed = Read-Host 'Key'
+    if (-not $typed) { Say 'no key given, nothing changed'; exit 1 }
+    $Key = $typed.Trim()
+}
+if ($Key.Length -lt 4) {
+    Say 'that key is too short: use at least 4 characters'
+    exit 1
+}
+if ($Key -match '\s') {
+    Say 'the key cannot contain spaces or line breaks'
+    exit 1
+}
+
+Say ''
+Say 'the key:'
+Say ''
+Say $Key
+Say ''
+
+if ($DryRun) {
+    Say '-DryRun: nothing was written and nothing was contacted'
+    exit 0
+}
+
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $keyPath) | Out-Null
+Set-Content -Path $keyPath -Value $Key -Encoding ascii -NoNewline
+Say "written to $keyPath"
+
+# --- and the Workers have to agree with it --------------------------------
+# A join is checked against the pool Worker's JOIN_KEY and a publish against the site's
+# key, so the file by itself can leave a machine that runs perfectly and never appears in
+# the pool. Both secrets are set here from the value just written, with stdin taken from
+# the file so the key is never retyped and a stray newline cannot get into the secret.
+# --- wrangler, fetched once if it is missing --------------------------------
+# Setting the key on the Workers is the one thing this script cannot do without
+# wrangler, and an install does not carry it: without this a person types a key here,
+# the Workers never hear it, and the pool refuses the address with a 403 that looks
+# like a wrong key but is a key that was never set. npm sits beside node, so it is
+# fetched from there once into build\wrangler-tool and kept.
+
+
+$canSync = -not $NoSync -and (Ensure-Wrangler)
+
+# --- a new address, without a reboot -----------------------------------------
+# A Quick Tunnel's name lives exactly as long as the process that opened it, which is why
+# every run used to keep the address from whenever the model started. Stopping that one
+# process and opening another gives a name nobody has seen, in seconds, with the model,
+# its warmed-up weights and the other services untouched. -KeepUrl leaves it alone.
+
+
+
+
+
 
 Say ''
 if ($NoSync) {

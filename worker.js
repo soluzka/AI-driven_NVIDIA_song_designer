@@ -388,7 +388,10 @@ async function readPool(env) {
         const list = (info.machines || [])
           .map((machine) => ({ url: String(machine.url || '').replace(/\/+$/, ''), seen: machine.seen || Date.now() }))
           .filter((machine) => machine.url);
-        if (list.length) return livePool(list);
+        // An empty answer is the pool base saying "nobody is online", and that is
+        // the truth: falling through to this Worker's own KV here resurrected a
+        // tunnel the pool had just pruned, and the site kept routing to it.
+        return list.length ? livePool(list) : [];
       }
     } catch (err) {}
   }
@@ -426,7 +429,12 @@ async function poolAnswers(address) {
       headers: { accept: 'application/json' },
       signal: AbortSignal.timeout(4000),
     });
-    return reply.ok;
+    if (!reply.ok) return false;
+    let body = null;
+    try { body = await reply.json(); } catch (err) {}
+    // Reachable but unable to render: a machine whose warm ended in warm_failed
+    // answers /health forever and never loads, so it must not be handed a song.
+    return !(body && body.warm_failed);
   } catch (err) {
     return false;
   }

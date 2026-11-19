@@ -78,6 +78,41 @@ async function writePool(env, pool) {
   await env.POOL.put(POOL_KEY, JSON.stringify(pool.slice(0, POOL_LIMIT)));
 }
 
+// A tunnel dies with the session that opened it, but the register only knew time:
+// a machine was dropped after a week of silence, so yesterday's dead tunnel kept
+// being handed out. The site then routed to nothing and its badge sat at "warming"
+// over a machine that had not existed since the day before. So the register asks.
+async function answers(base) {
+  try {
+    const answer = await fetch(base + '/health', {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!answer.ok) return false;
+    const text = await answer.text();
+    let body = null;
+    try { body = JSON.parse(text); } catch (err) {}
+    // A machine that answered but whose warm ended in warm_failed will never load:
+    // it is reachable and cannot render, so it is not something to route a song to.
+    if (body && body.warm_failed) return false;
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+// The pool that routing may use: every entry that still answers. Probes run in
+// parallel, so the cost is one 2.5 s timeout rather than one per machine, and the
+// register is rewritten only when something actually died.
+async function livingPool(env) {
+  const pool = await readPool(env);
+  if (!pool.length) return pool;
+  const answered = await Promise.allSettled(pool.map((entry) => answers(entry.url)));
+  const living = pool.filter((entry, index) => answered[index].status === 'fulfilled' && answered[index].value === true);
+  if (living.length !== pool.length) await writePool(env, living);
+  return living;
+}
+
 function authorised(request, env) {
   const expected = env.JOIN_KEY || '';
   if (!expected) return { ok: false, error: 'This pool has no JOIN_KEY set, so nobody can join.', status: 503 };
@@ -88,7 +123,7 @@ function authorised(request, env) {
 // One request, one machine: chosen at random, then the next when one does not
 // answer. The body is read once and reused, so a large WAV upload survives a retry.
 async function proxy(request, env, url) {
-  const pool = await readPool(env);
+  const pool = await livingPool(env);
   if (!pool.length) {
     return json({ error: 'No GPU has joined the pool yet. Run install.cmd on a PC with an NVIDIA card.' }, 501);
   }
@@ -132,7 +167,7 @@ export default {
     }
 
     if (url.pathname === '/pool') {
-      const pool = await readPool(env);
+      const pool = await livingPool(env);
       return json({
         count: pool.length,
         machines: pool.map((entry) => ({ url: entry.url, seen: entry.seen, note: entry.note || '' })),
@@ -140,7 +175,7 @@ export default {
     }
 
     if (url.pathname === '/pick') {
-      const pool = await readPool(env);
+      const pool = await livingPool(env);
       if (!pool.length) return json({ error: 'No machine has joined the pool yet.' }, 404);
       // Random rather than first: the cards share the work, and a machine that has
       // just gone to sleep is not always the one a request is sent to first.

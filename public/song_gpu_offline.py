@@ -245,6 +245,13 @@ if weights.startswith(os.path.join(SERVICE, 'models')):
         say('stop this run, then New Dataset from the Output tab and pick models/')
     except OSError as exc:
         say('left the weights where they were:', exc)
+# The Hub cache keeps its own copy of every file it fetched, and a run's output is
+# capped: two copies of 11 GB can push the save past that cap, and the save is the
+# only reason the weights are reusable at all. models/ is complete on its own.
+cache = os.environ.get('HF_HOME') or ''
+if cache.startswith(WORK) and os.path.isdir(cache):
+    shutil.rmtree(cache, ignore_errors=True)
+    say('dropped the Hugging Face cache, so the output holds one copy of the weights')
 lyrics = mount('Qwen2.5-1.5B-Instruct')
 if lyrics:
     # transformers reads this directory instead of reaching for the hub.

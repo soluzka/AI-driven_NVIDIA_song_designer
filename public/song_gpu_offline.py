@@ -248,7 +248,18 @@ subprocess.Popen([sys.executable, 'app.py'], cwd=os.path.join(REPO, 'voice_servi
 binary = os.path.join(PACKED, 'cloudflared-linux-amd64')
 if not os.path.isfile(binary):
     raise SystemExit('no cloudflared binary next to the repo: ' + binary)
-os.chmod(binary, 0o755)
+# /kaggle/input is read-only: chmod on the mounted copy fails with EROFS ([Errno 30]),
+# so copy the binary into the working directory before making it executable. The
+# mount often arrives executable already, in which case it is used where it is.
+try:
+    os.chmod(binary, 0o755)
+except OSError:
+    local_binary = os.path.join(WORK, 'cloudflared-linux-amd64')
+    if not os.path.isfile(local_binary):
+        say('copying cloudflared out of the read-only mount ...')
+        shutil.copyfile(binary, local_binary)
+    os.chmod(local_binary, 0o755)
+    binary = local_binary
 tunnel_log = os.path.join(WORK, 'tunnel.log')
 open(tunnel_log, 'w').close()
 with open(tunnel_log, 'w') as handle:

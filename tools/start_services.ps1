@@ -542,25 +542,37 @@ if ($NoTunnel) {
                 # The JSON goes through a file: curl.exe on Windows mangles quotes
                 # that arrive inside an argument, and the site answered "expected
                 # JSON" while the address looked perfectly fine on screen.
+                # This machine's id, so the card this run adds can be recognised and the
+                # address it replaces dropped by the same id rather than left listed.
+                $machineId = ''
+                $idFile = Join-Path $root 'build\machine_id.txt'
+                if (Test-Path $idFile) { $machineId = ((Get-Content -Raw -Path $idFile) -as [string]).Trim() }
                 $payload = Join-Path $root 'build\tunnel_publish.json'
+                $statePayload = Join-Path $root 'build\tunnel_state.json'
                 try {
                     Set-Content -Path $payload -Encoding ascii `
-                        -Value ('{"url":"' + $tunnelUrl + '"}')
-                    $answer = & curl.exe -s --max-time 15 -X POST "$siteUrl/api/song/endpoint" `
-                        -H 'Content-Type: application/json' -H "x-song-key: $key" `
-                        --data-binary "@$payload"
-                    Say "tunnel: published to the site: $answer"
+                        -Value ('{"url":"' + $tunnelUrl + '","note":"' + $machineId + '"}')
+                    Set-Content -Path $statePayload -Encoding ascii `
+                        -Value ('{"value":"' + $tunnelUrl + '"}')
+                    # The address the header names is written through the pool Worker's
+                    # state endpoint: the site's own /api/song/endpoint is signed with the
+                    # song key, a different secret, so the join key sent there answers
+                    # "Wrong key" while the pool below accepts it.
+                    $stateAnswer = & curl.exe -s --max-time 15 -X POST "https://song-pool.bpiersing.workers.dev/state/site:endpoint" `
+                        -H 'Content-Type: application/json' -H "x-join-key: $key" `
+                        --data-binary "@$statePayload"
+                    Say "tunnel: named on the site: $stateAnswer"
 
-                    # The pool has its own Worker too, and it is asked directly as
-                    # well: if the site side is ever down, this machine is still in
-                    # the list the site reads its GPU addresses from.
+                    # The pool has its own Worker, and it is asked directly as well: it is
+                    # the list the site reads its cards from, so this is the one that has
+                    # to succeed for the card to appear without the page being opened.
                     $poolUrl = 'https://song-pool.bpiersing.workers.dev/join'
-                    $poolAnswer = & curl.exe -s --max-time 15 -X POST $poolUrl `
+                    $poolAnswer = & curl.exe -s --max-time 20 -X POST $poolUrl `
                         -H 'Content-Type: application/json' -H "x-join-key: $key" `
                         --data-binary "@$payload"
                     Say "tunnel: joined the pool: $poolAnswer"
                 } finally {
-                    Remove-Item $payload -ErrorAction SilentlyContinue
+                    Remove-Item $payload, $statePayload -ErrorAction SilentlyContinue
                 }
             }
         } else {

@@ -285,7 +285,9 @@ if ($Create) {
             $still = $before.Updated.ToString('yyyy-MM-dd HH:mm:ss')
             throw "the upload of $slug did not reach Kaggle: lastUpdated is still $still, unchanged, although the CLI exited 0 and printed its uploads. Check https://www.kaggle.com/datasets/$slug before trusting this pack - a run died mid-upload that way and the version was never created."
         }
+        # The size column reads 0 for a version Kaggle has just taken, even when the
+        # dataset is ready and its files are listed, so only the timestamp is reported.
         $was = if ($before) { $before.Updated.ToString('yyyy-MM-dd HH:mm:ss') } else { 'not there' }
-        Say ("  {0} now {1}, was {2}, {3:N0} MB" -f $slug, $after.Updated.ToString('yyyy-MM-dd HH:mm:ss'), $was, ($after.Size / 1MB))
+        Say ("  {0} now {1}, was {2}" -f $slug, $after.Updated.ToString('yyyy-MM-dd HH:mm:ss'), $was)
     }
 }

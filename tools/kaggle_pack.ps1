@@ -229,9 +229,24 @@ if ($Create) {
     $pairs = @()
     if (-not $WeightsOnly) { $pairs += , @($codeDir, 'song-gpu-code') }
     if (-not $CodeOnly) { $pairs += , @($weightsSource, 'song-gpu-weights') }
+    # What the dataset says about itself, from Kaggle rather than from the CLI's exit
+    # code: the CLI exited 0 while its own upload loop died at the third file with
+    # Errno 2, so no version was created and nothing failed. This is the only reading
+    # that tells the difference between "the uploads ran" and "Kaggle has it".
+    function Get-DatasetStamp([string]$slug) {
+        $out = (& uv tool run --from kaggle --with six kaggle datasets list -m 2>$null) -join "`n"
+        foreach ($line in ($out -split "`n")) {
+            if ($line -match ('^\s*' + [regex]::Escape($slug) + '\s+.*?\s+(\d+)\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')) {
+                return [pscustomobject]@{ Size = [int64]$matches[1]; Updated = [datetime]$matches[2] }
+            }
+        }
+        return $null
+    }
+
     foreach ($pair in $pairs) {
         $path = $pair[0]; $slug = "$Owner/" + $pair[1]
         $known = $existing -match [regex]::Escape($slug)
+        $before = Get-DatasetStamp $slug
         $verb = if ($known) { 'adding a version to ' } else { 'creating ' }
         Say ($verb + $slug + ' (this uploads; it takes a while) ...')
         # Uploaded from inside the folder, with -p . on purpose. The CLI names the temp
@@ -247,9 +262,30 @@ if ($Create) {
             } else {
                 & uv tool run --from kaggle --with six kaggle datasets create -p . --dir-mode zip
             }
+            $uploadExit = $LASTEXITCODE
         } finally {
             Pop-Location
         }
-        if ($LASTEXITCODE -ne 0) { throw "the upload of $slug failed with $LASTEXITCODE" }
+        if ($uploadExit -ne 0) { throw "the upload of $slug failed with exit $uploadExit" }
+
+        # The exit code is not the proof: the dataset itself has to move. Kaggle creates
+        # the version asynchronously, so this waits for it rather than reading once.
+        $deadline = (Get-Date).AddMinutes(6)
+        $after = $null
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 15
+            $after = Get-DatasetStamp $slug
+            if (-not $after) { continue }
+            if (-not $before -or $after.Updated -gt $before.Updated) { break }
+        }
+        if (-not $after) {
+            throw "$slug is not readable after the upload: Kaggle lists no such dataset for $Owner. The CLI exited 0 anyway, so its output cannot be trusted."
+        }
+        if ($before -and $after.Updated -le $before.Updated) {
+            $still = $before.Updated.ToString('yyyy-MM-dd HH:mm:ss')
+            throw "the upload of $slug did not reach Kaggle: lastUpdated is still $still, unchanged, although the CLI exited 0 and printed its uploads. Check https://www.kaggle.com/datasets/$slug before trusting this pack - a run died mid-upload that way and the version was never created."
+        }
+        $was = if ($before) { $before.Updated.ToString('yyyy-MM-dd HH:mm:ss') } else { 'not there' }
+        Say ("  {0} now {1}, was {2}, {3:N0} MB" -f $slug, $after.Updated.ToString('yyyy-MM-dd HH:mm:ss'), $was, ($after.Size / 1MB))
     }
 }

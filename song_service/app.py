@@ -1235,6 +1235,21 @@ def _pool_join_key():
         return ''
 
 
+def _machine_note():
+    """This machine's id, so every card it puts in the pool can be recognised later.
+
+    The reset script writes build/machine_id.txt and sends it with its own join; the
+    page's join went without it, so the cards it created carried no id and the reset
+    script could not drop them - which is how one PC ended up with three cards.
+    """
+    try:
+        with open(os.path.join(ROOT, 'build', 'machine_id.txt'), encoding='utf-8',
+                  errors='replace') as handle:
+            return handle.read().strip()[:80]
+    except OSError:
+        return ''
+
+
 def _pool_public_url():
     """This machine's tunnel address, written when the tunnel connected."""
     for name in ('SONG_PUBLIC_URL', 'PUBLIC_URL'):
@@ -1269,7 +1284,7 @@ def api_pool_join():
         return jsonify({'ok': False, 'error': 'no tunnel address yet (build/tunnel_url.txt)'}), 400
 
     answers = {}
-    body = json.dumps({'url': url}).encode('utf-8')
+    body = json.dumps({'url': url, 'note': _machine_note()}).encode('utf-8')
     for name, target, header in (
         ('site', 'https://browser.bpiersing.workers.dev/api/song/endpoint', 'x-song-key'),
         ('pool', 'https://song-pool.bpiersing.workers.dev/join', 'x-join-key'),

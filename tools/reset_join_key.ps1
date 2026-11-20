@@ -195,6 +195,26 @@ function Find-LiveAddress {
 function Renew-Tunnel([switch]$Retried) {
     $cf = Join-Path $App 'tools\bin\cloudflared.exe'
     $cfg = Join-Path $App 'tools\bin\quick-tunnel.yml'
+    # cloudflared refuses a zero-byte config file: "Configuration file ... was empty".
+    # The file's only job is to stop a config.yml in ~/.cloudflared from taking over the
+    # quick tunnel's --url routing, so an empty or missing one is written again here
+    # instead of being handed over as it is.
+    if (-not (Test-Path $cfg) -or (Get-Item $cfg).Length -eq 0) {
+        try {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $cfg) | Out-Null
+            Set-Content -Path $cfg -Encoding ascii -Value @(
+                '# Deliberately empty apart from this comment.',
+                '#',
+                '# Quick Tunnels (trycloudflare.com) do not work when cloudflared picks up a',
+                "# config.yaml from ~/.cloudflared: that file's ingress rules take over, the",
+                '# catch-all at the end answers 404, and nothing reaches the local service.',
+                "# Passing --config with this file keeps the quick tunnel's own --url routing."
+            )
+            Say '  quick-tunnel.yml was missing or empty, so it was written again'
+        } catch {
+            Say "  could not write quick-tunnel.yml ($($_.Exception.Message))"
+        }
+    }
     # A log of its own for every rotation, named by the minute: a shared one holds the
     # addresses of tunnels that have already gone, and reading the last line of it named
     # an older address that no longer answered.

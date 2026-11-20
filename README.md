@@ -756,7 +756,8 @@ singer**: see `voice_service/README.md`. Only **8090** is ever published.
 
 **Song service**: `POST /api/song`, `POST /api/song/mix`, `POST /api/song/voice`
 (recording in the body, lyrics written by the model), `GET /api/song/<token>`,
-`GET /api/song/latest`, `GET /song_file/<token>`, `POST /api/lyrics`.
+`GET /api/song/latest`, `GET /song_file/<token>`, `POST /api/lyrics` (with
+`GET /api/lyrics/<token>` for the words when the write outlasts the tunnel).
 
 **Voice service** (loopback only, reached by the song service): `POST
 /api/voice/sing?text=…` with the reference WAV in the body, `GET

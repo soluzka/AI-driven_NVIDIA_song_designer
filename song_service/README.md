@@ -119,6 +119,8 @@ Listens on `127.0.0.1:8090`:
 ```
 GET  /health                                        -> device, card, loaded, warm clock
 POST /api/lyrics {genre, subject, seed, ...}        -> {sections, lines, model}
+   ... or 202 {token} while it writes, then:
+GET  /api/lyrics/<token>                            -> {status, sections, lines, model}
 POST /api/song   {prompt, lyrics, seconds, steps}   -> 202 {token}
 GET  /api/song/<token>                              -> {status, progress, error}
 GET  /api/song/latest                               -> the newest job, or {status: idle}

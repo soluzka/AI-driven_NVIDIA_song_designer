@@ -153,6 +153,9 @@ DEFAULT_STEPS = int(os.environ.get('ACE_STEPS', '30'))
 # Three minutes: the page asks for 90-180 s depending on the seed, and a cap of
 # 120 quietly truncated every longer request back to two.
 MAX_SECONDS = float(os.environ.get('ACE_MAX_SECONDS', '180'))
+# How long /api/lyrics holds the request open before handing back a token. A warm
+# write lands in it; a cold one does not, and the tunnel would cut it at 100s.
+LYRIC_INLINE_SECONDS = float(os.environ.get('LYRICS_INLINE_SECONDS', '40'))
 
 _pipeline = None
 # When the warm started, and why it failed if it did: /health reports both, so a
@@ -168,6 +171,8 @@ _pipeline_lock = threading.Lock()
 _gpu_lock = threading.Lock()      # one generation at a time
 _jobs = {}
 _jobs_lock = threading.Lock()
+_lyric_jobs = {}
+_lyric_jobs_lock = threading.Lock()
 _latest_token = None   # the song the page asked for most recently
 
 
@@ -1136,24 +1141,97 @@ def api_lyrics():
         avoid = []
     avoid = [str(line)[:160] for line in avoid][-14:]
 
-    try:
-        from lyrics import Lyricist, lyrics_model_id, load_manifest
+    # The write is a job, not one long response. Warm it takes about fifteen
+    # seconds, but a cold lyric model - or a card that is still rendering - takes
+    # minutes, and this machine is reached through a Cloudflare tunnel, which cuts
+    # a request that has produced nothing for a hundred seconds (error 524). That
+    # cut is what the page saw as "the lyric model did not answer": the words were
+    # written, the connection was not there to carry them. So the write runs in a
+    # thread, and the answer is returned here only when it is already finished;
+    # otherwise the page collects it from /api/lyrics/<token>, a small GET that no
+    # edge timeout can cut.
+    token = uuid.uuid4().hex
+    with _lyric_jobs_lock:
+        _lyric_jobs[token] = {'status': 'writing', 'error': '', 'sections': None,
+                              'lines': None, 'model': '', 'created': time.time()}
+        if len(_lyric_jobs) > 12:
+            finished = [key for key, job in _lyric_jobs.items() if job['status'] != 'writing']
+            for key in sorted(finished, key=lambda key: _lyric_jobs[key]['created'])[:-6]:
+                _lyric_jobs.pop(key, None)
 
-        lyricist = _lyricist()
+    threading.Thread(target=_run_lyric_job,
+                     args=(token, genre, subject, seed, corpus, angle, avoid),
+                     daemon=True).start()
+
+    deadline = time.time() + LYRIC_INLINE_SECONDS
+    while time.time() < deadline:
+        with _lyric_jobs_lock:
+            job = dict(_lyric_jobs.get(token) or {})
+        if job.get('status') != 'writing':
+            break
+        time.sleep(0.2)
+    with _lyric_jobs_lock:
+        job = dict(_lyric_jobs.get(token) or {})
+    if job.get('status') == 'writing':
+        return jsonify({'token': token, 'status': 'writing'}), 202
+    return _lyric_answer(job)
+
+
+def _lyric_answer(job):
+    """A finished lyric job in the shape the page has always been given."""
+    if job.get('status') != 'done':
+        return jsonify({'error': job.get('error') or 'the lyric model failed'}), 502
+    return jsonify({'lines': job.get('lines') or [], 'sections': job.get('sections') or [],
+                    'model': job.get('model') or ''})
+
+
+def _run_lyric_job(token, genre, subject, seed, corpus, angle, avoid):
+    """Write one song's words and keep them where the poll can find them."""
+    try:
+        from lyrics import lyrics_model_id, load_manifest
+
         # A whole song in sections: verses, a chorus that repeats, a bridge.
-        song = lyricist.write_song(genre, subject, seed, corpus=corpus, angle=angle, avoid=avoid)
+        song = _lyricist().write_song(genre, subject, seed, corpus=corpus,
+                                      angle=angle, avoid=avoid)
         sections = song.get('sections') or []
         lines = song.get('lines') or []
+        model = lyrics_model_id(load_manifest())
     except Exception as exc:  # noqa: BLE001 - report the reason to the page
         traceback.print_exc()
-        return jsonify({'error': f'lyric model failed: {exc}'}), 500
+        with _lyric_jobs_lock:
+            job = _lyric_jobs.get(token)
+            if job is not None:
+                job.update(status='error', error='lyric model failed: %s' % exc)
+        return
 
     print('wrote %d sections / %d lines' % (len(sections), len(lines)), flush=True)
-    if len(lines) < 6 or len(sections) < 2:
-        return jsonify({'error': 'lyric model returned too little text',
-                        'lines': lines, 'sections': sections}), 502
-    return jsonify({'lines': lines, 'sections': sections,
-                    'model': lyrics_model_id(load_manifest())})
+    with _lyric_jobs_lock:
+        job = _lyric_jobs.get(token)
+        if job is None:
+            return
+        if len(lines) < 6 or len(sections) < 2:
+            job.update(status='error', error='lyric model returned too little text',
+                       lines=lines, sections=sections)
+        else:
+            job.update(status='done', sections=sections, lines=lines, model=model)
+
+
+@app.route('/api/lyrics/<token>')
+def api_lyrics_status(token):
+    """Where the poll collects words the tunnel could not carry in one answer."""
+    with _lyric_jobs_lock:
+        job = dict(_lyric_jobs.get(token) or {})
+    if not job:
+        return jsonify({'error': 'unknown or expired lyric job'}), 404
+    if job['status'] == 'writing':
+        return jsonify({'status': 'writing',
+                        'elapsed': round(time.time() - job['created'], 1)})
+    if job['status'] == 'error':
+        return jsonify({'status': 'error', 'error': job['error'],
+                        'lines': job.get('lines') or [],
+                        'sections': job.get('sections') or []})
+    return jsonify({'status': 'done', 'lines': job.get('lines') or [],
+                    'sections': job.get('sections') or [], 'model': job.get('model') or ''})
 
 
 def _langid_state():

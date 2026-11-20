@@ -2855,6 +2855,38 @@
             }));
         }
 
+        // A lyric write can outlast the tunnel it is asked through. The machine is
+        // reached at a Cloudflare address, and Cloudflare cuts a request that has
+        // produced nothing for a hundred seconds (error 524) - which is what a cold
+        // lyric model looks like from here. The service answers such a request with
+        // a token instead, and the words are collected by polling: small GETs, no
+        // long silence for the edge to cut. Returns the finished job, or an object
+        // carrying the model's own reason, or null when the wait ran out.
+        async function awaitLyricJob(base, token, wait, since) {
+            const began = since || Date.now();
+            const deadline = Date.now() + Math.max(60000, wait);
+            while (Date.now() < deadline) {
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                const line = document.getElementById('songStatus');
+                if (line) {
+                    line.textContent = 'Writing the lyrics on this machine... '
+                        + Math.round((Date.now() - began) / 1000) + 's';
+                }
+                let job;
+                try {
+                    const answer = await fetchBounded(base + '/api/lyrics/' + token, {}, 20000);
+                    job = await answer.json();
+                } catch (err) {
+                    // One slow poll is not a dead card: the next one is a fresh
+                    // connection to the same job, which is still writing.
+                    continue;
+                }
+                if (job && job.status === 'error') return { error: job.error || 'the lyric model failed' };
+                if (job && job.status && job.status !== 'writing') return job;
+            }
+            return null;
+        }
+
         // Words written for this song by a language model, not assembled from a
         // template. The Worker route does the asking; without it the song keeps
         // the built-in verses, so a plain static copy still has lyrics.
@@ -2908,6 +2940,10 @@
                 const wait = looksLikeEdge ? 10000 : 300000;
                 let response;
                 let ticker = null;
+                // The count starts at the request, not at the first poll: a write
+                // handed back as a job keeps the same clock the page was already
+                // showing, instead of restarting at zero.
+                const began = Date.now();
                 // Two waits, not one. A lyric request that arrives while a song is still
                 // rendering on the same card is slow, not dead: the render holds the GPU
                 // for minutes, the lyric answer lands after the page stopped listening,
@@ -2919,7 +2955,6 @@
                         if (status && !looksLikeEdge) {
                             // The wait is real and it is the model loading; a counter
                             // says it is working instead of looking hung.
-                            const began = Date.now();
                             const paint = () => {
                                 status.textContent = 'Writing the lyrics on this machine... '
                                     + Math.round((Date.now() - began) / 1000) + 's';
@@ -2951,7 +2986,19 @@
                     why = 'the lyric service answered ' + response.status;
                     continue;
                 }
-                const data = await response.json().catch(() => ({}));
+                let data = await response.json().catch(() => ({}));
+                if (data && data.token && !Array.isArray(data.sections)) {
+                    const job = await awaitLyricJob(base, data.token, wait, began);
+                    if (!job) {
+                        why = 'the lyric model was still writing when the wait ran out';
+                        continue;
+                    }
+                    if (job.error) {
+                        why = job.error;
+                        continue;
+                    }
+                    data = job;
+                }
                 const sections = Array.isArray(data.sections)
                     ? data.sections
                         .map(part => ({
@@ -6084,7 +6131,9 @@
                     missing.textContent = 'No lyric was written, so no song was made. '
                         + (window._lyricFailure || 'the lyric model did not answer') + '; compose again.';
                     panel.appendChild(missing);
-                    if (window.showToast) showToast('error', 'No lyric', 'the lyric model did not answer, so nothing was composed');
+                    if (window.showToast) showToast('error', 'No lyric',
+                        'no lyric was written (' + (window._lyricFailure || 'the lyric model did not answer')
+                        + '), so nothing was composed');
                     return;
                 }
                 // Remembered so the next song avoids these exact lines.

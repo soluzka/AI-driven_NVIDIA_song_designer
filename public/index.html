@@ -8793,6 +8793,18 @@
                 if (fromSearch) fromSearch.disabled = !window.voiceSearchClip;
                 const mix = document.getElementById('fitMix');
                 if (mix) mix.disabled = !fit.result;
+                // Reopening the panel used to leave Play and Save disabled for good:
+                // they were only ever enabled inside the recording that made them, so
+                // a phrase or a song already made could not be saved after the panel
+                // was closed once - the button simply never lit up again.
+                if (fit.result && !fit.url) fit.url = URL.createObjectURL(fitWav(fit.result));
+                const play = document.getElementById('fitPlay');
+                if (play) play.disabled = !(fit.result || fit.mixUrl);
+                const save = document.getElementById('fitSave');
+                if (save) {
+                    save.disabled = !(fit.mixUrl || fit.url);
+                    save.textContent = fit.mixUrl ? 'Save song' : 'Save WAV';
+                }
                 const view = window.visualViewport;
                 panel.style.bottom = view && view.height < window.innerHeight
                     ? Math.round(window.innerHeight - view.height - view.offsetTop) + 12 + 'px'
@@ -9072,13 +9084,35 @@
         // been mixed, and the shaped phrase on its own before that.
         async function fitDownload() {
             const url = fit.mixUrl || fit.url;
-            if (!url) return;
+            if (!url) {
+                fitSay('There is nothing to save yet: record a phrase first.');
+                return;
+            }
             const name = fit.mixUrl
                 ? 'song-with-your-voice.wav'
                 : 'voice fit - ' + ((fitSong && fitSong.genre) || 'neutral') + '.wav';
-            // Asked for first: linking straight at the url handed the browser the
-            // server's json error as a .wav when the song was gone, so the page
-            // saved a file that would not open and said nothing.
+            const handOver = (href) => {
+                const link = document.createElement('a');
+                link.href = href;
+                link.download = name;
+                document.body.appendChild(link);
+                link.click();
+                setTimeout(() => { link.remove(); if (href.startsWith('blob:')) URL.revokeObjectURL(href); }, 30000);
+            };
+            // The fitted phrase is already in this tab as a blob the page made. It
+            // goes to the browser inside the click, with no await in between, so
+            // nothing treats the download as unrequested and the audio is not copied
+            // a second time just to be saved.
+            if (url.startsWith('blob:')) {
+                fitSay('Saving ' + name + '\u2026');
+                handOver(url);
+                return;
+            }
+            // A song lives on the machine that rendered it, so it is asked for first:
+            // linking straight at that address handed the browser the server's json
+            // error as a .wav when the song was gone, and the page saved a file that
+            // would not open without saying anything.
+            fitSay('Fetching the song to save\u2026');
             let blob = null;
             try {
                 const answer = await fetch(url, { cache: 'no-store' });
@@ -9092,12 +9126,12 @@
                 fitSay('Save failed: the song did not download.');
                 return;
             }
-            const link = document.createElement('a');
-            link.href = URL.createObjectURL(blob);
-            link.download = name;
-            document.body.appendChild(link);
-            link.click();
-            setTimeout(() => { URL.revokeObjectURL(link.href); link.remove(); }, 30000);
+            if (!blob || !blob.size) {
+                fitSay('Save failed: the answer was empty.');
+                return;
+            }
+            fitSay('Saving ' + name + '\u2026');
+            handOver(URL.createObjectURL(blob));
         }
 
         // 16-bit mono WAV, so the result plays anywhere and can be dropped into a

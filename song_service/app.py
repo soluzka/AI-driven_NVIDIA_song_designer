@@ -270,6 +270,11 @@ def _load_pipeline():
 
 VOICE_SERVICE = os.environ.get('VOICE_SERVICE', 'http://127.0.0.1:8095')
 
+# Where the video downloader listens. 8080 is what the Windows install uses, but a
+# host can already have something there - Colab's own node process listens on 8080 -
+# so a pooled notebook passes the port it managed to bind instead.
+DOWNLOAD_PORT = int(os.environ.get('DOWNLOAD_PORT', '8080'))
+
 
 def _measure_pitch(path):
     """The median pitch of a wav: what the recording measures, and where the model's
@@ -996,7 +1001,7 @@ def pc_proxy(rest):
     import urllib.error
     import urllib.request
 
-    target = 'http://127.0.0.1:8080/' + rest
+    target = 'http://127.0.0.1:%d/' % DOWNLOAD_PORT + rest
     query = request.query_string.decode('latin-1')
     if query:
         target += '?' + query
@@ -1098,7 +1103,7 @@ def api_top_proxy():
 
     body = request.get_data() or b'{}'
     upstream = urllib.request.Request(
-        'http://127.0.0.1:8080/api/top', data=body,
+        'http://127.0.0.1:%d/api/top' % DOWNLOAD_PORT, data=body,
         headers={'Content-Type': 'application/json'}, method='POST')
     try:
         with urllib.request.urlopen(upstream, timeout=180) as answer:

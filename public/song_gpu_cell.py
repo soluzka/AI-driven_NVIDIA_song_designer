@@ -25,6 +25,7 @@ JOIN_KEY = ''
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
@@ -203,7 +204,28 @@ try:
     say('py3langid', version or 'unknown', '(ACE-Step needs 0.2.2)')
 except Exception:
     pass
-os.environ.update(SONG_PORT=str(PORT), SONG_HOST='0.0.0.0', SONG_WARM='1')
+# The downloader rides on this service's /pc route, so its port is decided here,
+# before this process starts: /pc reads it from the environment once. 8080 is the
+# default, but a host can already have something there - Colab's own node process
+# listens on 8080 - so the first port that can be bound wins.
+def downloader_port():
+    for candidate in range(8080, 8086):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(('0.0.0.0', candidate))
+            return candidate
+        except OSError:
+            continue
+        finally:
+            probe.close()
+    return 8080
+
+
+DOWNLOAD_PORT_WANTED = downloader_port()
+say('downloader port:', str(DOWNLOAD_PORT_WANTED))
+os.environ.update(SONG_PORT=str(PORT), SONG_HOST='0.0.0.0', SONG_WARM='1',
+                  DOWNLOAD_PORT=str(DOWNLOAD_PORT_WANTED))
 SONG_LOG = os.path.join(WORK, 'song.log')
 log = open(SONG_LOG, 'w')
 proc = subprocess.Popen([sys.executable, 'app.py', '--role', 'song'], cwd=SERVICE,
@@ -267,7 +289,7 @@ else:
 # address, no second public door: /pc is a route on the service the tunnel
 # already points at.
 say()
-say('starting the video downloader on 8080 ...')
+say('starting the video downloader ...')
 try:
     import flask_cors  # noqa: F401
     import imageio_ffmpeg  # noqa: F401
@@ -283,7 +305,7 @@ except ModuleNotFoundError:
             download_specs.append(line)
     run(pip + download_specs)
 
-DOWNLOAD_PORT = 8080
+DOWNLOAD_PORT = int(os.environ.get('DOWNLOAD_PORT', '8080'))
 DOWNLOAD_LOG = os.path.join(WORK, 'downloads.log')
 # PORT is what downloader_service/app.py binds; MAX_HEIGHT is its hosted cap, which
 # is also the cap the container runs with. Set here and inherited by the child.

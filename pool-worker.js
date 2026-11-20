@@ -451,7 +451,34 @@ export default {
       // every ten minutes. The note names the machine, so rows carrying the same note and
       // a different address are dropped in this same write rather than left to the probe.
       const kept = note ? pool.filter((entry) => entry.url === value || entry.note !== note) : pool;
-      const known = kept.find((entry) => entry.url === value);
+      // A join is the moment the pool is tidied: every other card is asked whether it
+      // answers, and one that does not is dropped in this same write. Leaving that to the
+      // probe above means a dead address stays listed for up to ten minutes, which is what
+      // made a restart look like an empty pool next to cards that were working. A card that
+      // joined in the last ten minutes is kept even when it does not answer yet - a tunnel
+      // is in the register before it is serving - so a machine coming up is not pruned by
+      // somebody else's join.
+      const now0 = now;
+      const probes = await Promise.all(kept.map(async (entry) => {
+        if (entry.url === value) return true;
+        const age = now0 - (Number(entry.joined || entry.seen) || 0);
+        try {
+          const control = new AbortController();
+          const timer = setTimeout(() => control.abort(), 4000);
+          let answer;
+          try {
+            answer = await fetch(String(entry.url).replace(/\/+$/, '') + '/health', {
+              method: 'GET', signal: control.signal, headers: { 'user-agent': 'song-pool' },
+            });
+          } finally {
+            clearTimeout(timer);
+          }
+          if (answer.ok) return true;
+        } catch (err) { /* a card that cannot be reached is a card that is not serving */ }
+        return age < 10 * 60 * 1000;
+      }));
+      const living = kept.filter((entry, index) => probes[index]);
+      const known = living.find((entry) => entry.url === value);
       if (known) {
         known.seen = now;
         // The first join is kept: a machine that re-joins every two minutes is not
@@ -459,13 +486,13 @@ export default {
         if (!known.joined) known.joined = known.seen || now;
         if (note) known.note = note;
       } else {
-        kept.unshift({ url: value, seen: now, joined: now, note });
+        living.unshift({ url: value, seen: now, joined: now, note });
       }
-      const saved = await writePool(env, kept);
+      const saved = await writePool(env, living);
       return json({
         ok: true, url: value, saved,
         error: saved ? undefined : (lastWriteError || 'the register refused the write'),
-        count: kept.length, pool: kept.map((entry) => entry.url),
+        count: living.length, pool: living.map((entry) => entry.url),
       });
     }
 

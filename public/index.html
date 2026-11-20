@@ -2584,6 +2584,11 @@
         // composing again really is silent instead of singing on from nowhere.
         let lyricRecording = null;
 
+        // Bumped every time the song stage is replaced or the player is closed. A recording
+        // that finishes after that belongs to a song nobody is looking at any more, so it is
+        // saved and not put on the page.
+        let stageEpoch = 0;
+
         function stopRemixAudio() {
             if (lyricRecording) {
                 try { lyricRecording.stop(); } catch (err) {}
@@ -4605,21 +4610,14 @@
             canvas.width = 1280;
             canvas.height = 720;
             const draw = canvas.getContext('2d');
-            // Shown while it records: the stage used to keep the paused audio bar, which
-            // read as a frozen card while the song went on from the Web Audio buffer.
-            // Now the picture being recorded is the picture on screen, so the sound is
-            // clearly this, and closing the player still silences it.
-            if (song.stage) {
-                try {
-                    // Paused, but left on the page: taking the bar away to show the
-                    // picture left nothing to press, so pause and play were dead for
-                    // the whole recording. The canvas goes under it instead.
-                    if (song.element) song.element.pause();
-                    const previous = song.stage.querySelector('canvas.gen-canvas');
-                    if (previous) previous.remove();
-                    canvas.className = 'gen-canvas';
-                    song.stage.appendChild(canvas);
-                } catch (err) {}
+            // The stage is left exactly as it is for the whole recording. Nothing is put
+            // into it, so there is no black picture and no player vanishing while the song
+            // plays: the picture is drawn off the page and reaches the stage only as the
+            // finished file, which carries its own sound - one element with the music and
+            // the video together. The bar is paused because the sound now comes from the
+            // Web Audio buffer that is being captured.
+            if (song.element) {
+                try { song.element.pause(); } catch (err) {}
             }
 
             // The song's own bytes, decoded into a buffer and played through Web Audio.
@@ -6208,6 +6206,7 @@
                 // song lands, so the player can run a video instead of a bare audio bar.
                 const recordLyricVideo = async (options) => {
                     const intoPlayer = !!(options && options.replacePlayer);
+                    const epoch = stageEpoch;
                     if (videoButton.disabled) return null;
                     videoButton.disabled = true;
                     videoButton.textContent = 'Recording the picture...';
@@ -6237,10 +6236,10 @@
                         const timed = options && Array.isArray(options.schedule) ? options.schedule : [];
                         if (kept && timed.length) await savedAttachSchedule(songId, timed);
                         videoButton.textContent = kept ? 'Lyric video saved with the song' : 'Could not store the video';
-                        // Only while this song's own player is still on the page: a recording
-                        // that was silenced by closing the player must not take over the
-                        // stage of a song composed since.
-                        if (intoPlayer && blob && stage.querySelector('canvas.gen-canvas')) {
+                        // Only while this song's own player is still the one on the page: a
+                        // recording silenced by closing the player, or by composing since,
+                        // must not take over the stage of a later song.
+                        if (intoPlayer && blob && epoch === stageEpoch) {
                             // The player runs the video itself: the words are drawn on the
                             // picture and the song's own audio is inside the file, so
                             // picture and voice cannot drift apart.
@@ -7613,6 +7612,7 @@
         // says "removed" to a player that is only being replaced, and a revoked blob is
         // already a promise that nothing can start from it again.
         function silenceStage(stage) {
+            stageEpoch += 1;
             if (!stage) return;
             stage.querySelectorAll('video, audio').forEach(el => {
                 try {
@@ -7631,6 +7631,7 @@
             stopPlayerMedia();
             document.getElementById('playerOverlay').classList.remove('active');
             document.getElementById('playerVideo').innerHTML = '';
+            stageEpoch += 1;
             // A generated piece keeps its own track and animation running, so
             // closing the player has to stop both.
             stopRemixAudio();

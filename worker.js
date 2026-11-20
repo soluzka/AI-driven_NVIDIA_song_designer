@@ -646,12 +646,11 @@ async function poolAnswers(address) {
 // When each machine was last seen alive in this isolate, so one bad probe is forgiven
 // only for a card that was working a minute ago.
 const poolLastOk = new Map();
-// Four seconds was short enough that a card on a free T4 could miss a probe while it was
-// perfectly alive, and an isolate that had not watched it answer had nothing to forgive
-// that with: the pool went to zero and the header said offline with a working card in it.
-// The grace is wider now, and a dead address is still taken out - the pool Worker prunes
-// one that stops answering at the next join, which is what a restart does anyway.
-const POOL_ALIVE_MS = 10 * 60 * 1000;
+// Two minutes: long enough that a card which answered a moment ago is not dropped for one
+// missed probe, short enough that an address whose tunnel is gone stops being counted.
+// A ten-minute grace was tried and it made the header claim three GPUs when only one was
+// answering - the count has to be what answers now, not what answered a while ago.
+const POOL_ALIVE_MS = 2 * 60 * 1000;
 
 async function livePool(list) {
   if (!Array.isArray(list) || !list.length) return [];

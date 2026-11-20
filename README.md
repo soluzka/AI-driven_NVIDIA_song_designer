@@ -242,7 +242,8 @@ The page asks two things of `song_service/`, which runs on your own machine:
 
 | Route (on 127.0.0.1:8090) | What it does | Model |
 | --- | --- | --- |
-| `POST /api/lyrics` | writes the words | Qwen 2.5 1.5B Instruct |
+| `POST /api/lyrics` | writes the words: the answer, or `202 {token}` while it writes | Qwen 2.5 1.5B Instruct |
+| `GET /api/lyrics/<token>` | the words, once that write has finished | — |
 | `POST /api/song` | sings those words | ACE-Step v1 3.5B |
 
 Both models pick their device themselves: the lyric model runs on CUDA when
@@ -250,6 +251,15 @@ torch can see a card and in system RAM when it cannot. On the GPU the lyric mode
 is loaded only after the song model has been released, because 7.9 GB of ACE-Step
 and 3 GB of Qwen do not fit in 8 GB together and paging between them cost more
 than reloading — measured here, a lyric request went from **3m42s to 10.5s**.
+
+A write is a job, not one long request. The card is reached through a Cloudflare
+tunnel, and Cloudflare answers **524** to any request that has sent nothing for
+100 seconds — which is what a cold lyric model looks like from the page. So
+`POST /api/lyrics` waits `LYRICS_INLINE_SECONDS` (40) for the words and, if the
+model is still writing, returns `202 {"token": …}`; the page then polls
+`GET /api/lyrics/<token>` every two seconds until the sections arrive. The words
+are the model's own either way: a slow write is never replaced with stand-in
+lines.
 
 `GET /health` reports what is running where:
 
@@ -779,6 +789,7 @@ singer**: see `voice_service/README.md`. Only **8090** is ever published.
 | `YT_COOKIES` | downloader | The same cookie jar as text, for hosts that only give you environment variables |
 | `SONG_WARM` | song service | `1` loads the song model at startup instead of on the first song (set by the launcher) |
 | `LYRICS_DEVICE` | song service | `cuda` or `cpu` for the lyric model; unset means cuda when torch sees a card |
+| `LYRICS_INLINE_SECONDS` | song service | How long `POST /api/lyrics` holds the request before answering `202 {token}` (default 40 s) |
 | `ACE_CPU_OFFLOAD` / `ACE_DTYPE` | song service | Page the weights in and out (default `1`), and the model dtype (default `bfloat16`) |
 | `ACE_STEPS` / `ACE_MAX_SECONDS` | song service | Diffusion steps (30) and the ceiling on song length (120 s) |
 | `SONG_ENDPOINT_KEY` | Worker secret | Proves a tunnel publish came from this PC; `POST /api/song/endpoint` without it is **403** |
@@ -1551,6 +1562,11 @@ image contains — is in `deploy\gpu\README.md`.
   Any run of `tools/start_services.ps1` registers it, including the Startup entry.
 - **Lyrics take minutes instead of seconds** — the lyric model is running on the
   CPU. `/health` shows the device; unset `LYRICS_DEVICE` to let it pick CUDA.
+- **"No lyric was written"** — the toast carries the model's own reason. "the
+  lyric model returned too little text" means it answered three times with words
+  that failed the checks; "still writing when the wait ran out" means the card was
+  busy for the whole five minutes. A write that outlasts the tunnel is normal and
+  is collected by polling, so it no longer reads as the model not answering.
 - **A song takes about ten minutes** — 90 seconds of audio at 16 steps on one
   card. `ACE_STEPS` trades quality for time, `ACE_MAX_SECONDS` for length.
 - **The tunnel answers 404 with no body** — cloudflared picked up

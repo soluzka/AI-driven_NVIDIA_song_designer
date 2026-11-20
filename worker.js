@@ -579,7 +579,7 @@ let poolProbeCache = { at: 0, key: '', live: [] };
 
 // One probe, and what it means: alive, gone (nothing answered), or broken (it answered
 // and said its warm failed - a definite no rather than a blip).
-async function poolVerdict(address, timeoutMs = 4000) {
+async function poolVerdict(address, timeoutMs = 6000) {
   try {
     const reply = await fetch(String(address).replace(/\/+$/, '') + '/health', {
       headers: { accept: 'application/json' },
@@ -646,7 +646,12 @@ async function poolAnswers(address) {
 // When each machine was last seen alive in this isolate, so one bad probe is forgiven
 // only for a card that was working a minute ago.
 const poolLastOk = new Map();
-const POOL_ALIVE_MS = 2 * 60 * 1000;
+// Four seconds was short enough that a card on a free T4 could miss a probe while it was
+// perfectly alive, and an isolate that had not watched it answer had nothing to forgive
+// that with: the pool went to zero and the header said offline with a working card in it.
+// The grace is wider now, and a dead address is still taken out - the pool Worker prunes
+// one that stops answering at the next join, which is what a restart does anyway.
+const POOL_ALIVE_MS = 10 * 60 * 1000;
 
 async function livePool(list) {
   if (!Array.isArray(list) || !list.length) return [];

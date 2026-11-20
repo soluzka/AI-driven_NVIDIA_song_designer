@@ -234,10 +234,21 @@ if ($Create) {
         $known = $existing -match [regex]::Escape($slug)
         $verb = if ($known) { 'adding a version to ' } else { 'creating ' }
         Say ($verb + $slug + ' (this uploads; it takes a while) ...')
-        if ($known) {
-            & uv tool run --from kaggle --with six kaggle datasets version -p $path --dir-mode zip -m 'offline pack'
-        } else {
-            & uv tool run --from kaggle --with six kaggle datasets create -p $path --dir-mode zip
+        # Uploaded from inside the folder, with -p . on purpose. The CLI names the temp
+        # file it writes per upload after the -p path it was given, separators and all,
+        # and then opens that name as a single file in its temp folder: an absolute path
+        # produces something like C:\...\Temp\.kaggle-uploads\D_/scrape/..._pylibs.zip.json,
+        # which does not exist, so every upload died at the third file with Errno 2 and no
+        # version was ever created. With -p . the name has no separators in it.
+        Push-Location -Path $path
+        try {
+            if ($known) {
+                & uv tool run --from kaggle --with six kaggle datasets version -p . --dir-mode zip -m 'offline pack'
+            } else {
+                & uv tool run --from kaggle --with six kaggle datasets create -p . --dir-mode zip
+            }
+        } finally {
+            Pop-Location
         }
         if ($LASTEXITCODE -ne 0) { throw "the upload of $slug failed with $LASTEXITCODE" }
     }

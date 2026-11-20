@@ -665,7 +665,10 @@ async function livePool(list) {
   // one poll in every fresh isolate, which put it back at the top of the list each time.
   const live = verdicts.filter((item) => {
     if (item.alive) { poolLastOk.set(item.entry.url, Date.now()); return true; }
-    const last = poolLastOk.get(item.entry.url) || Number(item.entry.seen || 0);
+    // Only a card this worker has watched answer gets the grace. Falling back to when it
+    // joined kept an address that had already stopped answering in the count for two
+    // minutes, which is how a shut-down PC was still counted as a GPU.
+    const last = poolLastOk.get(item.entry.url) || 0;
     return Date.now() - last < POOL_ALIVE_MS;
   }).map((item) => item.entry);
   poolProbeCache = { at: Date.now(), key, live };

@@ -347,19 +347,24 @@ $siteUrl = 'https://browser.bpiersing.workers.dev'
 # run that rewrites the file can leave it empty for a moment. It is checked and rewritten
 # here instead of being handed over as-is.
 function Ensure-TunnelConfig([string]$path) {
-    if ((Test-Path $path) -and ((Get-Item $path).Length -gt 0)) { return $true }
+    # A file of nothing but comments is an EMPTY config to cloudflared: it parses the file,
+    # finds no keys, and logs "Configuration file ... was empty" even though the bytes are
+    # there and the tunnel works. Checking its length was therefore checking the wrong
+    # thing. One harmless key makes it a config rather than a comment block; no ingress is
+    # defined, so the quick tunnel's --url routing is untouched.
+    $text = if (Test-Path $path) { Get-Content -Raw -Path $path } else { '' }
+    $hasKey = @(($text -split "`n") | Where-Object { $_ -match '\S' -and $_ -notmatch '^\s*#' }).Count -gt 0
+    if ($hasKey) { return $true }
     $text = @(
-        '# Deliberately empty apart from this comment.',
-        '#',
-        '# Quick Tunnels (trycloudflare.com) do not work when cloudflared picks up a',
-        '# config.yaml from ~/.cloudflared: that file''s ingress rules take over, the',
-        '# catch-all at the end answers 404, and nothing reaches the local service.',
-        '# Passing --config with this file keeps the quick tunnel''s own --url routing.'
+        '# Deliberately no ingress rules: a config.yaml in ~/.cloudflared would take over',
+        '# the quick tunnel routing, and its catch-all answers 404. This file exists only to',
+        '# be passed as --config, and holds one key so cloudflared does not call it empty.',
+        'no-autoupdate: true'
     ) -join "`n"
     try {
         New-Item -ItemType Directory -Force -Path (Split-Path $path) | Out-Null
         Set-Content -Path $path -Value $text -Encoding ascii
-        Say 'tunnel: quick-tunnel.yml was missing or empty, so it was written again'
+        Say 'tunnel: quick-tunnel.yml had no keys, so it was written with one'
         return $true
     } catch {
         Say "tunnel: could not write quick-tunnel.yml ($($_.Exception.Message))"

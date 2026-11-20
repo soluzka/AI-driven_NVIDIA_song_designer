@@ -195,22 +195,23 @@ function Find-LiveAddress {
 function Renew-Tunnel([switch]$Retried) {
     $cf = Join-Path $App 'tools\bin\cloudflared.exe'
     $cfg = Join-Path $App 'tools\bin\quick-tunnel.yml'
-    # cloudflared refuses a zero-byte config file: "Configuration file ... was empty".
-    # The file's only job is to stop a config.yml in ~/.cloudflared from taking over the
-    # quick tunnel's --url routing, so an empty or missing one is written again here
-    # instead of being handed over as it is.
-    if (-not (Test-Path $cfg) -or (Get-Item $cfg).Length -eq 0) {
+    # cloudflared logs "Configuration file ... was empty" for a config that has no KEYS,
+    # not for one with no bytes: a file of comments only is empty to it, which is why the
+    # error kept appearing over a file that was 353 bytes long. The file's only job is to
+    # stop a config.yml in ~/.cloudflared from taking over the quick tunnel's --url
+    # routing, so it is written with one harmless key and no ingress at all.
+    $cfgText = if (Test-Path $cfg) { Get-Content -Raw -Path $cfg } else { '' }
+    $cfgKey = @(($cfgText -split "`n") | Where-Object { $_ -match '\S' -and $_ -notmatch '^\s*#' }).Count -gt 0
+    if (-not $cfgKey) {
         try {
             New-Item -ItemType Directory -Force -Path (Split-Path -Parent $cfg) | Out-Null
             Set-Content -Path $cfg -Encoding ascii -Value @(
-                '# Deliberately empty apart from this comment.',
-                '#',
-                '# Quick Tunnels (trycloudflare.com) do not work when cloudflared picks up a',
-                "# config.yaml from ~/.cloudflared: that file's ingress rules take over, the",
-                '# catch-all at the end answers 404, and nothing reaches the local service.',
-                "# Passing --config with this file keeps the quick tunnel's own --url routing."
+                '# Deliberately no ingress rules: a config.yaml in ~/.cloudflared would take over',
+                '# the quick tunnel routing, and its catch-all answers 404. This file exists only',
+                '# to be passed as --config, with one key so cloudflared does not call it empty.',
+                'no-autoupdate: true'
             )
-            Say '  quick-tunnel.yml was missing or empty, so it was written again'
+            Say '  quick-tunnel.yml had no keys, so it was written with one'
         } catch {
             Say "  could not write quick-tunnel.yml ($($_.Exception.Message))"
         }

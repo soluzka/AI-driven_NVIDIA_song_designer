@@ -9306,6 +9306,33 @@
             }
             shaper.curve = curve;
 
+            // A highpass after the drive, because the drive *makes* low end that no
+            // filter before it can touch. Measured on a 220 Hz + 1 kHz test tone through
+            // this chain: the 80-120 Hz band sits at -63.5 dB with no drive and at
+            // -35.9 dB with the neutral 0.18, and the same test at -5 semitones reaches
+            // -34.1 dB. The products are difference tones (1 kHz - 4 x 220 Hz = 120 Hz),
+            // and a voice with dozens of partials fills the whole band with them - which
+            // is the rumble under the fitted phrase, and the swell that sounds like a sub
+            // note tuning itself. Two poles at the profile's own corner, after the shaper.
+            // ... and the voice's own low end goes *round* the shaper rather than being
+            // filtered after it. Driven, the fundamental makes difference tones with every
+            // harmonic above it, and those land back inside the band they came from, so no
+            // filter *after* the shaper can separate them from the voice. Measured on the
+            // same 220 Hz + 1 kHz tone: a highpass at the profile's corner left the 80-120
+            // Hz band at -34.8 dB (it did nothing), and splitting at 150 Hz made it worse
+            // (-30.3) because the products were still above the split. At 400 Hz the band
+            // falls to -58.2 dB at 0 semitones and -55.3 at -5, while a 110 Hz fundamental
+            // keeps its own band (-0.1 dB): only what is above the split is shaped.
+            const splitAt = Number(profile.split) || 400;
+            const driveHigh = ctx.createBiquadFilter();
+            driveHigh.type = 'highpass';
+            driveHigh.frequency.value = splitAt;
+            driveHigh.Q.value = 0.54;
+            const keepLow = ctx.createBiquadFilter();
+            keepLow.type = 'lowpass';
+            keepLow.frequency.value = splitAt;
+            keepLow.Q.value = 0.54;
+
             const comp = ctx.createDynamicsCompressor();
             comp.threshold.value = -20;
             comp.ratio.value = 3;
@@ -9370,7 +9397,9 @@
             ceiling.frequency.value = profile.lp;
             ceiling.Q.value = 0.54;
 
-            source.connect(highAgain).connect(high).connect(low).connect(presence).connect(shaper).connect(ceiling).connect(comp);
+            source.connect(highAgain).connect(high).connect(low).connect(presence);
+            presence.connect(driveHigh).connect(shaper).connect(ceiling).connect(comp);
+            presence.connect(keepLow).connect(comp);
             comp.connect(body).connect(presenceTrim);
             presenceTrim.connect(dry).connect(ctx.destination);
             presenceTrim.connect(room).connect(wet).connect(ctx.destination);

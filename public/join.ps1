@@ -43,6 +43,14 @@ $ProgressPreference = 'SilentlyContinue'
 
 function Say([string]$text) { Write-Host $text }
 
+# A join started from a double-click has no console to read afterwards, so "the files
+# did not update" is a guess about a window that has already closed. Everything this
+# run prints also goes to join_report.log in the folder it installs to.
+try {
+    New-Item -ItemType Directory -Force -Path $Target | Out-Null
+    Start-Transcript -Path (Join-Path $Target 'join_report.log') -Append | Out-Null
+} catch { }
+
 # Names an address as the model endpoint - the one the page shows as "MODEL ENDPOINT"
 # and hands to every device. Only a machine holding the join key may do it, and only
 # an address that answers: a host left over from a session that ended resolves to
@@ -140,6 +148,7 @@ if ($Offline) {
     $updated = 0
     $added = 0
     $same = 0
+    $copied = @()
     foreach ($file in (Get-ChildItem -LiteralPath $source -Recurse -File)) {
         $dest = Join-Path $destRoot $file.FullName.Substring($source.Length).TrimStart('\')
         if (Test-Path -LiteralPath $dest) {
@@ -158,9 +167,13 @@ if ($Offline) {
         # just been replaced looked untouched. The files that were copied are stamped
         # with this run's time; the ones that were already the same keep their date.
         try { (Get-Item -LiteralPath $dest).LastWriteTime = Get-Date } catch { }
+        $copied += $file.Name
     }
     Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
     Say ("app:   {0} files updated, {1} added, {2} already current" -f $updated, $added, $same)
+    foreach ($key in @('ai_engine.py', 'app.py', 'genre_model.py')) {
+        Say ('app:   {0,-15} {1}' -f $key, $(if ($copied -contains $key) { 'updated' } else { 'already current' }))
+    }
     if ($downloaded -and -not (Test-Path (Join-Path $appDir 'install_all.ps1'))) {
         # A zip whose root folder is named differently (a release, a branch rename).
         $found = Get-ChildItem -Path $Target -Directory |
@@ -344,3 +357,5 @@ if ($hits.Count) {
 }
 Say ''
 Say 'The site finds this PC on the next click, and it rejoins at every logon'
+Say "this run's output is also in $(Join-Path $Target 'join_report.log')"
+try { Stop-Transcript | Out-Null } catch { }

@@ -609,10 +609,13 @@ if ($NoTunnel) {
         [array]::Reverse($seenInLog)
         $candidates += $seenInLog
     }
-    # Three sweeps, ten seconds apart: a tunnel that has just printed its address needs a
-    # few seconds before Cloudflare routes it, and one bad look is not a verdict.
+    # Six sweeps, ten seconds apart: a tunnel that has just printed its address needs a
+    # few seconds before Cloudflare routes it, and one bad look is not a verdict. Three
+    # sweeps was not enough - a fresh quick tunnel took about 40 s to become routable on
+    # 22 Nov 2026, the launcher gave up at 30, and the address on file stayed the dead one
+    # from before, which every click then waited on.
     $liveAddress = ''
-    for ($sweep = 0; $sweep -lt 3 -and -not $liveAddress; $sweep++) {
+    for ($sweep = 0; $sweep -lt 6 -and -not $liveAddress; $sweep++) {
         if ($sweep) { Start-Sleep -Seconds 10 }
         foreach ($candidate in ($candidates | Select-Object -Unique)) {
             if (Test-TunnelHealth $candidate 1) { $liveAddress = $candidate; break }
@@ -630,6 +633,27 @@ if ($NoTunnel) {
         # exactly the failure this block exists to prevent, and putting it in
         # build\tunnel_url.txt would point the page and the pool at nothing.
         Say "tunnel: no quick tunnel of this machine answers through Cloudflare yet ($tunnelUrl was the newest); the address on file is unchanged"
+        # An address that answers 530 is worse than no address: the site routes every click
+        # at it and waits out its retries, which is what "the song is taking forever" looks
+        # like. The old address is dropped from the pool by name, so the next start can put
+        # the fresh one in with nothing dead beside it.
+        if ($recorded -and $recorded -ne $tunnelUrl) {
+            try {
+                $deadPayload = Join-Path $root 'build\tunnel_dead.json'
+                Set-Content -Path $deadPayload -Encoding ascii -Value ('{"remove":"' + $recorded + '"}')
+                $deadHeaders = @('-s', '--max-time', '20', '-X', 'POST',
+                                 'https://song-pool.bpiersing.workers.dev/remove',
+                                 '-H', 'Content-Type: application/json')
+                $deadKeyFile = Join-Path $root 'build\song_endpoint.key'
+                if (Test-Path $deadKeyFile) {
+                    $deadKey = ((Get-Content -Raw -Path $deadKeyFile) -as [string]).Trim()
+                    $deadHeaders += @('-H', "x-join-key: $deadKey")
+                }
+                $deadAnswer = & curl.exe @deadHeaders --data-binary "@$deadPayload"
+                Say "tunnel: dropped $recorded from the pool: $deadAnswer"
+                Remove-Item $deadPayload -ErrorAction SilentlyContinue
+            } catch { }
+        }
     } else {
         try { Set-Content -Path (Join-Path $root 'build\tunnel_url.txt') -Value $tunnelUrl -Encoding ascii } catch { }
         try { Set-Clipboard -Value $tunnelUrl } catch { }

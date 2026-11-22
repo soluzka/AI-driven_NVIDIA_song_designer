@@ -351,6 +351,20 @@ def main():
     with open(STATIC_JSON, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, separators=(",", ":"), ensure_ascii=False)
 
+    # A few hundred bytes the page reads at boot. The header's library figure came from
+    # the server's ingest counter, which is seeded once and then only counts new rows, so
+    # a re-export was always bigger than the number shown (8,067 against 8,724). What is
+    # actually shipped now says so itself, without the 3 MB index being fetched first.
+    with open(os.path.join(ROOT, "public", "data", "library.json"), "w", encoding="utf-8") as handle:
+        json.dump({
+            "generated": payload["generated"],
+            "count": len(videos),
+            "searches": searches,
+            "clicks": clicks,
+            "genres": sum(1 for video in videos if video.get("g")),
+            "readings": sum(1 for video in videos if video.get("w")),
+        }, handle, separators=(",", ":"))
+
     print("videos %d | sources %d | searches %d | clicks %d"
           % (len(videos), len({v["s"] for v in videos}), searches, clicks))
     print("wrote %s (%.1f KB) and %s (%.1f KB)"

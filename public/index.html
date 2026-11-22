@@ -1281,6 +1281,10 @@
         // --- Bundled index: used when no backend is reachable (static hosting) ---
         let videoIndex = null;
         let indexStats = null;
+        // Rows in the shipped data/videos.json. The server's counter is seeded once and
+        // only grows with new ingests, so a regenerated export is regularly larger than
+        // it says; the library the page searches is the floor for the number shown.
+        let snapshotVideos = 0;
         let indexRequest = null;
         // True once the counters have come from the server. The bundled snapshot is
         // only a fallback, and its numbers are as old as the last export: once real
@@ -1311,12 +1315,16 @@
                     })
                     .then(data => {
                         videoIndex = data.videos || [];
+                        snapshotVideos = Number(data.count) || videoIndex.length;
+                        // The header may already be showing the server's lower count;
+                        // the rows that just arrived are what this page can search.
+                        if (indexStats) updateStats(indexStats);
                         // Loaded for searching when the server cannot answer, but
                         // its counters are the export's age. If the server has
                         // already given real ones, they stay.
                         if (!liveStats) {
                             indexStats = {
-                                total_videos: data.count || videoIndex.length,
+                                total_videos: Number(data.count) || videoIndex.length,
                                 total_searches: data.searches || 0,
                                 total_clicks: data.clicks || 0,
                             };
@@ -8402,7 +8410,11 @@
         function updateStats(stats) {
             if (!stats) return;
             const format = (value) => (Number(value) || 0).toLocaleString();
-            document.getElementById('statVideos').textContent = format(stats.total_videos);
+            // Never show fewer videos than this page can actually search. The ingest
+            // counter starts from whatever the library held when it was seeded and then
+            // counts only new rows, so it lags every re-export (8,067 against 8,724).
+            const held = Math.max(Number(stats.total_videos) || 0, snapshotVideos, videoIndex ? videoIndex.length : 0);
+            document.getElementById('statVideos').textContent = format(held);
             document.getElementById('statSearches').textContent = format(stats.total_searches);
             document.getElementById('statClicks').textContent = format(stats.total_clicks);
         }
@@ -8431,6 +8443,18 @@
 
             // A restored search already brought its counters with it; the snapshot
             // must not replace them.
+            // The export's own count, a few hundred bytes: the header must not wait on
+            // the 3 MB index, and must never show a number the ingest counter only
+            // remembers from the day it was seeded.
+            fetch('data/library.json', { cache: 'no-store' })
+                .then(r => (r.ok ? r.json() : null))
+                .then(entry => {
+                    if (!entry) return;
+                    snapshotVideos = Number(entry.count) || snapshotVideos;
+                    if (indexStats) updateStats(indexStats);
+                })
+                .catch(() => {});
+
             if (!fromDatabase && !statsFromSession) {
                 loadIndex()
                     // Checked again here: a restored search can arrive while the

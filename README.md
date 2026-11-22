@@ -750,8 +750,11 @@ timing belong to the song it is singing over:
    preserving**: the pitch moves, then the source's own spectral envelope is
    divided back over it, so the same singer sounds higher or lower rather than
    thin;
-5. the shifted vocal is laid back over the same backing, the bed ducked under it
-   and matched so the voice sits `LEAD_DB` (5 dB) above.
+5. the shifted vocal is laid back over the same backing, matched to it and the bed
+   ducked lightly under it: `LEAD_DB` (0 dB) and `DUCK_UNDER_VOICE` (20%), which
+   measured leaves the voice about 4.6 dB over the music under a word. At 1.5 dB
+   over a 45% duck it measured 8.3 dB, and the song was hard to hear under the
+   lyric.
 
 Your recording is only a measurement: its pitch sets the semitone shift, and the
 Fit voice panel's tone profile sets the low-pass ceiling and the room. Nothing you

@@ -209,7 +209,10 @@ Spectral flatness came out 23% *below* the source's, which is why this is used
 rather than a WORLD resynthesis: WORLD held the formants (×1.019/×0.986/×0.995)
 but measured +281% flatness, heard as a grain or grind. Nothing you said into the microphone is in the track and no voice is
 cloned: the vocal is ACE-Step's own, separated from the music, mapped, and mixed
-back with the bed ducked under it and the voice `LEAD_DB` above.
+back with the bed ducked lightly under it (`DUCK_UNDER_VOICE`) and the voice
+`LEAD_DB` above it. Those two numbers are the balance: 0 dB and 20% measured
+leaves the voice about 4.6 dB over the music under a word, where 1.5 dB over a
+45% duck measured 8.3 dB and buried the song under the lyric.
 
 `demucs` is installed by this service's `install.py` — it is in `models.json`, so a
 fresh install covers it. The first separation downloads the htdemucs weights

@@ -486,8 +486,12 @@ def _map_vocal(mono, rate, mapping):
 # compared a sparse signal with a continuous one and put the voice +13.9 dB over
 # the music (measured on a 180 s song) while claiming 2.5. That is what "too loud"
 # was. Matching the active frames gives the number the ear hears.
-LEAD_DB = 1.5
-DUCK_UNDER_VOICE = 0.45
+# 0 dB and a light duck, not 1.5 dB over a bed cut by 45%: the two together put the
+# voice 8.3 dB over the music under every word (measured on the mix this service
+# makes), which is a lyric you cannot hear the song behind. At 0 dB and 20% it is
+# about 3.5 dB - the voice is still the lead, and the music is still there.
+LEAD_DB = 0.0
+DUCK_UNDER_VOICE = 0.2
 MAX_LEAD_GAIN = 8.0
 
 

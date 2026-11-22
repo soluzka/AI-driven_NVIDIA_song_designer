@@ -982,6 +982,21 @@ only the sound is moved and shaped.
    noise. The rumble guard did not move: the post-drive pair still highpasses the
    send at the split, and [the low-end check](#the-low-end-has-a-check) still
    holds the grind case at -74 dB.
+
+   **The model's vocal is not transposed.** The service used to match the model's
+   sung register to the recording's: it folded the difference into +-6 semitones
+   and then applied whatever was left, which came out as **-5.5 semitones** on one
+   render. Two things were wrong with it. A shift that is not a multiple of
+   twelve moves the words off the music, and measured on that job's own separated
+   vocal it put **+7.4 dB** into 60-120 Hz and took **5-6 dB** out of 250 Hz-3 kHz:
+   a soft, muffled, low voice under the track. And the pitch it matched on was not
+   real - pyin's median on that stem was 70.0 Hz, exactly its search floor, against
+   an autocorrelation of 46 Hz and a 90th percentile of 233 Hz. The model sings its
+   own melody over its own backing, so it is already in key: the mapping now carries
+   the room only, and the measurement is still reported. A fresh lo-fi render
+   through the mix logs `no transpose (already in key)` and `+0.00 semitones`, and
+   its sung vocal measures a 5-16 kHz share of -12.7 dB against the take's -19.4 dB
+   (the old 4.2 kHz ceiling put that share 29 dB down in the page measurement).
 3. **Output.** Play it, or save 16-bit mono WAV. The result is trimmed under full
    scale because dry, room and echo add up on a loud phrase.
 

@@ -301,27 +301,6 @@ def _measure_pitch(path):
         return {'f0_hz': 0.0, 'seconds': 0.0}
 
 
-def _semitone_fit(reference_f0, vocal_f0, limit=7.0):
-    """The shift that puts the model's vocal in the register your voice measured.
-
-    Computed here rather than in the page: the two pitches being compared are the
-    recording and the vocal the model actually produced, and only the service has
-    both. The difference is folded into the nearest register - a voice an octave
-    away is the same voice - and kept on a half-semitone grid so a noisy pitch
-    estimate cannot ask for a wild shift.
-    """
-    import math
-
-    if not reference_f0 or not vocal_f0:
-        return 0.0
-    steps = 12.0 * math.log2(float(reference_f0) / float(vocal_f0))
-    while steps > 6.0:
-        steps -= 12.0
-    while steps < -6.0:
-        steps += 12.0
-    return max(-limit, min(limit, round(steps * 2) / 2.0))
-
-
 def _separate_song(song_path, work_dir):
     """Split a finished song into the model's vocal and the backing under it.
 
@@ -680,15 +659,23 @@ def _run_voice_job(token, reference_path, prompt, lyrics, seconds, steps, seed,
         _set(token, status='separating', progress=0.82)
         vocal_path, backing_path = _separate_song(job['path'], job['tmp_dir'])
 
-        # The service owns the semitones: it is the only side that can compare the
-        # register the recording measured with the register the model actually sang
-        # in. The tone and room still come from the page's voice fit.
+        # The model sings its own melody over its own backing, so its vocal is already
+        # in the song's key: it is not transposed. Two things were wrong with the
+        # register match that used to run here. A fractional shift moves the words off
+        # the music - one render came out at -5.5 semitones, and on that job's own
+        # separated vocal the transpose put +7.4 dB into 60-120 Hz and took 5-6 dB out
+        # of 250 Hz-3 kHz, which is the soft, muffled, low vocal that was reported. And
+        # the pitch it matched on is not trustworthy: on that same stem pyin's median
+        # was 70.0 Hz, exactly its search floor, with an autocorrelation of 46 Hz and a
+        # 90th percentile of 233 Hz. A transpose built on that number is a detune, not
+        # a register. The measurement is still reported, so the panel can say where the
+        # two voices sat.
         sung = _measure_pitch(vocal_path)
-        semitones = _semitone_fit(measured.get('f0_hz'), sung.get('f0_hz'))
+        semitones = 0.0
         mapping = (semitones, mapping[1], mapping[2])
-        print('pitch map: recording %(r)s Hz, model vocal %(v)s Hz, shift %(s)+.2f semitones'
-              % {'r': measured.get('f0_hz'), 'v': sung.get('f0_hz'), 's': semitones}, flush=True)
-        _set(token, map={'semitones': semitones, 'reference_hz': measured.get('f0_hz'),
+        print('pitch: recording %(r)s Hz, model vocal %(v)s Hz, no transpose (already in key)'
+              % {'r': measured.get('f0_hz'), 'v': sung.get('f0_hz')}, flush=True)
+        _set(token, map={'semitones': 0.0, 'reference_hz': measured.get('f0_hz'),
                          'vocal_hz': sung.get('f0_hz')})
 
         _set(token, status='mixing', progress=0.92)

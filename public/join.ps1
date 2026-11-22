@@ -7,7 +7,9 @@
 
       1. checks the card
       2. fetches this application (a zip of the repository)
-      3. installs it into one environment, with the CUDA wheels and the models
+      3. installs it into one environment, with the CUDA wheels and the models -
+         or, when this PC is already installed here, keeps that environment and
+         the models and only restarts the services on the new files
       4. asks once for the join key and stores it where the launcher publishes from
       5. starts the services and registers the logon entry
 
@@ -115,13 +117,28 @@ if ($Key) {
     }
 }
 
-# --- 4. install, start, stay -------------------------------------------------
-Say ''
-Say 'installing: the whole application in one environment - the site, the downloader,'
-Say 'the song service, the CUDA wheels and about 10 GB of models. This takes 20-60'
-Say 'minutes and about 20 GB of disk. Every step is printed below; leave it running.'
-Say ''
-& (Join-Path $appDir 'install_all.ps1') -Start -Autostart
+# --- 4. install, or update what is already here, then start ------------------
+# install_all.ps1 writes .venv\all_services.json once the environments and the
+# weights are in place. When it is there this is an update, not an install: the
+# files above are already the current ones, the wheels and models are the same
+# ones, and what the new files need is a restart so those are the files that run.
+# Running the installer again would spend 20-60 minutes arriving at the same
+# place. A PC that has never installed here takes the full path below.
+$marker = Join-Path $appDir '.venv\all_services.json'
+if (Test-Path $marker) {
+    Say ''
+    Say 'update: this PC is already installed here, so its environments and models stay.'
+    Say 'update: restarting the services so the files just fetched are what runs.'
+    Say ''
+    & (Join-Path $appDir 'tools\start_services.ps1') -Restart
+} else {
+    Say ''
+    Say 'installing: the whole application in one environment - the site, the downloader,'
+    Say 'the song service, the CUDA wheels and about 10 GB of models. This takes 20-60'
+    Say 'minutes and about 20 GB of disk. Every step is printed below; leave it running.'
+    Say ''
+    & (Join-Path $appDir 'install_all.ps1') -Start -Autostart
+}
 
 # --- 5. did it actually connect? ---------------------------------------------
 # The installer prints its own progress, but "is the site listing this PC" is a

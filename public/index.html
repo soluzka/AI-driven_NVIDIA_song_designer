@@ -9198,13 +9198,24 @@
             highAgain.frequency.value = profile.hp;
             highAgain.Q.value = 0.54;
 
-            // The profile's ceiling was applied before the drive, so every harmonic the
-            // drive created ignored it: measured on the voice reference, the neutral
-            // 0.18 drive turned the 10-20 kHz band from a few components (flatness
-            // -21 dB) into noise (-18 dB) at the same level, and a waveshaper runs at
-            // the context rate, so what it generates above Nyquist folds back into the
-            // band. The same ceiling after the shaper keeps the drive's harmonics where
-            // the profile wants them.
+            // Both lowpasses are needed, and for different reasons - each was measured
+            // alone before it stayed.
+            //
+            // The first, before the drive, keeps out-of-band content from ever reaching
+            // the shaper. Without it the drive is fed everything the shift produced up
+            // to the anti-alias cutoff, and a waveshaper runs at the context rate, so
+            // what it makes past Nyquist folds straight back inside the band. Measured
+            // on the voice reference, dropping this filter leaves the 10-20 kHz band's
+            // flatness at -17.9 dB at +5 semitones and -19.0 dB at +7, against -25.3
+            // and -27.4 with it: 7-8 dB more noise, in the band a voice has least
+            // business filling. At +0.5 and at -5 the difference is 1.2 dB and under,
+            // which is why it looked removable from a small shift alone.
+            //
+            // The second, after the drive, is a different job: the drive's harmonics are
+            // created *inside* the band, and no filter before the shaper can touch them.
+            // Without it the neutral 0.18 drive turned that band from a few components
+            // (flatness -21.2 dB) into noise (-17.6 dB) at the same level; with it the
+            // band measures -29.3 dB, less noise-like than the dry take.
             const ceiling = ctx.createBiquadFilter();
             ceiling.type = 'lowpass';
             ceiling.frequency.value = profile.lp;

@@ -818,8 +818,20 @@ only the sound is moved and shaped.
    context rate, so what it generates past Nyquist folds back inside the band. On the
    voice reference, the 10-20 kHz band went from a few tonal components (flatness
    −21.2 dB) to noise (−17.6 dB) at the same level: broadband hiss with nothing to do
-   with the phrase. The same ceiling now runs after the shaper too, and the band comes
+   with the phrase. The ceiling now runs after the shaper as well, and the band comes
    back at −29.3 dB flatness — less noise-like than the dry take.
+
+   Both lowpasses stayed, which was measured rather than assumed. They do different
+   jobs: the one **before** the drive stops out-of-band content from ever reaching the
+   shaper, so it cannot be *converted* into products inside the band; the one **after**
+   the drive removes the harmonics the shaper made inside the band, which no filter
+   before it can touch. Removing the pre-drive filter leaves the 10-20 kHz flatness at
+   −17.9 dB at +5 semitones and −19.0 dB at +7, against −25.3 and −27.4 with it — 7-8
+   dB more noise in the band a voice has least business filling. It only looks
+   redundant at small shifts and downward ones, where the difference is 1.2 dB or
+   less. What feeds it is the stretch of input between the profile's ceiling and the
+   anti-alias cutoff (12.4 kHz at +7 against an 11 kHz ceiling), which exists at every
+   upward shift inside the ±7 range.
 
    Measured band by band on the reference (share of total power / flatness, in dB):
 

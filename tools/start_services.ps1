@@ -519,6 +519,10 @@ if ($NoTunnel) {
                 "--url 'http://127.0.0.1:$SongPort' --no-autoupdate " +
                 "--logfile 'tunnel.log' --loglevel info 2>&1 | " +
                 "Select-String -Pattern 'trycloudflare\.com|`"level`":`"(error|warn|fatal)`"' | " +
+                # "Unable to reach the origin service" is what every request during a
+                # warm-up or a restart says, and it is not a fault: the card is loading,
+                # not broken. Dropped here so the window is not a stream of them.
+                "Where-Object { `$_.Line -notmatch 'Unable to reach the origin service' } | " +
                 "ForEach-Object { `$_.Line }"
             Start-Process -FilePath 'powershell' -WorkingDirectory $root `
                 -ArgumentList @('-NoProfile', '-Command', $tunnelRun) `

@@ -302,8 +302,11 @@ if (-not $NoWindow) {
     if ((@($follow).Count -gt 0) -or (Test-Path -LiteralPath $tunnelLogPath)) {
         $parts = @()
         if (Test-Path -LiteralPath $tunnelLogPath) {
+            # A request that arrives while the song service is warming gets "Unable to
+            # reach the origin service" from cloudflared. That is the card loading, not a
+            # fault, so it is left out of the window; the full line stays in tunnel.log.
             $parts += "Get-Content -Path '$tunnelLogPath' -Wait -Tail 4 -ErrorAction SilentlyContinue | " +
-                "Where-Object { `$_ -match 'error|warn|fatal' }"
+                "Where-Object { `$_ -match 'error|warn|fatal' -and `$_ -notmatch 'Unable to reach the origin service' }"
         }
         $parts += @($follow) | ForEach-Object {
             "Get-Content -Path '$_' -Wait -Tail 8 -ErrorAction SilentlyContinue | " +

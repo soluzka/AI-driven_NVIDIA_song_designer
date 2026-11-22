@@ -942,10 +942,10 @@ only the sound is moved and shaped.
    sung melody wanders - the reference's frames span roughly 130-150 Hz - so its
    median can sit between notes and individual notes still beat against a chord.
    Per-note correction would be a different feature, and this panel does not do it.
-2. **Tone.** Per-genre filters, drive, room and a half-beat echo: `dub` and
-   `ambient` are mostly space, `trap` and `riddim` almost none, `lo-fi` is a 4.2
-   kHz ceiling, `trance` and `house` keep the top end. The profile table is
-   `FIT_PROFILES` in `public/index.html`.
+2. **Tone.** Per-genre drive, room and a half-beat echo: `dub` and `ambient`
+   are mostly space, `trap` and `riddim` almost none. The tone is not a filter
+   on the voice - see below. The profile table is `FIT_PROFILES` in
+   `public/index.html`.
    The room is generated, not sampled, but it is not raw noise: the tail is
    lowpassed twice with the cutoff closing from 6 kHz to about 900 Hz as it
    decays, starts twelve milliseconds late so a consonant is never inside its own
@@ -956,6 +956,32 @@ only the sound is moved and shaped.
    speech at the wettest profile, the part of the tail above 4 kHz is 4 dB lower
    than the old noise tail, the 1-4 kHz part 2 dB lower, and the phrase's own
    envelope still matches the dry take at 0.88.
+
+   **The voice is not filtered, and that was two filters.** The phrase used to go
+   through `profile.lp` before the presence peak - 4.2 kHz on `lo-fi`, 5.2 on
+   `dub` - and then through a split that lowpassed the half below 400 Hz and drove
+   the half above it. Measured on white noise through the chain on `lo-fi`, share
+   of total power, 5-8 kHz sat 10.5 dB under the profile's own 3-5 kHz band,
+   8-12 kHz 29 dB under it and 12-16 kHz 48 dB under it - **-14.9 / -33.4 /
+   -52.8 dB** against -4.4 for 3-5 kHz, which is a bandpass. Those three bands now
+   read 2.4, 3.7 and 3.6 dB *above* 3-5 kHz. The same ceiling was then
+   sent to the song service as `lowpass`, which ran `butter(2, lowpass)` over the
+   *sung* vocal, so the words the model sang arrived under the same blanket.
+   The page now sends `lowpass=0`, and the ceiling stays only on the drive send,
+   where it does a job: it stops content above the ceiling being turned into
+   harmonics inside the band.
+
+   The drive is a parallel send now, not a split. Replacing everything above
+   400 Hz with a driven copy glued two different signals together at a crossover
+   (3 dB bump at 400-600 Hz, 3.5 dB dip at 600-800 on the noise test), and the
+   shaper's own `tanh(amount)` normalisation added +6.6 dB to that half alone.
+   The dry voice now reaches the compressor whole, and the shaper emits only what
+   it adds - `tanh(a*x)/a - x`, so there is no linear copy of the band to cancel
+   against the voice - mixed in at 0.5-1.3 of its level. On the neutral profile
+   the chain measures within +2.4/-2.0 dB from 300 Hz to 12 kHz against flat
+   noise. The rumble guard did not move: the post-drive pair still highpasses the
+   send at the split, and [the low-end check](#the-low-end-has-a-check) still
+   holds the grind case at -74 dB.
 3. **Output.** Play it, or save 16-bit mono WAV. The result is trimmed under full
    scale because dry, room and echo add up on a loud phrase.
 

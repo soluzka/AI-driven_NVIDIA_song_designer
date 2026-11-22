@@ -26,6 +26,7 @@ and is the built-in way to watch this check fail.
 """
 
 import argparse
+import http.server
 import json
 import os
 import re
@@ -33,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -78,7 +80,46 @@ def batch_url(url, names):
     return url + separator + "profiles=" + urllib.parse.quote(",".join(names), safe=",")
 
 
+def parse_answer(text):
+    if text.startswith("FITTEST-ERROR"):
+        raise SystemExit("The page could not run the test: " + text[:400])
+    marker = text.find("FITTEST ")
+    if marker < 0:
+        raise SystemExit("Unreadable answer from the page: " + text[:400])
+    return json.loads(text[marker + len("FITTEST "):])
+
+
+class _Collector(http.server.BaseHTTPRequestHandler):
+    """Takes the one answer the page navigates to."""
+
+    def do_GET(self):
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        if "result" in query:
+            self.server.answer = query["result"][0]
+            self.server.done.set()
+        self.send_response(204)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
 def run_page(browser, url):
+    # The page used to be read with --dump-dom under --virtual-time-budget, and the dump
+    # could arrive before the offline renders finished: two batches in five came back
+    # without an answer from pages that answered correctly in a real browser, and since
+    # the page's own source contains the string "FITTEST-ERROR" the failure then quoted
+    # that template instead of the reason. Virtual time does not wait for the audio
+    # thread, and no budget fixes that. So the page navigates to ?report= with its answer
+    # instead, into this process, and the browser is closed once it does.
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Collector)
+    server.answer = None
+    server.done = threading.Event()
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    report = "http://127.0.0.1:%d/" % server.server_address[1]
+    separator = "&" if "?" in url else "?"
+    target = url + separator + "report=" + urllib.parse.quote(report, safe=":/")
+
     profile = tempfile.mkdtemp(prefix="fit-low-end-")
     command = [
         browser,
@@ -88,26 +129,21 @@ def run_page(browser, url):
         "--no-default-browser-check",
         "--autoplay-policy=no-user-gesture-required",
         "--user-data-dir=" + profile,
-        "--virtual-time-budget=120000",
-        "--dump-dom",
-        url,
+        target,
     ]
-    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
-                            errors="replace")
-    dom = (result.stdout or "") + (result.stderr or "")
-    # The page writes its answer into <pre id="fittest">. Reading the element rather than
-    # searching for "FITTEST" matters: that string is also in the inline script, and a dump
-    # that finished before the renders did still contains it.
-    found = re.search(r'<pre id="fittest">(.*?)</pre>', dom, re.S)
-    if not found:
-        if "FITTEST-ERROR" in dom:
-            start = dom.find("FITTEST-ERROR")
-            raise SystemExit("The page could not run the test: " + dom[start:start + 300])
-        raise SystemExit("The page did not answer with a result for %s\n%s"
-                         % (url, dom[-600:]))
-    text = found.group(1).replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
-    marker = text.find("FITTEST ")
-    return json.loads(text[marker + len("FITTEST "):])
+    proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        if not server.done.wait(240):
+            raise SystemExit("The page did not report a result within 240 s: %s" % url)
+        return parse_answer(server.answer)
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        server.shutdown()
+        server.server_close()
 
 
 def measure(browser, url, names, batch):

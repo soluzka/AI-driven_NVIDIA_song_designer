@@ -9087,8 +9087,20 @@
             // near-zero window weight spiked the end of the phrase by 40 dB.
             const synthesisHop = Math.max(1, Math.round(analysisHop * targetLength / samples.length));
             const frames = Math.max(2, Math.ceil((targetLength - frame) / synthesisHop) + 1);
+            // Blackman, not Hann. A Hann window's sidelobes are about -31 dB two bins
+            // from a peak, and a voice shifted down puts its fundamental within a couple
+            // of bins of 80-120 Hz (a 220 Hz tone at -5 semitones is bin 7.6, and bin 5
+            // is 108 Hz), so the leakage landed exactly in the band the low-end check
+            // measures: measured at -5 semitones with no drive, no room and no echo, the
+            // band read -51.7 dB - the shifter's own sidelobes, which only the effects'
+            // added energy had been diluting. Blackman's are about -58 dB there, and the
+            // main lobe is one bin wider, which the identity phase locking already keeps
+            // together.
             const window = new Float32Array(frame);
-            for (let i = 0; i < frame; i++) window[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / frame);
+            for (let i = 0; i < frame; i++) {
+                const a = 2 * Math.PI * i / frame;
+                window[i] = 0.42 - 0.5 * Math.cos(a) + 0.08 * Math.cos(2 * a);
+            }
             const out = new Float32Array(targetLength + frame);
             const weight = new Float32Array(targetLength + frame);
             const re = new Float32Array(frame), im = new Float32Array(frame);
@@ -9290,13 +9302,20 @@
             // default Q of 1 put a 6 dB bump right at the corner, which is 90-120 Hz
             // on the neutral profile - heard as rumble, and the very thing the filter
             // was added to remove.
+            //
+            // There is deliberately no lowpass on this path. There used to be one at
+            // profile.lp, which is 4.2 kHz on lo-fi and 5.2 on dub, and that - not the
+            // room and not the drive - is what made a fitted phrase sound like it was
+            // behind a blanket: measured on white noise through this chain on lo-fi, 5-8
+            // kHz sat 10.5 dB under its own 3-5 kHz band, 8-12 kHz 29 dB under it and
+            // 12-16 kHz 48 dB under it. Those bands now read 2.4, 3.7 and 3.6 dB *above*
+            // it, with the status line no longer promising a ceiling.
+            // The ceiling still guards the driven send, where it has a job (see below);
+            // the voice itself now keeps every band it was recorded with.
             const high = ctx.createBiquadFilter();
             high.type = 'highpass';
             high.frequency.value = profile.hp;
             high.Q.value = 0.54;
-            const low = ctx.createBiquadFilter();
-            low.type = 'lowpass';
-            low.frequency.value = profile.lp;
             const presence = ctx.createBiquadFilter();
             presence.type = 'peaking';
             presence.frequency.value = 2600;
@@ -9306,9 +9325,18 @@
             const shaper = ctx.createWaveShaper();
             const curve = new Float32Array(1024);
             const amount = 1 + profile.drive * 6;
+            // The curve carries only what the drive *adds*, not the signal it was given:
+            // tanh(amount*x)/amount - x is the harmonics and nothing else. That matters
+            // because this send is summed with the dry voice, and a linear copy of the
+            // band arriving a few degrees out of phase is what put a 3.7 dB scoop at
+            // 400-500 Hz - the middle of the voice, heard as a filter. A residual has no
+            // linear part, so at drive 0 the send is silent and the voice is untouched.
+            // (tanh(amount) normalisation also left the curve's slope at the origin at
+            // amount/tanh(amount): +6.6 dB at the neutral 0.18 drive, +12.7 at riddim's
+            // 0.55, landing on one band only.)
             for (let i = 0; i < curve.length; i++) {
                 const x = (i / (curve.length - 1)) * 2 - 1;
-                curve[i] = profile.drive > 0 ? Math.tanh(amount * x) / Math.tanh(amount) : x;
+                curve[i] = profile.drive > 0 ? Math.tanh(amount * x) / amount - x : 0;
             }
             shaper.curve = curve;
 
@@ -9335,14 +9363,26 @@
             const splitAt = profile.split === undefined || !Number.isFinite(Number(profile.split))
                 ? 400
                 : Number(profile.split);
+            // The send starts below the split. With both corners at 400 Hz the send's own
+            // phase turned against the dry voice right at the crossover: measured on white
+            // noise, 400-500 Hz sat 2.5 dB and 500-600 Hz 4.0 dB under the bands either
+            // side of them - a scoop in the middle of the voice, audible as a filter. The
+            // scoop follows the corner (at 340 Hz it reads -4.0/-2.2, at 300 -3.1/-1.2, at
+            // 260 -1.6/-0.5), so the send opens lower and the post-drive pair below still
+            // does the rumble work at the split.
+            const sendFrom = splitAt * 0.65;
             const driveHigh = ctx.createBiquadFilter();
             driveHigh.type = 'highpass';
-            driveHigh.frequency.value = splitAt;
+            driveHigh.frequency.value = sendFrom;
             driveHigh.Q.value = 0.54;
-            const keepLow = ctx.createBiquadFilter();
-            keepLow.type = 'lowpass';
-            keepLow.frequency.value = splitAt;
-            keepLow.Q.value = 0.54;
+            // The send is limited to the profile's ceiling before the shaper. This is not
+            // a tone control on the voice any more - it is the filter that stops content
+            // above the ceiling from being converted into harmonics inside the band
+            // (removing it cost 7-8 dB of extra 10-20 kHz noise on the reference).
+            const driveLow = ctx.createBiquadFilter();
+            driveLow.type = 'lowpass';
+            driveLow.frequency.value = profile.lp;
+            driveLow.Q.value = 0.54;
 
             const comp = ctx.createDynamicsCompressor();
             comp.threshold.value = -20;
@@ -9408,6 +9448,24 @@
             ceiling.frequency.value = profile.lp;
             ceiling.Q.value = 0.54;
 
+            // How much of the harmonics are mixed in beside the dry voice. The drive used
+            // to *replace* everything above the split, so the phrase was the low half of
+            // the voice glued to a driven version of the top half: a crossover with a 3 dB
+            // bump at 400-600 Hz and a 3.5 dB dip at 600-800 Hz, heard as a bandpass.
+            // Now the voice underneath is complete and only the extra is added, so the
+            // midrange never leaves. The send is deliberately quiet. Measured on white
+            // noise against the dry voice, a level of 1 put a +4.2 dB bump at 400-500 Hz
+            // and a -6 dB scoop over 2.5-4 kHz - a colour of its own, a filter by another
+            // name. At these levels (0.5-1.3) the neutral profile reads +2.4 dB at
+            // 400-500 Hz, -1.5 at 1-1.5 kHz and nothing past -2 dB up to 12 kHz: a tone,
+            // not a filter. The 80-120 Hz share does not depend on it either way - with
+            // the drive off, the -5 st case still reads -53.2 dB, because that band is
+            // the shift's own low content, not the shaper's.
+            const driveMix = ctx.createGain();
+            driveMix.gain.value = profile.drive > 0
+                ? Math.min(1.3, 0.5 + profile.drive * 1.4)
+                : 0;
+
             // And a highpass straight after the shaper, which the split could not do. The
             // split keeps the voice's own low end out of the shaper, but a real voice has
             // partials *above* the split that sit close together, and the drive turns each
@@ -9430,10 +9488,9 @@
             postDriveAgain.frequency.value = splitAt;
             postDriveAgain.Q.value = 0.54;
 
-            source.connect(highAgain).connect(high).connect(low).connect(presence);
-            presence.connect(driveHigh).connect(shaper).connect(postDrive)
-                .connect(postDriveAgain).connect(ceiling).connect(comp);
-            presence.connect(keepLow).connect(comp);
+            source.connect(highAgain).connect(high).connect(presence).connect(comp);
+            presence.connect(driveHigh).connect(driveLow).connect(shaper).connect(postDrive)
+                .connect(postDriveAgain).connect(ceiling).connect(driveMix).connect(comp);
             comp.connect(body).connect(presenceTrim);
             presenceTrim.connect(dry).connect(ctx.destination);
             presenceTrim.connect(room).connect(wet).connect(ctx.destination);
@@ -9517,9 +9574,19 @@
             }
             cases.push(['low voice 110 Hz', lowVoice, 0, { ...FIT_NEUTRAL, ...extra }]);
             const rows = [];
-            for (const [label, buffer, semitones, profile] of cases) {
-                const out = await fitRender(buffer, profile, semitones);
-                rows.push({ label, bands: spectrum(out.getChannelData(0)) });
+            // The echo's delay follows the song's tempo, so a page with a song open would
+            // measure a different comb than one without - about a decibel of drift on the
+            // 80-120 Hz row between runs, which is too much for a gate with a 1 dB margin.
+            // The test renders its own silence.
+            const song = fitSong;
+            fitSong = null;
+            try {
+                for (const [label, buffer, semitones, profile] of cases) {
+                    const out = await fitRender(buffer, profile, semitones);
+                    rows.push({ label, bands: spectrum(out.getChannelData(0)) });
+                }
+            } finally {
+                fitSong = song;
             }
             return { rate: RATE, bands: bands.map(b => b.join('-')), rows };
         };
@@ -9529,19 +9596,29 @@
         if (/[?&]fittest=1/.test(location.search)) {
             const params = new URLSearchParams(location.search);
             const overrides = {};
+            // The check runs headless, and a --dump-dom can arrive before the offline
+            // renders finish: that race came back empty on 2 of 5 batches on a page that
+            // answered correctly in a real browser. With ?report= the page hands its
+            // answer straight to the checker's own server, so there is no dump to race.
+            // It is a test hook - nothing else on the page reads it.
+            const report = /^https?:\/\//.test(params.get('report') || '') ? params.get('report') : '';
+            const send = text => {
+                document.title = text;
+                if (report) location.replace(report + '?result=' + encodeURIComponent(text));
+            };
             if (params.has('profiles')) overrides.only = params.get('profiles').split(',').map(name => name.trim()).filter(Boolean);
             if (params.has('split')) overrides.split = Number(params.get('split'));
             if (params.has('drive')) overrides.drive = Number(params.get('drive'));
 
             window.fitSelfTest(overrides).then(result => {
                 const text = 'FITTEST ' + JSON.stringify(result);
-                document.title = text;
                 const pre = document.createElement('pre');
                 pre.id = 'fittest';
                 pre.textContent = text;
                 document.body.appendChild(pre);
+                send(text);
             }).catch(err => {
-                document.title = 'FITTEST-ERROR ' + (err && err.message ? err.message : err);
+                send('FITTEST-ERROR ' + (err && err.message ? err.message : err));
             });
         }
 
@@ -9728,7 +9805,12 @@
                 // Kept as numbers, not just baked into the phrase: the model sings
                 // its own take on the words, so the same map has to be sent with
                 // the job or the sung vocal lands in no relation to the song.
-                fit.map = { semitones: semitones, lowpass: profile.lp, room: profile.wet };
+                // lowpass is sent as 0 on purpose: the song service applies this map to
+                // the vocal the model sings, and it used to lowpass that vocal with the
+                // same ceiling - 4.2 kHz on lo-fi, 5.2 on dub - so the sung line arrived
+                // under a blanket even when the fitted phrase had not been. Only the
+                // pitch and the room travel now.
+                fit.map = { semitones: semitones, lowpass: 0, room: profile.wet };
                 fit.url = URL.createObjectURL(fitWav(rendered));
                 // The fitted phrase is a step in this panel, not a song: it is heard
                 // here, and Save WAV writes it wherever you ask. It used to be put
@@ -9746,7 +9828,7 @@
                         : Math.abs(semitones) < 1
                             ? (semitones > 0 ? '+' : '') + Math.round(semitones * 100) + ' cents'
                             : (semitones > 0 ? '+' : '') + semitones.toFixed(1) + ' semitones') +
-                    ', ' + Math.round(profile.lp) + ' Hz ceiling, ' + Math.round(profile.wet * 100) + '% room. Press Play, or Save WAV.');
+                    ', ' + Math.round(profile.wet * 100) + '% room, no filter on the voice. Press Play, or Save WAV.');
                 fitPlayback();
             } catch (err) {
                 fitSay('Could not process that recording: ' + (err && err.message ? err.message : 'unknown error') + '.');

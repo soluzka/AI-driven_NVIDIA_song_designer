@@ -371,7 +371,6 @@ function Sync-JoinKey([string]$keyFile) {
     $wranglerJs = Join-Path $root 'build\wrangler-tool\node_modules\wrangler\bin\wrangler.js'
     $nodeExe = Join-Path $root 'tools\node\node.exe'
     if (-not (Test-Path $wranglerJs) -or -not (Test-Path $nodeExe) -or -not (Test-Path $keyFile)) {
-        Say 'key: no wrangler in this install, so the Workers were left alone'
         return $false
     }
     $keyText = Get-Content -Path $keyFile -Raw
@@ -390,13 +389,9 @@ function Sync-JoinKey([string]$keyFile) {
                 $out = $keyText | & $nodeExe @cmdArgs 2>&1
                 $text = ($out -join ' ')
                 if ($LASTEXITCODE -ne 0 -or $text -match 'ERROR|Authentication|not logged|Unauthorized') {
-                    Say ("key: {0} was not set - sign in with wrangler on this machine and start again" -f $push.Name)
                     $allOk = $false
-                } else {
-                    Say ("key: set {0} on the Worker" -f $push.Name)
                 }
             } catch {
-                Say ("key: {0} was not set ({1})" -f $push.Name, $_.Exception.Message)
                 $allOk = $false
             }
         }
@@ -731,13 +726,32 @@ if ($NoTunnel) {
                     $stampFile = Join-Path $root 'build\key_pushed.txt'
                     $keyHash = ''
                     try { $keyHash = (Get-FileHash -Path $keyFile -Algorithm SHA256).Hash } catch { }
-                    $pushed = $false
-                    if ($keyHash -and ((-not (Test-Path $stampFile)) -or
-                            (((Get-Content -Raw -Path $stampFile) -as [string]).Trim() -ne $keyHash))) {
-                        if (Sync-JoinKey $keyFile) {
-                            try { Set-Content -Path $stampFile -Value $keyHash -Encoding ascii } catch { }
-                            $pushed = $true
+                    # The stamp records the attempt and how it went ("<hash> ok" / "<hash>
+                    # failed"), not just a success. A machine that is not signed in to
+                    # Cloudflare fails the same way on every start, and paying forty seconds
+                    # for three refusals each time buys nothing: a hash already tried is not
+                    # tried again. Replacing build\song_endpoint.key is what asks again.
+                    $stampHash = ''
+                    $stampOutcome = ''
+                    if (Test-Path $stampFile) {
+                        $stamp = ((Get-Content -Raw -Path $stampFile) -as [string]).Trim()
+                        if ($stamp) {
+                            $parts = $stamp -split '\s+'
+                            $stampHash = $parts[0]
+                            if ($parts.Count -gt 1) { $stampOutcome = $parts[1] }
                         }
+                    }
+                    if ($keyHash -and $stampHash -ne $keyHash) {
+                        if (Sync-JoinKey $keyFile) {
+                            $stampOutcome = 'ok'
+                            Say "key: the Workers now hold this PC's key"
+                        } else {
+                            $stampOutcome = 'failed'
+                            Say 'key: the Workers were not updated - wrangler is not signed in here, or its copy is missing; replacing build\song_endpoint.key is what tries again'
+                        }
+                        try { Set-Content -Path $stampFile -Value ("$keyHash $stampOutcome") -Encoding ascii } catch { }
+                    } elseif ($stampOutcome -eq 'failed') {
+                        Say 'key: the Workers were not updated on the last attempt, so this start leaves them alone; replace build\song_endpoint.key to try again'
                     }
                     $stateAnswer = & curl.exe -s --max-time 15 -X POST $stateUrl `
                         -H 'Content-Type: application/json' -H "x-join-key: $key" `
@@ -745,18 +759,6 @@ if ($NoTunnel) {
                     $poolAnswer = & curl.exe -s --max-time 20 -X POST $poolUrl `
                         -H 'Content-Type: application/json' -H "x-join-key: $key" `
                         --data-binary "@$payload"
-                    if (-not $pushed -and ("$stateAnswer $poolAnswer" -match 'Wrong|wrong|401|Unauthor')) {
-                        Say 'key: the Workers refused this key, so build\song_endpoint.key is pushed to them'
-                        if (Sync-JoinKey $keyFile) {
-                            try { Set-Content -Path $stampFile -Value $keyHash -Encoding ascii } catch { }
-                            $stateAnswer = & curl.exe -s --max-time 15 -X POST $stateUrl `
-                                -H 'Content-Type: application/json' -H "x-join-key: $key" `
-                                --data-binary "@$statePayload"
-                            $poolAnswer = & curl.exe -s --max-time 20 -X POST $poolUrl `
-                                -H 'Content-Type: application/json' -H "x-join-key: $key" `
-                                --data-binary "@$payload"
-                        }
-                    }
                     Say "tunnel: named on the site: $stateAnswer"
                     Say "tunnel: joined the pool: $poolAnswer"
 

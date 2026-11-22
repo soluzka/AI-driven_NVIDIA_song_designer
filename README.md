@@ -298,6 +298,17 @@ The page asks two things of `song_service/`, which runs on your own machine:
 | `GET /api/lyrics/<token>` | the words, once that write has finished | — |
 | `POST /api/song` | sings those words | ACE-Step v1 3.5B |
 
+Every render is written by the service itself instead of torchaudio (the installed
+torchaudio dropped the soundfile backend, so generation died after the whole
+diffusion had run), and that write path masters as well: four poles of highpass at
+**32 Hz**. The model's low end was mostly a swell under the bass - measured on six
+renders, 20-40 Hz carried 6-32% of the power, peaked at 34-40 Hz in a cluster with
+no harmonics above them, which is the same rumble the fit chain was fixed for. The
+filter takes that band to 3-20% and leaves 60-120 Hz where it was, so kick and bass
+keep their weight. It does not lower or raise the music's pitch: the renders sit low
+because their bass is written low, which is a question for the prompt and key, not
+for a filter.
+
 Both models pick their device themselves: the lyric model runs on CUDA when
 torch can see a card and in system RAM when it cannot. On the GPU the lyric model
 is loaded only after the song model has been released, because 7.9 GB of ACE-Step
@@ -916,11 +927,16 @@ only the sound is moved and shaped.
    vocoder or the room. Band by band on a 220 Hz + 1 kHz test tone, the 80-120 Hz
    band measured -101 dB in the tone, -63.5 dB through the filters, and **-35.9 dB
    once the 0.18 drive was added** - difference tones (1 kHz - 4 x 220 Hz = 120 Hz),
-   which a voice with dozens of partials fills the whole band with. No filter after
-   the shaper can separate those from the voice; the low end now goes *around* it,
-   with the drive shaping only what is above 400 Hz. The band falls to -58 dB at
-   0 semitones and -55 dB at -5, and a 110 Hz fundamental keeps its own band. See
-   [The low end has a check](#the-low-end-has-a-check).
+   which a voice with dozens of partials fills the whole band with. Routing the low
+   end *around* the shaper (split at 400 Hz) fixed that tone and not a real voice:
+   partials above the split that sit close together become their differences inside
+   the shaper, and four at 420/500/620/700 Hz put the 80-120 Hz band back at
+   **-30.2 dB** (lo-fi -29.8, dub -31.5). Two highpasses at the split *after* the
+   shaper are what remove them - measured at 120/160/200/260/400 Hz corners, the
+   band reads -32.5, -39.1, -43.9, -49.7 and -59.0 dB - because only there does the
+   driven path carry nothing that made the products. It now measures -74 to -76 dB
+   on that case and -57 to -62 dB on the tone, and a 110 Hz fundamental keeps its
+   own band. See [The low end has a check](#the-low-end-has-a-check).
 
    What this cannot fix: the whole phrase is moved by one number, its median. A
    sung melody wanders - the reference's frames span roughly 130-150 Hz - so its
@@ -965,10 +981,13 @@ so a headless browser can read it.
 ```
 
 It runs that page in headless Edge (or Chrome) and fails if the 80-120 Hz band
-passes **-52 dB**. The fixed chain measures -58 / -56 / -57 across the neutral,
--5 semitone and dub cases, and the drive-everything version of the same chain
-measures -37 / -34 / -41, so the threshold sits in the gap between "fixed" and
-"the rumble is back". A low voice losing its own band fails too (floor -6 dB).
+passes **-52 dB**. What is measured is every genre profile at 0 and -5 semitones,
+a "grind" case whose partials sit 80-120 Hz apart above the split, and a 110 Hz
+voice - 46 measurements, asked for three profiles at a page load because the
+renders are real time. The fixed chain's worst is -56.9 dB; the drive-everything
+version of the same chain measures -37 / -34 / -41, so the threshold sits in the
+gap between "fixed" and "the rumble is back". A low voice losing its own band
+fails too (floor -6 dB).
 
 `build/wr.ps1 deploy` runs it after wrangler reports success, so a deploy that
 brings the rumble back exits non-zero and says the live page can rumble (the

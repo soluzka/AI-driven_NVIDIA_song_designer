@@ -9402,8 +9402,36 @@
             ceiling.frequency.value = profile.lp;
             ceiling.Q.value = 0.54;
 
+            // And a highpass straight after the shaper, which the split could not do. The
+            // split keeps the voice's own low end out of the shaper, but a real voice has
+            // partials *above* the split that sit close together, and the drive turns each
+            // pair into their difference: four partials at 420, 500, 620 and 700 Hz make
+            // 80, 100 and 120 Hz, and measured through this chain they land in the 80-120
+            // band at -30.2 dB (lo-fi -29.8, dub -31.5). The two-sine test tone never
+            // showed this because its partials are an octave apart. Every product that
+            // falls back into the low end is below where the driven band starts, so the
+            // driven path is highpassed again after the shaper.
+            // Measured where it has to sit: at 120 Hz the grind case stays at -32.5 dB, 160
+            // Hz -39.1, 200 -43.9, 260 -49.7, and at the split itself (400) -59.0 for neutral
+            // and -58.5 for lo-fi - because only there does the driven path carry nothing
+            // below the band that made the products. Riddim drives at 0.55 and was still
+            // -48.0 with one pair there, so there are two: four poles, -52 or lower on every
+            // profile.
+            const postDriveAt = profile.posthp === undefined
+                ? splitAt
+                : Number(profile.posthp);
+            const postDrive = ctx.createBiquadFilter();
+            postDrive.type = 'highpass';
+            postDrive.frequency.value = postDriveAt;
+            postDrive.Q.value = 0.54;
+            const postDriveAgain = ctx.createBiquadFilter();
+            postDriveAgain.type = 'highpass';
+            postDriveAgain.frequency.value = postDriveAt;
+            postDriveAgain.Q.value = 0.54;
+
             source.connect(highAgain).connect(high).connect(low).connect(presence);
-            presence.connect(driveHigh).connect(shaper).connect(ceiling).connect(comp);
+            presence.connect(driveHigh).connect(shaper).connect(postDrive)
+                .connect(postDriveAgain).connect(ceiling).connect(comp);
             presence.connect(keepLow).connect(comp);
             comp.connect(body).connect(presenceTrim);
             presenceTrim.connect(dry).connect(ctx.destination);
@@ -9461,12 +9489,37 @@
             };
             const intermod = tone(t => 0.3 * envelope(t) * (Math.sin(2 * Math.PI * 220 * t) + 0.4 * Math.sin(2 * Math.PI * 1000 * t)));
             const lowVoice = tone(t => 0.3 * envelope(t) * (Math.sin(2 * Math.PI * 110 * t) + 0.3 * Math.sin(2 * Math.PI * 220 * t)));
+            // A voice is not two sines. Its partials sit close together, and anything the shaper
+            // shapes is turned into the difference between pairs of them: four partials 80, 100
+            // and 120 Hz apart pass the shaper as a beat at exactly the band that rumbled. All of
+            // these are above the 400 Hz split, so the low end is not bypassing anything here -
+            // this is the case that catches a split set too low for a real voice.
+            const grind = tone(t => 0.3 * envelope(t) * (
+                Math.sin(2 * Math.PI * 420 * t) + 0.8 * Math.sin(2 * Math.PI * 500 * t) +
+                0.7 * Math.sin(2 * Math.PI * 620 * t) + 0.6 * Math.sin(2 * Math.PI * 700 * t)));
+            // Every profile, at 0 and -5 semitones, not just neutral and dub: the rumble was
+            // blamed on genres whose ceilings and drives differ, and a profile that was never
+            // measured is a profile nothing can defend. lo-fi in particular is a 4.2 kHz
+            // ceiling and the one people hear it on. A rendering costs real time, so ?profiles=
+            // narrows the sweep to a batch and tools/check_fit_low_end.py asks for one batch a
+            // page load; without it, every profile runs.
+            const only = overrides.only;          // read before it is stripped from the profile
+            const extra = { ...overrides };
+            delete extra.only;
+            const swept = only
+                ? Object.keys(FIT_PROFILES).filter(name => only.includes(name))
+                : Object.keys(FIT_PROFILES);
             const cases = [
-                ['neutral 0 st', intermod, 0, { ...FIT_NEUTRAL, ...overrides }],
-                ['neutral -5 st', intermod, -5, { ...FIT_NEUTRAL, ...overrides }],
-                ['dub -5 st', intermod, -5, { ...FIT_PROFILES.dub, ...overrides }],
-                ['low voice 110 Hz', lowVoice, 0, { ...FIT_NEUTRAL, ...overrides }],
+                ['neutral 0 st', intermod, 0, { ...FIT_NEUTRAL, ...extra }],
+                ['neutral -5 st', intermod, -5, { ...FIT_NEUTRAL, ...extra }],
             ];
+            cases.push(['grind partials', grind, 0, { ...FIT_NEUTRAL, ...extra }]);
+            for (const name of swept) {
+                cases.push([name + ' 0 st', intermod, 0, { ...FIT_PROFILES[name], ...extra }]);
+                cases.push([name + ' -5 st', intermod, -5, { ...FIT_PROFILES[name], ...extra }]);
+                cases.push([name + ' grind', grind, 0, { ...FIT_PROFILES[name], ...extra }]);
+            }
+            cases.push(['low voice 110 Hz', lowVoice, 0, { ...FIT_NEUTRAL, ...extra }]);
             const rows = [];
             for (const [label, buffer, semitones, profile] of cases) {
                 const out = await fitRender(buffer, profile, semitones);
@@ -9480,8 +9533,10 @@
         if (/[?&]fittest=1/.test(location.search)) {
             const params = new URLSearchParams(location.search);
             const overrides = {};
+            if (params.has('profiles')) overrides.only = params.get('profiles').split(',').map(name => name.trim()).filter(Boolean);
             if (params.has('split')) overrides.split = Number(params.get('split'));
             if (params.has('drive')) overrides.drive = Number(params.get('drive'));
+            if (params.has('posthp')) overrides.posthp = Number(params.get('posthp'));
             window.fitSelfTest(overrides).then(result => {
                 const text = 'FITTEST ' + JSON.stringify(result);
                 document.title = text;

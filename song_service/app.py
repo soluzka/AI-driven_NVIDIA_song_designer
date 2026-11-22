@@ -783,6 +783,12 @@ def _release_lyricist():
     print('released the lyric model to free VRAM', flush=True)
 
 
+# Where the sub-bass filter sits in _write_samples. A 4-pole corner at 32 Hz is the
+# usual mastering one: below a low C, where the renders' rumble was and no instrument
+# of theirs sits.
+SUB_HP_HZ = 32.0
+
+
 def _write_samples(target_wav, out_path, sample_rate):
     """Write a decoded waveform without depending on libsndfile.
 
@@ -823,6 +829,24 @@ def _write_samples(target_wav, out_path, sample_rate):
     # "Format not recognised" even when the format is given explicitly, and the
     # wave module cannot fail that way.
     import wave
+
+    # The model hands back a thump under the bass. Measured on six renders, the
+    # 20-40 Hz band carried 6-32% of the power, peaked at 34-40 Hz in a cluster of
+    # near-equal frequencies with no harmonics above them: a swell, not a note. It
+    # costs headroom nothing audible uses, and it makes the whole track read as low
+    # and muffled - the same rumble the fit chain was fixed for. Four poles at 32 Hz
+    # take that band's share to 3-20% and leave 60-120 Hz where it was (measured:
+    # 15.1/7.9/5.1 -> 11.0/8.2/5.4 on one song, untouched on 40-250), so kick and
+    # bass keep their weight and only the inaudible part goes. It is filtered before
+    # the normalisation, so the peak reference is what will actually be written.
+    try:
+        from scipy.signal import butter, sosfilt
+
+        sos = butter(4, SUB_HP_HZ / (sample_rate / 2.0), btype='high', output='sos')
+        frames = sosfilt(sos, frames, axis=0).astype('float32')
+        print(f'sub-bass under {SUB_HP_HZ:.0f} Hz removed', flush=True)
+    except Exception as exc:  # noqa: BLE001 - a missing scipy must not lose the render
+        print(f'could not filter the sub-bass: {exc}', flush=True)
 
     # Every render is lifted to the same peak. The model hands back whatever
     # level it feels like - some songs peaked at 0.4 and sounded muffled next to

@@ -682,6 +682,13 @@ if ($NoTunnel) {
                         -H 'Content-Type: application/json' -H "x-join-key: $key" `
                         --data-binary "@$payload"
                     Say "tunnel: joined the pool: $poolAnswer"
+                    if ("$poolAnswer" -match 'Wrong join key') {
+                        # The one failure a person cannot diagnose from here: this PC's key file
+                        # and the Workers' secrets disagree. Said as the thing to run, because
+                        # the pool stays empty until they are the same value.
+                        Say 'tunnel: the Workers hold a different key, so this PC was not listed.'
+                        Say 'tunnel: run tools\reset_join_key.ps1 once (it sets the pool and the site too).'
+                    }
 
                     # The site keeps its own copy of the list, signed with SONG_ENDPOINT_KEY
                     # (the same value), so it is told the same address. Without this the two

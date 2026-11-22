@@ -876,6 +876,24 @@ def _write_samples(target_wav, out_path, sample_rate):
     except Exception as exc:  # noqa: BLE001 - a missing scipy must not lose the render
         print(f'could not filter the sub-bass: {exc}', flush=True)
 
+    # The model does not always fill the length it was asked for, and what is left
+    # at the end is a burst pattern rather than a fade: across six renders the audio
+    # truly ended at 55.3-59.9 s of a 59.9 s request, with 10-120 ms of level
+    # alternating with 10-120 ms at about -60 dB in the last half second to 4.6
+    # seconds. Through the page that is a stutter just before the song stops. It is
+    # the tail of the latent being gated, not music, so the last solid moment gets a
+    # 300 ms fade and silence after it. Runs before the normalisation, so the peak
+    # that is lifted belongs to the audio that is kept.
+    try:
+        from tailfix import close as close_gated_tail
+
+        frames, closed_at, closed = close_gated_tail(frames, sample_rate)
+        if closed:
+            print(f'closed the gated tail: audio ends at {closed_at:.2f} s, silence after',
+                  flush=True)
+    except Exception as exc:  # noqa: BLE001 - a missing helper must not lose the render
+        print(f'could not close the gated tail: {exc}', flush=True)
+
     # Every render is lifted to the same peak. The model hands back whatever
     # level it feels like - some songs peaked at 0.4 and sounded muffled next to
     # the loud browser band - so 0.95 (about -0.5 dBFS) is applied here instead

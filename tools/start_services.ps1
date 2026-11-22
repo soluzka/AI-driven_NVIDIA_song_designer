@@ -44,6 +44,13 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
+# Defined before anything uses it: the -Restart block below runs before the line
+# this used to sit on, so 'Say' was not a command yet and -Restart aborted there -
+# every reinstall printed "restarting the services" and restarted none.
+function Say([string]$text) {
+    if (-not $Quiet) { Write-Host $text }
+}
+
 # One environment for every role that needs the card. install_all.ps1 fills .venv
 # with the site, the downloader, the song service and the voice service's chatterbox
 # and leaves this marker; when it is there those roles run from it instead of
@@ -121,10 +128,6 @@ try {
     Add-Content -Path (Join-Path $root 'build\launcher_trace.txt') `
         -Value ('{0:yyyy-MM-dd HH:mm:ss} launcher ran' -f (Get-Date))
 } catch { }
-
-function Say([string]$text) {
-    if (-not $Quiet) { Write-Host $text }
-}
 
 # Keep songsvc:// pointing at this copy of the launcher, every run. A moved
 # folder, a restored machine or a first start all end the same way: the site's

@@ -33,6 +33,23 @@ def main():
     os.makedirs(os.path.dirname(SNAPSHOT_DB), exist_ok=True)
     os.makedirs(os.path.dirname(STATIC_JSON), exist_ok=True)
 
+    # Checked before the backup, because the backup is what overwrites the snapshot.
+    # The live database on this machine was empty - 36 KB, no videos - and running
+    # this script copied that emptiness over a 4.2 MB snapshot and a 8,724-row JSON
+    # in one step, leaving the static site with nothing at all.
+    probe = sqlite3.connect(LIVE_DB)
+    try:
+        live_count = probe.execute("SELECT COUNT(*) FROM videos").fetchone()[0]
+    except sqlite3.Error as err:
+        raise SystemExit("Live database has no videos table (%s): %s" % (err, LIVE_DB))
+    finally:
+        probe.close()
+    if not live_count:
+        raise SystemExit(
+            "Live database %s holds no videos, so refreshing from it would empty the "
+            "snapshot and the static index. Nothing was written."
+            % os.path.relpath(LIVE_DB, ROOT))
+
     # backup() copies a consistent database even while the app is running.
     live = sqlite3.connect(LIVE_DB)
     snapshot = sqlite3.connect(SNAPSHOT_DB)

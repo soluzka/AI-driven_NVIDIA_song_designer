@@ -221,6 +221,21 @@ Deploy after refreshing the index:
 npx wrangler deploy                          # or let Workers Builds deploy on push
 ```
 
+The exporter copies the live database over the snapshot, so it refuses to run when
+`../video_index.db` holds no videos: on this machine that database was empty (36 KB)
+and one run replaced a 4.2 MB snapshot and the 8,724-row JSON with nothing. It now
+checks the count first and writes nothing.
+
+**Re-exporting is not what labels the cards.** Running it over the snapshot
+reproduces 1,542 of 8,724 with a genre, row for row, because that is what the model
+returns: the other 7,182 listings do not name a scene. Of those 7,182, only 41
+contain any genre or scene phrase at all, and all but about three are non-music pages
+the model vetoes on purpose — metal roofing, scrap metal dealers, pump manufacturers,
+a chicken recipe. The exceptions it misses are edge cases like `Pipet İle Dubstep`,
+vetoed because the veto list matches `pipe` inside `pipet` as a substring while every
+other phrase in the model matches on word boundaries. The `unclassified` label on the
+rest is the honest answer, and only a better classifier changes it.
+
 This repo is connected to Cloudflare Workers Builds, which runs `bun install`
 and deploys on push to `main`. `package.json` declares `socket.io-client`; the
 browser bundle is committed at `public/vendor/socket.io.min.js` so the page

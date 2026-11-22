@@ -602,15 +602,16 @@ if ($NoTunnel) {
         try { Set-Clipboard -Value $tunnelUrl } catch { }
         Say "tunnel: $tunnelUrl"
 
-        # The pool is joined from the website now, not from here (POST
-        # /api/pool/join on the song service, which the page calls). Starting this
-        # script must never put a machine in the pool by itself, so publishing is
-        # opt-in with build\pool_on.txt rather than opt-out.
-        $poolOnFile = Join-Path $root 'build\pool_on.txt'
+        # Whatever address this start produced is the one that goes in: the header's
+        # endpoint and the pool's list are both written here, on every start, with the
+        # tunnel this run is using. That used to need an opt-in marker (build\pool_on.txt),
+        # which meant a machine that was running the model perfectly well sat outside the
+        # pool and the site kept saying no GPUs were connected until somebody opened the
+        # page. Holding the key is the whole condition now: with it, this PC joins itself.
         $keyFile = Join-Path $root 'build\song_endpoint.key'
-        if (-not (Test-Path $poolOnFile)) {
-            Say 'tunnel: not published here; the page adds this machine to the pool when it loads'
-        } elseif (Test-Path $keyFile) {
+        if (-not (Test-Path $keyFile)) {
+            Say 'tunnel: build\song_endpoint.key is missing, so the site was not told the address'
+        } else {
             $key = (Get-Content $keyFile -Raw).Trim()
             if ($key) {
                 # The JSON goes through a file: curl.exe on Windows mangles quotes
@@ -649,8 +650,6 @@ if ($NoTunnel) {
                     Remove-Item $payload, $statePayload -ErrorAction SilentlyContinue
                 }
             }
-        } else {
-            Say 'tunnel: build\song_endpoint.key is missing, so the site was not told the address'
         }
     }
 }

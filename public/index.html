@@ -3475,7 +3475,21 @@
                 const drive = offline.createWaveShaper();
                 drive.curve = distortionCurve(fx.drive);
                 drive.oversample = '2x';
-                musicBus.connect(drive).connect(master);
+                // The curve's slope at zero is k, not one, so a bus wired straight
+                // into it arrived lifted by k / tanh(k) - eleven to twenty-two dB
+                // depending on the genre - and every peak sat on the flat part of
+                // the curve. On the bass that is not drive, it is a square wave:
+                // the rattle heard under the low end. Feeding the stage at that
+                // same slope leaves the quiet part at unity and lets only the peaks
+                // saturate, which is what a drive is.
+                const stage = offline.createGain();
+                const k = 1 + fx.drive * 22;
+                stage.gain.value = Math.tanh(k) / k;
+                // Made back up after the curve, so the bus keeps its place against
+                // the drums instead of the drive being a fader in disguise.
+                const makeup = offline.createGain();
+                makeup.gain.value = 3.3;
+                musicBus.connect(stage).connect(drive).connect(makeup).connect(master);
             } else {
                 musicBus.connect(master);
             }

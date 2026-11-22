@@ -83,7 +83,10 @@ build/wr.ps1 d1 execute video-index --remote --file build/d1_import.sql
 ```
 
 `build/wr.ps1` is wrangler via the portable Node in `build/wrangler-tool`, which
-is how this project deploys without a global install.
+is how this project deploys without a global install. A `deploy` through it also
+measures the deployed page's voice fit and fails on a rumble (see
+[The low end has a check](#the-low-end-has-a-check)); `--no-check` deploys
+without that, and `--config` (the pool worker) never runs it.
 
 ## Run it locally
 
@@ -908,10 +911,16 @@ only the sound is moved and shaped.
    Q 1 put a 6 dB bump at 90-120 Hz, which is rumble made by the filter meant to
    remove it — and a two-pole lowpass sits in front of an upward resample so
    sibilance cannot fold back down as grit. Measured again: the vocoder's output
-   under 60 Hz went from -33.2 dB to -51.1 dB, and the full neutral chain now sits
-   at -36.3 dB under 60 Hz against -33.5 dB for the dry take. The 60-120 Hz band is
-   still about 5 dB above the dry take at a small shift; that is window smear, not
-   rumble.
+   under 60 Hz went from -33.2 dB to -51.1 dB. That was not the whole story: the
+   rumble people heard was still there, and it came from the drive stage, not the
+   vocoder or the room. Band by band on a 220 Hz + 1 kHz test tone, the 80-120 Hz
+   band measured -101 dB in the tone, -63.5 dB through the filters, and **-35.9 dB
+   once the 0.18 drive was added** - difference tones (1 kHz - 4 x 220 Hz = 120 Hz),
+   which a voice with dozens of partials fills the whole band with. No filter after
+   the shaper can separate those from the voice; the low end now goes *around* it,
+   with the drive shaping only what is above 400 Hz. The band falls to -58 dB at
+   0 semitones and -55 dB at -5, and a 110 Hz fundamental keeps its own band. See
+   [The low end has a check](#the-low-end-has-a-check).
 
    What this cannot fix: the whole phrase is moved by one number, its median. A
    sung melody wanders - the reference's frames span roughly 130-150 Hz - so its
@@ -941,6 +950,35 @@ PC. A plain `http://192.168.x.x:5001` on the phone will be refused by the browse
 Measured in the browser: a 220 Hz tone moved to 174.0 Hz at −4 semitones and
 261.0 Hz at +3, with the phrase length unchanged; a two-second phrase renders in
 about 60 ms.
+
+### The low end has a check
+
+A rumble under the fitted phrase shipped for weeks because nothing measured it.
+The measurement lives in the page now: `window.fitSelfTest()` renders a 220 Hz +
+1 kHz tone and a 110 Hz voice through the real `fitRender` and reports six bands,
+and opening the page as `?fittest=1` writes the answer into the title and a `<pre>`
+so a headless browser can read it.
+
+```
+.venv\Scripts\python tools\check_fit_low_end.py
+.venv\Scripts\python tools\check_fit_low_end.py --url "https://.../?fittest=1&split=0"
+```
+
+It runs that page in headless Edge (or Chrome) and fails if the 80-120 Hz band
+passes **-52 dB**. The fixed chain measures -58 / -56 / -57 across the neutral,
+-5 semitone and dub cases, and the drive-everything version of the same chain
+measures -37 / -34 / -41, so the threshold sits in the gap between "fixed" and
+"the rumble is back". A low voice losing its own band fails too (floor -6 dB).
+
+`build/wr.ps1 deploy` runs it after wrangler reports success, so a deploy that
+brings the rumble back exits non-zero and says the live page can rumble (the
+deploy has already gone out by then - the exit code is the alarm, not a
+rollback). `--no-check` skips it, and `FIT_CHECK_URL` points it at a preview or a
+deliberately broken page instead of production.
+
+It needs a local Edge or Chrome and network access to the page; with no browser it
+stops and fails the deploy rather than skipping quietly. `?fittest=1&split=0` is
+the built-in way to see it fail.
 
 ### The model sings; your voice is the measurement
 

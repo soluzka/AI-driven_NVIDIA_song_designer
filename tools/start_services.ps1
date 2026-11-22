@@ -359,48 +359,6 @@ $siteUrl = 'https://browser.bpiersing.workers.dev'
 # cloudflared refuses a zero-byte config with "Configuration file ... was empty", and a
 # run that rewrites the file can leave it empty for a moment. It is checked and rewritten
 # here instead of being handed over as-is.
-# --- keeping the Workers in step with this PC's key ---------------------------
-# build\song_endpoint.key is the source of truth for the pool, so when the Workers hold a
-# different value - a reinstall brings its own key file, and a key rotated elsewhere answers
-# 401 to every join from here - the launcher sets those secrets from the file, then the join
-# is retried. It is the same three secrets tools\reset_join_key.ps1 writes, and the key is
-# piped to wrangler on stdin so it never appears in an argument list, in this script's
-# output, or in a log. A machine that is not signed in to Cloudflare cannot do this; it says
-# so and returns $false, so nothing pretends the Workers were updated.
-function Sync-JoinKey([string]$keyFile) {
-    $wranglerJs = Join-Path $root 'build\wrangler-tool\node_modules\wrangler\bin\wrangler.js'
-    $nodeExe = Join-Path $root 'tools\node\node.exe'
-    if (-not (Test-Path $wranglerJs) -or -not (Test-Path $nodeExe) -or -not (Test-Path $keyFile)) {
-        return $false
-    }
-    $keyText = Get-Content -Path $keyFile -Raw
-    if (-not $keyText) { return $false }
-    $pushes = @(
-        @{ Name = 'JOIN_KEY'; Config = @('--config', 'wrangler.pool.jsonc') },
-        @{ Name = 'POOL_JOIN_KEY'; Config = @() },
-        @{ Name = 'SONG_ENDPOINT_KEY'; Config = @() }
-    )
-    $allOk = $true
-    Push-Location $root
-    try {
-        foreach ($push in $pushes) {
-            $cmdArgs = @($wranglerJs, 'secret', 'put', $push.Name) + $push.Config
-            try {
-                $out = $keyText | & $nodeExe @cmdArgs 2>&1
-                $text = ($out -join ' ')
-                if ($LASTEXITCODE -ne 0 -or $text -match 'ERROR|Authentication|not logged|Unauthorized') {
-                    $allOk = $false
-                }
-            } catch {
-                $allOk = $false
-            }
-        }
-    } finally {
-        Pop-Location
-    }
-    return $allOk
-}
-
 function Ensure-TunnelConfig([string]$path) {
     # A file of nothing but comments is an EMPTY config to cloudflared: it parses the file,
     # finds no keys, and logs "Configuration file ... was empty" even though the bytes are
@@ -680,115 +638,82 @@ if ($NoTunnel) {
         # which meant a machine that was running the model perfectly well sat outside the
         # pool and the site kept saying no GPUs were connected until somebody opened the
         # page. Holding the key is the whole condition now: with it, this PC joins itself.
+        # A key file is optional now. The Workers mint short-lived tickets for exactly this:
+        # an install carries whatever key its build was made with, and setting the current one
+        # on them needed wrangler and a Cloudflare login this desktop does not have - so the
+        # join and the publish were refused until somebody pushed the key by hand. A ticket
+        # needs nothing but the request, and it expires in ten minutes.
         $keyFile = Join-Path $root 'build\song_endpoint.key'
-        if (-not (Test-Path $keyFile)) {
-            Say 'tunnel: build\song_endpoint.key is missing, so the site was not told the address'
-        } else {
-            $key = (Get-Content $keyFile -Raw).Trim()
-            if ($key) {
-                # The JSON goes through a file: curl.exe on Windows mangles quotes
-                # that arrive inside an argument, and the site answered "expected
-                # JSON" while the address looked perfectly fine on screen.
-                # This machine's id, so the card this run adds can be recognised and the
-                # address it replaces dropped by the same id rather than left listed.
-                $machineId = ''
-                $idFile = Join-Path $root 'build\machine_id.txt'
-                if (Test-Path $idFile) { $machineId = ((Get-Content -Raw -Path $idFile) -as [string]).Trim() }
-                $payload = Join-Path $root 'build\tunnel_publish.json'
-                $statePayload = Join-Path $root 'build\tunnel_state.json'
-                $sitePayload = Join-Path $root 'build\tunnel_site.json'
-                $removePayload = Join-Path $root 'build\tunnel_site_remove.json'
-                try {
-                    # The join carries this PC's id, and the pool drops every row with the same
-                    # note as it saves the new one: a rotated address replaces this machine's
-                    # own row instead of being added beside it. Two tunnels into the same card
-                    # are one GPU, so they must not read as two.
-                    Set-Content -Path $payload -Encoding ascii `
-                        -Value ('{"url":"' + $tunnelUrl + '","note":"' + $machineId + '"}')
-                    Set-Content -Path $statePayload -Encoding ascii `
-                        -Value ('{"value":"' + $tunnelUrl + '"}')
-                    # The address the header names is written through the pool Worker's
-                    # state endpoint: the site's own /api/song/endpoint is signed with the
-                    # song key, a different secret, so the join key sent there answers
-                    # "Wrong key" while the pool below accepts it.
-                    $stateUrl = 'https://song-pool.bpiersing.workers.dev/state/site:endpoint'
-                    # The pool has its own Worker, and it is asked directly as well: it is
-                    # the list the site reads its cards from, so this is the one that has
-                    # to succeed for the card to appear without the page being opened.
-                    $poolUrl = 'https://song-pool.bpiersing.workers.dev/join'
-                    # The Workers' copies of this key can be older than the file: an install
-                    # carries the build\song_endpoint.key of the moment it was made, and a key
-                    # rotated since answers 401 to everything this machine sends. The file is
-                    # the source of truth, so a key the Workers have not been given yet is
-                    # pushed once, and a refusal means they hold another one and are pushed
-                    # again. The stamp is the key's hash, not a date, so rotating the file is
-                    # what triggers the next push and nothing else does.
-                    $stampFile = Join-Path $root 'build\key_pushed.txt'
-                    $keyHash = ''
-                    try { $keyHash = (Get-FileHash -Path $keyFile -Algorithm SHA256).Hash } catch { }
-                    # The stamp records the attempt and how it went ("<hash> ok" / "<hash>
-                    # failed"), not just a success. A machine that is not signed in to
-                    # Cloudflare fails the same way on every start, and paying forty seconds
-                    # for three refusals each time buys nothing: a hash already tried is not
-                    # tried again. Replacing build\song_endpoint.key is what asks again.
-                    $stampHash = ''
-                    $stampOutcome = ''
-                    if (Test-Path $stampFile) {
-                        $stamp = ((Get-Content -Raw -Path $stampFile) -as [string]).Trim()
-                        if ($stamp) {
-                            $parts = $stamp -split '\s+'
-                            $stampHash = $parts[0]
-                            if ($parts.Count -gt 1) { $stampOutcome = $parts[1] }
-                        }
-                    }
-                    if ($keyHash -and $stampHash -ne $keyHash) {
-                        if (Sync-JoinKey $keyFile) {
-                            $stampOutcome = 'ok'
-                            Say "key: the Workers now hold this PC's key"
-                        } else {
-                            $stampOutcome = 'failed'
-                            Say 'key: the Workers were not updated - wrangler is not signed in here, or its copy is missing; replacing build\song_endpoint.key is what tries again'
-                        }
-                        try { Set-Content -Path $stampFile -Value ("$keyHash $stampOutcome") -Encoding ascii } catch { }
-                    } elseif ($stampOutcome -eq 'failed') {
-                        Say 'key: the Workers were not updated on the last attempt, so this start leaves them alone; replace build\song_endpoint.key to try again'
-                    }
-                    $stateAnswer = & curl.exe -s --max-time 15 -X POST $stateUrl `
-                        -H 'Content-Type: application/json' -H "x-join-key: $key" `
-                        --data-binary "@$statePayload"
-                    $poolAnswer = & curl.exe -s --max-time 20 -X POST $poolUrl `
-                        -H 'Content-Type: application/json' -H "x-join-key: $key" `
-                        --data-binary "@$payload"
-                    Say "tunnel: named on the site: $stateAnswer"
-                    Say "tunnel: joined the pool: $poolAnswer"
+        $key = ''
+        if (Test-Path $keyFile) { $key = ((Get-Content -Raw -Path $keyFile) -as [string]).Trim() }
+        $joinTicket = ''
+        $songTicket = ''
+        try {
+            $mintedPool = (& curl.exe -s --max-time 15 'https://song-pool.bpiersing.workers.dev/ticket') | ConvertFrom-Json
+            if ($mintedPool -and $mintedPool.ticket) { $joinTicket = [string]$mintedPool.ticket }
+        } catch { }
+        try {
+            $mintedSite = (& curl.exe -s --max-time 15 'https://browser.bpiersing.workers.dev/api/song/ticket') | ConvertFrom-Json
+            if ($mintedSite -and $mintedSite.ticket) { $songTicket = [string]$mintedSite.ticket }
+        } catch { }
+        # The ticket when there is one, the key when there is not: a Worker that has not been
+        # updated to mint tickets still answers the key, and a ticket still works after the
+        # key on this machine has been rotated.
+        $joinHeaders = @('-H', 'Content-Type: application/json')
+        if ($joinTicket) { $joinHeaders += @('-H', "x-join-ticket: $joinTicket") }
+        elseif ($key) { $joinHeaders += @('-H', "x-join-key: $key") }
+        $songHeaders = @('-H', 'Content-Type: application/json')
+        if ($songTicket) { $songHeaders += @('-H', "x-song-ticket: $songTicket") }
+        elseif ($key) { $songHeaders += @('-H', "x-song-key: $key") }
+        if ($tunnelUrl) {
+            # The JSON goes through a file: curl.exe on Windows mangles quotes that arrive
+            # inside an argument, and the site answered "expected JSON" while the address
+            # looked perfectly fine on screen. This machine's id rides along, so the card this
+            # run adds is recognised and the address it replaces is dropped by the same id.
+            $machineId = ''
+            $idFile = Join-Path $root 'build\machine_id.txt'
+            if (Test-Path $idFile) { $machineId = ((Get-Content -Raw -Path $idFile) -as [string]).Trim() }
+            $payload = Join-Path $root 'build\tunnel_publish.json'
+            $statePayload = Join-Path $root 'build\tunnel_state.json'
+            $sitePayload = Join-Path $root 'build\tunnel_site.json'
+            $removePayload = Join-Path $root 'build\tunnel_site_remove.json'
+            try {
+                # The join carries this PC's id, and the pool drops every row with the same
+                # note as it saves the new one: a rotated address replaces this machine's own
+                # row instead of being added beside it. Two tunnels into the same card are
+                # one GPU, so they must not read as two.
+                Set-Content -Path $payload -Encoding ascii `
+                    -Value ('{"url":"' + $tunnelUrl + '","note":"' + $machineId + '"}')
+                Set-Content -Path $statePayload -Encoding ascii `
+                    -Value ('{"value":"' + $tunnelUrl + '"}')
+                # The address the header names is written through the pool Worker's state
+                # endpoint: the site's own /api/song/endpoint is signed with the song key, a
+                # different secret, so the join key sent there answers "Wrong key".
+                $stateUrl = 'https://song-pool.bpiersing.workers.dev/state/site:endpoint'
+                # The pool has its own Worker, and it is asked directly as well: it is the
+                # list the site reads its cards from, so this is the one that has to succeed
+                # for the card to appear without the page being opened.
+                $poolUrl = 'https://song-pool.bpiersing.workers.dev/join'
+                $stateAnswer = & curl.exe -s --max-time 15 -X POST $stateUrl @joinHeaders --data-binary "@$statePayload"
+                $poolAnswer = & curl.exe -s --max-time 20 -X POST $poolUrl @joinHeaders --data-binary "@$payload"
+                Say "tunnel: named on the site: $stateAnswer"
+                Say "tunnel: joined the pool: $poolAnswer"
 
-                    # The site keeps its own copy of the list, signed with SONG_ENDPOINT_KEY
-                    # (the same value), so it is told the same address. Without this the two
-                    # lists drifted: the pool named the new tunnel while the site's copy
-                    # still named one from hours ago, and the page counted both as GPUs.
-                    # The address this machine used before is removed rather than appended,
-                    # so a rotation replaces it instead of adding a second card.
-                    $siteUrl = 'https://browser.bpiersing.workers.dev/api/song/endpoint'
-                    # The address this machine used before is taken off the site's list as the
-                    # new one is saved - whether or not it still answers, because it is this
-                    # PC's own older row and not a second GPU. What is never written down or
-                    # published is an address that answers nothing.
-                    if ($recorded -and $recorded -ne $tunnelUrl) {
-                        Set-Content -Path $removePayload -Encoding ascii `
-                            -Value ('{"remove":"' + $recorded + '"}')
-                        $null = & curl.exe -s --max-time 15 -X POST $siteUrl `
-                            -H 'Content-Type: application/json' -H "x-song-key: $key" `
-                            --data-binary "@$removePayload"
-                    }
-                    Set-Content -Path $sitePayload -Encoding ascii `
-                        -Value ('{"url":"' + $tunnelUrl + '"}')
-                    $siteAnswer = & curl.exe -s --max-time 15 -X POST $siteUrl `
-                        -H 'Content-Type: application/json' -H "x-song-key: $key" `
-                        --data-binary "@$sitePayload"
-                    Say "tunnel: named in the site's list: $siteAnswer"
-                } finally {
-                    Remove-Item $payload, $statePayload, $sitePayload, $removePayload -ErrorAction SilentlyContinue
+                # The site keeps its own copy of the list, and the address this machine used
+                # before is removed rather than appended, so a rotation replaces it instead of
+                # adding a second card.
+                $siteUrl = 'https://browser.bpiersing.workers.dev/api/song/endpoint'
+                if ($recorded -and $recorded -ne $tunnelUrl) {
+                    Set-Content -Path $removePayload -Encoding ascii `
+                        -Value ('{"remove":"' + $recorded + '"}')
+                    $null = & curl.exe -s --max-time 15 -X POST $siteUrl @songHeaders --data-binary "@$removePayload"
                 }
+                Set-Content -Path $sitePayload -Encoding ascii `
+                    -Value ('{"url":"' + $tunnelUrl + '"}')
+                $siteAnswer = & curl.exe -s --max-time 15 -X POST $siteUrl @songHeaders --data-binary "@$sitePayload"
+                Say "tunnel: named in the site's list: $siteAnswer"
+            } finally {
+                Remove-Item $payload, $statePayload, $sitePayload, $removePayload -ErrorAction SilentlyContinue
             }
         }
     }

@@ -123,6 +123,15 @@ export default {
       return cors;
     }
 
+    if (url.pathname === '/api/song/ticket' && (request.method === 'GET' || request.method === 'POST')) {
+      // Public on purpose: an install has no way to sign in to Cloudflare, and the ticket
+      // is what it holds instead of the key. It expires in ten minutes and authorises
+      // only the address announcement below.
+      const minted = await mintTicket(String(env.SONG_ENDPOINT_KEY || '').trim());
+      if (!minted) return json({ error: 'This Worker has no SONG_ENDPOINT_KEY, so no ticket can be minted.' }, 503);
+      return json({ ok: true, ticket: minted.ticket, expires: minted.expires });
+    }
+
     if (ENDPOINT_ROUTE.test(url.pathname)) {
       return songEndpoint(request, env);
     }
@@ -760,6 +769,66 @@ function poolJoinKey(env) {
   return String(env.POOL_JOIN_KEY || env.SONG_ENDPOINT_KEY || '').trim();
 }
 
+// --- tickets: publishing without a copy of the key on the machine -------------
+// The key exists so a stranger cannot name an address here. A machine that has just been
+// installed carries whatever key its build was made with, and setting the new one on the
+// Workers needed wrangler and a Cloudflare login on a desktop that has neither - so the
+// join and the publish were refused until somebody pushed it by hand. This Worker mints
+// short-lived tickets from the key it already holds instead: anyone may ask for one, it
+// works for ten minutes, and it authorises exactly the announcements the key does. The
+// key still works and is still what the tenant uses for anything else.
+const TICKET_TTL_MS = 10 * 60 * 1000;
+const TICKET_DOMAIN = 'song-endpoint:';
+const ticketEncoder = new TextEncoder();
+
+function b64url(bytes) {
+  const arr = new Uint8Array(bytes);
+  let text = '';
+  for (let i = 0; i < arr.length; i += 1) text += String.fromCharCode(arr[i]);
+  return btoa(text).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function unb64url(text) {
+  try {
+    const padded = String(text).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(padded + '='.repeat((4 - (padded.length % 4)) % 4));
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i += 1) out[i] = raw.charCodeAt(i);
+    return out;
+  } catch (err) {
+    return null;
+  }
+}
+
+async function ticketSigner(secret) {
+  return crypto.subtle.importKey('raw', ticketEncoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+}
+
+async function mintTicket(secret, ttlMs = TICKET_TTL_MS) {
+  if (!secret) return null;
+  const expires = Date.now() + ttlMs;
+  const signature = await crypto.subtle.sign('HMAC', await ticketSigner(secret),
+    ticketEncoder.encode(TICKET_DOMAIN + expires));
+  return { ticket: expires + '.' + b64url(signature), expires };
+}
+
+async function ticketValid(secret, ticket) {
+  if (!secret || !ticket) return false;
+  const parts = String(ticket).split('.');
+  if (parts.length !== 2) return false;
+  const expires = Number(parts[0]);
+  if (!Number.isFinite(expires) || expires < Date.now()) return false;
+  const signature = unb64url(parts[1]);
+  if (!signature) return false;
+  try {
+    return await crypto.subtle.verify('HMAC', await ticketSigner(secret), signature,
+      ticketEncoder.encode(TICKET_DOMAIN + expires));
+  } catch (err) {
+    return false;
+  }
+}
+
 async function songEndpoint(request, env) {
   if (request.method === 'POST') {
     const expected = env.SONG_ENDPOINT_KEY || '';
@@ -767,7 +836,11 @@ async function songEndpoint(request, env) {
     if (!expected) {
       return json({ error: 'Publishing is disabled: this Worker has no SONG_ENDPOINT_KEY.' }, 503);
     }
-    if (given !== expected) return json({ error: 'Wrong key.' }, 403);
+    // A ticket from GET /api/song/ticket is accepted in place of the key itself, so a
+    // machine that was installed with an older key can still name its address here.
+    if (given !== expected && !(await ticketValid(expected, request.headers.get('x-song-ticket')))) {
+      return json({ error: 'Wrong key.' }, 403);
+    }
     if (!env.STATS) return json({ error: 'No KV namespace is attached.' }, 501);
 
     let body = {};

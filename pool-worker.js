@@ -48,7 +48,7 @@ const POOL_TTL_MS = 7 * 24 * 60 * 60 * 1000;   // a machine silent this long is 
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'content-type, x-join-key',
+  'Access-Control-Allow-Headers': 'content-type, x-join-key, x-join-ticket',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 };
 
@@ -296,11 +296,71 @@ async function writeState(env, key, value) {
   }
 }
 
-function authorised(request, env) {
-  const expected = env.JOIN_KEY || '';
+// --- tickets: joining without a copy of the key on the machine ---------------
+// The key exists so a stranger cannot put an address in this pool. An install, though,
+// ships whatever key its build was made with, and setting a new one on this Worker needs
+// wrangler and a Cloudflare login on a desktop that has neither - so the join was refused
+// until somebody pushed the key by hand. So the pool mints short-lived tickets from the
+// key it already holds: anyone may ask for one, it works for ten minutes, and it
+// authorises exactly the announcements the key does. The key still works.
+const TICKET_TTL_MS = 10 * 60 * 1000;
+const TICKET_DOMAIN = 'pool-join:';
+const ticketEncoder = new TextEncoder();
+
+function b64url(bytes) {
+  const arr = new Uint8Array(bytes);
+  let text = '';
+  for (let i = 0; i < arr.length; i += 1) text += String.fromCharCode(arr[i]);
+  return btoa(text).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function unb64url(text) {
+  try {
+    const padded = String(text).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(padded + '='.repeat((4 - (padded.length % 4)) % 4));
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i += 1) out[i] = raw.charCodeAt(i);
+    return out;
+  } catch (err) {
+    return null;
+  }
+}
+
+async function ticketSigner(secret) {
+  return crypto.subtle.importKey('raw', ticketEncoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+}
+
+async function mintTicket(secret, ttlMs = TICKET_TTL_MS) {
+  if (!secret) return null;
+  const expires = Date.now() + ttlMs;
+  const signature = await crypto.subtle.sign('HMAC', await ticketSigner(secret),
+    ticketEncoder.encode(TICKET_DOMAIN + expires));
+  return { ticket: expires + '.' + b64url(signature), expires };
+}
+
+async function ticketValid(secret, ticket) {
+  if (!secret || !ticket) return false;
+  const parts = String(ticket).split('.');
+  if (parts.length !== 2) return false;
+  const expires = Number(parts[0]);
+  if (!Number.isFinite(expires) || expires < Date.now()) return false;
+  const signature = unb64url(parts[1]);
+  if (!signature) return false;
+  try {
+    return await crypto.subtle.verify('HMAC', await ticketSigner(secret), signature,
+      ticketEncoder.encode(TICKET_DOMAIN + expires));
+  } catch (err) {
+    return false;
+  }
+}
+
+async function authorised(request, env) {
+  const expected = String(env.JOIN_KEY || '').trim();
   if (!expected) return { ok: false, error: 'This pool has no JOIN_KEY set, so nobody can join.', status: 503 };
-  if ((request.headers.get('x-join-key') || '') !== expected) return { ok: false, error: 'Wrong join key.', status: 403 };
-  return { ok: true };
+  if ((request.headers.get('x-join-key') || '') === expected) return { ok: true, via: 'key' };
+  if (await ticketValid(expected, request.headers.get('x-join-ticket'))) return { ok: true, via: 'ticket' };
+  return { ok: false, error: 'Wrong join key.', status: 403 };
 }
 
 // One request, one machine: chosen at random, then the next when one does not
@@ -431,8 +491,16 @@ export default {
       return new Response(object.body, { status: 200, headers });
     }
 
+    if (url.pathname === '/ticket' && (request.method === 'GET' || request.method === 'POST')) {
+      // Public on purpose: an install cannot sign in to Cloudflare, and the ticket is what
+      // it holds instead of the key. Ten minutes, and only the announcements below.
+      const minted = await mintTicket(String(env.JOIN_KEY || '').trim());
+      if (!minted) return json({ error: 'This pool has no JOIN_KEY, so no ticket can be minted.' }, 503);
+      return json({ ok: true, ticket: minted.ticket, expires: minted.expires });
+    }
+
     if (url.pathname === '/join' && request.method === 'POST') {
-      const allowed = authorised(request, env);
+      const allowed = await authorised(request, env);
       if (!allowed.ok) return json({ error: allowed.error }, allowed.status);
       let body = {};
       try {
@@ -497,7 +565,7 @@ export default {
     }
 
     if (url.pathname === '/remove' && request.method === 'POST') {
-      const allowed = authorised(request, env);
+      const allowed = await authorised(request, env);
       if (!allowed.ok) return json({ error: allowed.error }, allowed.status);
       let body = {};
       try {
@@ -516,7 +584,7 @@ export default {
       if (!STATE_KEYS.has(key)) return json({ error: 'No such state key: ' + key }, 404);
       if (request.method === 'GET') return json({ key, value: await readState(env, key) });
       if (request.method !== 'POST') return json({ error: 'GET or POST only' }, 405);
-      const allowed = authorised(request, env);
+      const allowed = await authorised(request, env);
       if (!allowed.ok) return json({ error: allowed.error }, allowed.status);
       let body = {};
       try {

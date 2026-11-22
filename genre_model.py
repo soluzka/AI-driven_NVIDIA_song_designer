@@ -439,14 +439,34 @@ class MusicGenreModel:
         idf = max(0.0, min(1.0, idf))
         return floor + (1.0 - floor) * idf
 
-    def infer(self, title: str = '', description: str = '', tags: str = '') -> Optional[Dict]:
-        """Return the likeliest genre with its evidence, or None when unsure."""
+    def rank(self, title: str = '', description: str = '', tags: str = '') -> List[Dict]:
+        """Every genre the words point at, strongest first, with the words doing it.
+
+        infer() answers the strong question - is this a genre record, and which. A listing
+        that only says "badman sound" does not answer it, and the page used to print
+        "unclassified" beside a title that plainly says something. This answers the weaker
+        question the evidence can still support: which genres those words lean toward, and
+        which words they are. Nothing here is called a genre; it is a reading.
+        """
+        scores, evidence, _bpm = self._scored(title, description, tags)
+        ranked: List[Dict] = []
+        for genre, score in sorted(scores.items(), key=lambda item: item[1], reverse=True)[:3]:
+            terms: List[str] = []
+            for finding in sorted(evidence.get(genre, []), key=lambda item: item['points'], reverse=True):
+                term = finding.get('term') or ''
+                if term and term not in terms:
+                    terms.append(term)
+            ranked.append({'genre': genre, 'score': round(score, 2), 'terms': terms[:3]})
+        return ranked
+
+    def _scored(self, title: str = '', description: str = '', tags: str = ''):
+        """Score every genre against the words, with the findings behind each score."""
         title = title or ''
         description = description or ''
         tags = tags or ''
         text = f'{title} {description} {tags}'.lower()
         if not text.strip():
-            return None
+            return {}, {}, None
 
         has_music_cue = any(
             re.search(r'(?<![a-z0-9])' + re.escape(cue) + r'(?![a-z0-9])', text)
@@ -499,8 +519,18 @@ class MusicGenreModel:
                 scores[genre] = total
                 evidence[genre] = findings
 
+        return scores, evidence, bpm
+
+    def infer(self, title: str = '', description: str = '', tags: str = '') -> Optional[Dict]:
+        """Return the likeliest genre with its evidence, or None when unsure."""
+        text = f'{title or ""} {description or ""} {tags or ""}'.lower()
+        scores, evidence, bpm = self._scored(title, description, tags)
         if not scores:
             return None
+        has_music_cue = any(
+            re.search(r'(?<![a-z0-9])' + re.escape(cue) + r'(?![a-z0-9])', text)
+            for cue in MUSIC_CUES
+        )
 
         ordered = sorted(scores.items(), key=lambda item: item[1], reverse=True)
         best_genre, best_score = ordered[0]

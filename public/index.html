@@ -1477,6 +1477,7 @@
                 // percentage would be decoration pretending to be a measurement.
                 score: 0,
                 genre: bundledGenre(row.g),
+                readings: bundledReadings(row.w),
             }));
             return {
                 results,
@@ -1540,6 +1541,18 @@
 
         // Genres are inferred when the index is exported and stored in the JSON
         // with short keys, because the static site has no Python to ask.
+        // A row the model could not name a genre for can still say which genres its words
+        // lean toward, and with which words. They are shown as a reading, never as a label:
+        // "dubstep 0.4 (dark) · techno 0.4 (dark)" is evidence, and the panel says so.
+        function bundledReadings(w) {
+            if (!Array.isArray(w)) return [];
+            return w.filter(item => Array.isArray(item) && item[0]).slice(0, 2).map(item => ({
+                genre: String(item[0]),
+                score: Number(item[1]) || 0,
+                terms: Array.isArray(item[2]) ? item[2].slice(0, 3).map(String) : [],
+            }));
+        }
+
         function bundledGenre(g) {
             if (!g || !g.n) return null;
             return {
@@ -2235,6 +2248,9 @@
             const source = result.source || 'the source site';
             const text = (title + ' ' + description + ' ' + source).toLowerCase();
             const genre = (result.genre && result.genre.genre) || '';
+            // What the words lean toward when they do not name a scene. Printed as a
+            // reading so a card is not "unclassified" beside a title that says something.
+            const readings = Array.isArray(result.readings) ? result.readings : [];
             const runnerUp = result.genre && result.genre.alternatives && result.genre.alternatives[0]
                 ? result.genre.alternatives[0].genre : '';
             const style = REMIX_STYLES[genre] || REMIX_NEUTRAL;
@@ -2264,7 +2280,12 @@
                 ? `Read from the listing only, this is a ${genre} record` +
                   (result.genre && result.genre.confidence
                       ? ` (${Math.round(result.genre.confidence * 100)}% fit on the words alone)` : '') + '.'
-                : 'The listing never names its scene, so this reads as an unclassified piece.';
+                : readings.length
+                    ? 'The listing never names its scene, and its words only lean: ' +
+                      readings.map(item => `${item.genre} ${item.score.toFixed(1)}` +
+                          (item.terms.length ? ` (${item.terms.join(', ')})` : '')).join(' \u00b7 ') +
+                      '. That is evidence, not a genre, so everything below is a shape rather than a claim.'
+                    : 'The listing never names its scene, so this reads as an unclassified piece.';
 
             const evidence = words.length
                 ? `The words doing the work are “${words.join('”, “')}”, which is what pulls it toward ${genre || 'its current shape'}.`
@@ -2306,13 +2327,16 @@
                 ], seed >>> 11),
                 visuals: `Palette: ${style.palette}. Cut on the transients, hold one frame through each drop, and let the source clip reappear once — degraded — at the second peak.`,
                 sample: style.sample,
+                // Carried so Voice fit can offer them: a pick is the only way a reading
+                // becomes the thing the phrase is tuned to.
+                readings,
             };
 
             const note = 'Inferred from the listing text' +
                 (genre ? '' : ' (no genre was detected for this video)') +
                 ' — the audio and picture were not analysed, so treat this as a starting point to argue with.';
 
-            return { theory, read, remix, note, genre, words };
+            return { theory, read, remix, note, genre, readings, words };
         }
 
         function remixToText(doc) {
@@ -8586,13 +8610,15 @@
                 // to fit to, which is what the panel now says instead of inventing
                 // a D minor for a listing that never gave one.
                 styleKnown: !!doc.genre,
+                // Readings the model could not call a genre. They are shown, and one can
+                // be picked, but nothing here is fitted until it is.
+                readings: Array.isArray(doc.remix.readings) ? doc.remix.readings : [],
                 key: doc.remix.key || 'A minor',
                 tempo: doc.remix.tempo || '110 BPM',
                 root: remixRoot(doc),
                 bpm: remixTempo(doc)
             };
-            const target = document.getElementById('fitTarget');
-            if (target) target.textContent = fitTargetLine();
+            renderFitTarget();
         }
 
         function fitTargetLine() {
@@ -8611,11 +8637,56 @@
             // keeps its own pitch. Printing "unclassified \u00b7 D minor" beside a listing
             // that says neither was the page arguing with itself.
             if (!fitSong.styleKnown) {
+                const readings = fitSong.readings || [];
+                if (readings.length) {
+                    const said = readings
+                        .map(item => item.genre + ' ' + item.score.toFixed(1) +
+                            (item.terms.length ? ' (' + item.terms.join(', ') + ')' : ''))
+                        .join(' \u00b7 ');
+                    return 'Fitting to ' + fitSong.title + ' \u00b7 no genre is named, and its words only lean: ' +
+                        said + ' \u2014 pick a reading to fit to it, or the phrase keeps its own pitch' + stale;
+                }
                 return 'Fitting to ' + fitSong.title +
                     ' \u00b7 no genre was inferred for this listing and it gives no key, so the phrase keeps its own pitch' + stale;
             }
             return 'Fitting to ' + fitSong.title + ' \u00b7 ' + fitSong.genre + ' \u00b7 ' +
                 fitSong.key + ' \u00b7 ' + fitSong.tempo + stale;
+        }
+
+        // The target line, plus a button per reading when the words only lean. Fitting to
+        // a reading is a choice a person makes here, not something the page decides: a
+        // guess the ear hears as out of tune is worse than the phrase keeping its pitch.
+        function renderFitTarget() {
+            const target = document.getElementById('fitTarget');
+            if (!target) return;
+            const readings = (fitSong && !fitSong.styleKnown) ? (fitSong.readings || []) : [];
+            if (!readings.length) {
+                target.textContent = fitTargetLine();
+                return;
+            }
+            const buttons = readings.map((item, index) =>
+                `<button class="fit-act" onclick="pickFitReading(${index})" title="Fit the phrase to this reading">` +
+                `${escapeHtml(item.genre)} ${item.score.toFixed(1)}` +
+                (item.terms.length ? ` \u00b7 ${escapeHtml(item.terms.join(', '))}` : '') + '</button>').join('');
+            target.innerHTML = escapeHtml(fitTargetLine()) +
+                `<div class="fit-row" style="margin-top:8px">${buttons}</div>`;
+        }
+
+        function pickFitReading(index) {
+            if (!fitSong) return;
+            const reading = (fitSong.readings || [])[index];
+            if (!reading) return;
+            const found = styleFor(reading.genre);
+            fitSong.genre = reading.genre;
+            fitSong.styleKnown = true;
+            fitSong.readings = [];
+            fitSong.key = found.style.keys[0];
+            fitSong.tempo = found.style.bpm + ' BPM';
+            fitSong.bpm = Math.min(180, Math.max(60, found.style.bpm));
+            const name = String(fitSong.key).toLowerCase().split(/\s+/)[0];
+            const semitone = KEY_TABLE[name] !== undefined ? KEY_TABLE[name] : 9;
+            fitSong.root = 440 * Math.pow(2, (semitone - 9) / 12) / 2;
+            renderFitTarget();
         }
 
         function fitProfileFor(name) {
@@ -9277,8 +9348,7 @@
             // first, and clear whatever part of it is still showing.
             if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
             const panel = document.getElementById('fitPanel');
-            const target = document.getElementById('fitTarget');
-            if (target) target.textContent = fitTargetLine();
+            renderFitTarget();
             if (panel) {
                 panel.hidden = false;
                 const fromSearch = document.getElementById('fitSearchClip');

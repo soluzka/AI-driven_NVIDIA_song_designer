@@ -13,6 +13,7 @@ Genres are therefore inferred here, once, and shipped inside the JSON next to
 
 import json
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -32,6 +33,24 @@ STATIC_JSON = os.path.join(ROOT, "public", "data", "videos.json")
 # it, and a database with five rows would do exactly the same. Anything under this
 # share of the snapshot is treated as a reset rather than as news.
 MIN_KEEP = 0.9
+
+_ESCAPED = re.compile(r'\\u([0-9a-fA-F]{4})')
+
+
+def plain_text(value) -> str:
+    """A title as it should read.
+
+    YouTube's API answers with JSON-escaped text, and the scraper stored it verbatim, so
+    "Wooli \\u0026 Trivecta" reached the page as those six characters and "u0026" was
+    picked up as a word by the genre model and by the remix keywords. Anything that looks
+    like a unicode escape is decoded on the way out.
+    """
+    if not value:
+        return ""
+    text = str(value)
+    if "\\u" not in text:
+        return text
+    return _ESCAPED.sub(lambda match: chr(int(match.group(1), 16)), text)
 
 
 def count_videos(path):
@@ -63,31 +82,40 @@ def shrink_refusal(live_count, snapshot_count):
 
 
 def main():
-    if not os.path.exists(LIVE_DB):
-        raise SystemExit("Live database not found: %s" % LIVE_DB)
-
     os.makedirs(os.path.dirname(SNAPSHOT_DB), exist_ok=True)
     os.makedirs(os.path.dirname(STATIC_JSON), exist_ok=True)
 
-    # Checked before the backup, because the backup is what overwrites the snapshot.
-    reason = shrink_refusal(count_videos(LIVE_DB), count_videos(SNAPSHOT_DB))
-    if reason and "--allow-shrink" not in sys.argv[1:]:
-        raise SystemExit(
-            "%s. Refreshing from it would replace the index with a reset database, so "
-            "nothing was written. Pass --allow-shrink if the drop is intended." % reason)
+    # A live database holding nothing is a reset, not a library. The committed snapshot is
+    # still the index the site serves, and relabelling it - a new genre model, a new pass
+    # over the words - must not need a scraper to have run first.
+    from_snapshot = count_videos(LIVE_DB) == 0
+    if from_snapshot:
+        if count_videos(SNAPSHOT_DB) == 0:
+            raise SystemExit("Neither the live database nor the snapshot holds any videos: %s" % LIVE_DB)
+        print("live database is empty, relabelling the committed snapshot instead")
 
-    # backup() copies a consistent database even while the app is running.
-    live = sqlite3.connect(LIVE_DB)
-    snapshot = sqlite3.connect(SNAPSHOT_DB)
-    live.backup(snapshot)
-    live.close()
+    if from_snapshot:
+        snapshot = sqlite3.connect(SNAPSHOT_DB)
+    else:
+        # Checked before the backup, because the backup is what overwrites the snapshot.
+        reason = shrink_refusal(count_videos(LIVE_DB), count_videos(SNAPSHOT_DB))
+        if reason and "--allow-shrink" not in sys.argv[1:]:
+            raise SystemExit(
+                "%s. Refreshing from it would replace the index with a reset database, so "
+                "nothing was written. Pass --allow-shrink if the drop is intended." % reason)
+
+        # backup() copies a consistent database even while the app is running.
+        live = sqlite3.connect(LIVE_DB)
+        snapshot = sqlite3.connect(SNAPSHOT_DB)
+        live.backup(snapshot)
+        live.close()
 
     rows = snapshot.execute(
         "SELECT url, title, description, thumbnail, duration, source, click_count, tags FROM videos"
     ).fetchall()
     videos = [
-        {"u": url, "t": title or "", "d": description or "", "th": thumbnail or "",
-         "du": duration or "", "s": source or "", "c": clicks or 0, "tg": tags or ""}
+        {"u": url, "t": plain_text(title), "d": plain_text(description), "th": thumbnail or "",
+         "du": duration or "", "s": source or "", "c": clicks or 0, "tg": plain_text(tags)}
         for (url, title, description, thumbnail, duration, source, clicks, tags) in rows
     ]
 
@@ -96,9 +124,19 @@ def main():
     started = time.time()
     model = MusicGenreModel([f'{v["t"]} {v["d"]} {v["tg"]}'.lower() for v in videos])
     labelled = 0
+    readings = 0
     for video in videos:
         guess = model.infer(video["t"], video["d"], video["tg"])
         if not guess:
+            # Not a genre record, but the words can still lean somewhere. The page shows
+            # those readings - "dubstep 0.4, techno 0.4: dark" - instead of printing
+            # "unclassified" beside a title that clearly says something. Two candidates and
+            # three words each: this repeats thousands of times, and the file is already
+            # three megabytes.
+            weak = model.rank(video["t"], video["d"], video["tg"])
+            if weak:
+                readings += 1
+                video["w"] = [[item["genre"], item["score"], item["terms"]] for item in weak[:2]]
             continue
         labelled += 1
         video["g"] = {
@@ -108,7 +146,8 @@ def main():
             "e": [[item["question"], item["answer"]] for item in guess["evidence"]],
             "a": guess["alternatives"][0]["genre"] if guess["alternatives"] else None,
         }
-    print("genres %d/%d in %.1fs" % (labelled, len(videos), time.time() - started))
+    print("genres %d/%d in %.1fs, weak readings on %d more" % (
+        labelled, len(videos), time.time() - started, readings))
     searches = snapshot.execute("SELECT COUNT(*) FROM search_history").fetchone()[0]
     clicks = snapshot.execute("SELECT SUM(click_count) FROM videos").fetchone()[0] or 0
     snapshot.close()

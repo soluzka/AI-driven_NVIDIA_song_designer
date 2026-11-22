@@ -554,16 +554,12 @@ def _layout_vocal(song_path, vocal_bytes, out_path, bpm, mapping=(0.0, 0.0, 0.0)
 def _place_phrases(out, mono, envelope, rate, fade, lead, duck, first_start, bar_seconds):
     """Add the recorded phrase on bar lines without stacking it on itself.
 
-    Copies used to be placed one bar apart whatever the phrase's length, so a ten second
-    phrase over a two second bar overlapped itself four times. That is two faults in one:
-    identical audio offset by a bar combs against itself - a buzz that moves with the pans -
-    and the duck was applied per copy, so 0.4 four times over is -32 dB. That is not the
-    track stepping back under the voice, it is a hole with the track's noise floor at the
-    bottom of it. Each copy now starts on the first bar line after the previous one ends,
-    and the duck is applied once, at the deepest placement.
-
-    Returns (out, placed), where placed is where each copy starts as a percentage of the
-    track - the numbers the endpoint prints.
+    Copies were placed one bar apart whatever the phrase's length, so a ten second phrase
+    over a two second bar overlapped itself four times: identical audio offset by a bar
+    combs against itself, and the duck compounded to -32 dB, a hole rather than the track
+    stepping back. Each copy now starts on the first bar line after the previous one ends,
+    and the duck is applied once. Returns (out, placed) - placed as a percentage of the
+    track, which is what the endpoint prints.
     """
     import numpy as np
 
@@ -879,15 +875,11 @@ def _write_samples(target_wav, out_path, sample_rate):
     # wave module cannot fail that way.
     import wave
 
-    # The model hands back a thump under the bass. Measured on six renders, the
-    # 20-40 Hz band carried 6-32% of the power, peaked at 34-40 Hz in a cluster of
-    # near-equal frequencies with no harmonics above them: a swell, not a note. It
-    # costs headroom nothing audible uses, and it makes the whole track read as low
-    # and muffled - the same rumble the fit chain was fixed for. Four poles at 32 Hz
-    # take that band's share to 3-20% and leave 60-120 Hz where it was (measured:
-    # 15.1/7.9/5.1 -> 11.0/8.2/5.4 on one song, untouched on 40-250), so kick and
-    # bass keep their weight and only the inaudible part goes. It is filtered before
-    # the normalisation, so the peak reference is what will actually be written.
+    # The model hands back a thump under the bass: 20-40 Hz carried 6-32% of the power on
+    # six renders, peaked at 34-40 Hz with no harmonics above them - a swell, not a note.
+    # Four poles at 32 Hz take that share to 3-20% and leave 40-120 Hz where it was, so
+    # kick and bass keep their weight and only the inaudible part goes. Filtered before
+    # the normalisation, so the peak reference is what will be written.
     try:
         from scipy.signal import butter, sosfilt
 
@@ -1733,7 +1725,6 @@ def api_song_mix():
             mono = (mono / peak) * 0.7
 
         out = song.copy()
-        channels = out.shape[1]
         fade = max(1, int(rate * 0.02))
         envelope = np.ones(len(mono), dtype='float32')
         envelope[:fade] = np.linspace(0, 1, fade)

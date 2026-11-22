@@ -704,7 +704,10 @@ only the sound is moved and shaped.
 1. **Pitch.** The median fundamental of the phrase is measured, then moved to the
    nearest octave of the song's root, so a voice never has to jump an octave to
    land in the key. Shifting is resample plus a correlate-and-overlap time
-   stretch, so the phrase keeps its length.
+   stretch, so the phrase keeps its length. The stretch lays four grains over
+   every sample (a quarter-grain hop): at half overlap the splice between grains
+   is left bare, and on a held note it flutters at the grain rate, which is the
+   rattle heard when a fitted phrase is played back.
 2. **Tone.** Per-genre filters, drive, room and a half-beat echo: `dub` and
    `ambient` are mostly space, `trap` and `riddim` almost none, `lo-fi` is a 4.2
    kHz ceiling, `trance` and `house` keep the top end. The profile table is

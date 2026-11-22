@@ -39,6 +39,41 @@ $ProgressPreference = 'SilentlyContinue'
 
 function Say([string]$text) { Write-Host $text }
 
+# Names an address as the model endpoint - the one the page shows as "MODEL ENDPOINT"
+# and hands to every device. Only a machine holding the join key may do it, and only
+# an address that answers: a host left over from a session that ended resolves to
+# nothing, and pointing the site at it leaves every device with a model that cannot
+# render. Removed in cc749c6 together with the pasted-address handling below, which
+# is why a pasted address then went into the key file and joined nothing.
+function Set-ModelEndpoint([string]$address, [string]$appRoot) {
+    $keyFile = Join-Path $appRoot 'build\song_endpoint.key'
+    if (-not (Test-Path $keyFile)) {
+        Say '       saved. There is no join key on this PC yet, so the site was not told.'
+        Say '       Run reset_join_key.cmd with the key and it names this address.'
+        return
+    }
+    $held = ((Get-Content -Raw -Path $keyFile) -as [string]).Trim()
+    Say '       asking that address to answer ...'
+    $alive = $false
+    try {
+        $probe = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($address + '/health') -TimeoutSec 8
+        $alive = ($probe.StatusCode -eq 200)
+    } catch { $alive = $false }
+    if (-not $alive) {
+        Say '       it did not answer /health, so the site was not pointed at it.'
+        return
+    }
+    try {
+        Invoke-RestMethod -Method Post `
+            -Uri 'https://song-pool.bpiersing.workers.dev/state/site:endpoint' `
+            -Headers @{ 'x-join-key' = $held } -ContentType 'application/json' `
+            -Body (@{ value = $address } | ConvertTo-Json -Compress) -TimeoutSec 25 | Out-Null
+        Say '       the site now names it as the model endpoint, for every device.'
+    } catch {
+        Say "       the site refused it: $($_.Exception.Message)"
+    }
+}
+
 Say 'Joining this PC''s GPU to the song site'
 Say '------------------------------------'
 
@@ -65,15 +100,18 @@ if ($Offline) {
     Say "app:   fetching the current sources to $Target"
     New-Item -ItemType Directory -Force -Path $Target | Out-Null
     $zip = Join-Path $Target 'internet.zip'
+    $staging = Join-Path $Target 'update-staging'
     $downloaded = $false
     try {
         Invoke-WebRequest -UseBasicParsing -Uri $Source -OutFile $zip
-        Expand-Archive -Path $zip -DestinationPath $Target -Force
+        if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
+        Expand-Archive -Path $zip -DestinationPath $staging -Force
         Remove-Item $zip -ErrorAction SilentlyContinue
         $downloaded = $true
     } catch {
-        Say "app:   could not download the archive ($($_.Exception.Message))"
+        Say "app:   could not fetch or unpack the sources ($($_.Exception.Message))"
         Remove-Item $zip -ErrorAction SilentlyContinue
+        Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
         # Falling back to the copy on disk looks exactly like an update that worked:
         # the folder keeps the files it already had and nothing says they are stale.
         # Stop instead; -Offline is the deliberate way to use what is already here.
@@ -86,6 +124,34 @@ if ($Offline) {
         }
         exit 1
     }
+
+    # Unpacked beside the install and compared file by file rather than extracted
+    # straight over it, because Expand-Archive stamps every file with the archive's
+    # own time: a folder that was just refreshed still shows old dates, so there is no
+    # way to tell an update that happened from one that did not. Copying only what
+    # differs also makes the count below true.
+    $root = Get-ChildItem -LiteralPath $staging -Directory | Select-Object -First 1
+    if ($root) { $source = $root.FullName; $destRoot = Join-Path $Target $root.Name }
+    else { $source = $staging; $destRoot = $Target }
+    $updated = 0
+    $added = 0
+    $same = 0
+    foreach ($file in (Get-ChildItem -LiteralPath $source -Recurse -File)) {
+        $dest = Join-Path $destRoot $file.FullName.Substring($source.Length).TrimStart('\')
+        if (Test-Path -LiteralPath $dest) {
+            if ((Get-FileHash -LiteralPath $file.FullName).Hash -eq (Get-FileHash -LiteralPath $dest).Hash) {
+                $same++
+                continue
+            }
+            $updated++
+        } else {
+            $added++
+        }
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
+        Copy-Item -LiteralPath $file.FullName -Destination $dest -Force
+    }
+    Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
+    Say ("app:   {0} files updated, {1} added, {2} already current" -f $updated, $added, $same)
     if ($downloaded -and -not (Test-Path (Join-Path $appDir 'install_all.ps1'))) {
         # A zip whose root folder is named differently (a release, a branch rename).
         $found = Get-ChildItem -Path $Target -Directory |
@@ -105,6 +171,19 @@ Say "app:   $appDir"
 # know about it. Read-Host -AsSecureString keeps it off the screen; the plain value
 # only ever exists in this process and in that 64-byte file.
 $keyFile = Join-Path $appDir 'build\song_endpoint.key'
+$urlFile = Join-Path $appDir 'build\model_endpoint_url.txt'
+# A pasted address is not a join key: it is the model endpoint, the one the page
+# shows as "MODEL ENDPOINT" and every device is told to use. It goes to its own
+# file, and this names it on the site. Storing an address in the key file would
+# make a machine that runs perfectly and can never publish or join.
+if ($Key -match '^https?://') {
+    $endpoint = $Key.Trim().TrimEnd('/')
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $urlFile) | Out-Null
+    Set-Content -Path $urlFile -Value $endpoint -Encoding ascii -NoNewline
+    Say "model endpoint: $endpoint"
+    Set-ModelEndpoint $endpoint $appDir
+    $Key = ''
+}
 if ($Key) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $keyFile) | Out-Null
     Set-Content -Path $keyFile -Value $Key -Encoding ascii -NoNewline
@@ -118,8 +197,16 @@ if ($Key) {
     $secure = Read-Host 'Paste the join key (hidden), or press Enter to skip' -AsSecureString
     $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
         [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
-    if (-not $plain) { Say 'no key given: this PC will run the AI for itself, not for the site' }
-    else {
+    if (-not $plain) {
+        Say 'no key given: this PC will run the AI for itself, not for the site'
+    } elseif ($plain -match '^https?://') {
+        $endpoint = $plain.Trim().TrimEnd('/')
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $urlFile) | Out-Null
+        Set-Content -Path $urlFile -Value $endpoint -Encoding ascii -NoNewline
+        Say "model endpoint: $endpoint"
+        Say 'that was an address, not a key: nothing was written into the key file.'
+        Set-ModelEndpoint $endpoint $appDir
+    } else {
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $keyFile) | Out-Null
         Set-Content -Path $keyFile -Value $plain -Encoding ascii -NoNewline
     }
@@ -174,5 +261,42 @@ try {
 } catch {
     Say "could not reach the pool to confirm the join: $($_.Exception.Message)"
 }
+# --- 6. what it is doing now -------------------------------------------------
+# "did it join" is answered above; "is it working" is not. These are the checks a
+# person would otherwise make one at a time in a terminal: every service's own
+# health, the address through Cloudflare rather than only on this machine, and the
+# errors the logs have recorded since the services last started.
+Say ''
+Say 'services'
+foreach ($service in @(@{ name = 'site'; port = 5001; path = '/' },
+                       @{ name = 'downloader'; port = 8080; path = '/health' },
+                       @{ name = 'song service'; port = 8090; path = '/health' },
+                       @{ name = 'voice service'; port = 8095; path = '/health' })) {
+    $code = & curl.exe -s -o NUL -w '%{http_code}' --max-time 5 "http://127.0.0.1:$($service.port)$($service.path)"
+    Say ('  {0,-14} {1,-5} {2}' -f $service.name, $service.port, $(if ($code) { $code } else { 'no answer' }))
+}
+
+Say ''
+if ($mine) {
+    $edge = & curl.exe -s -o NUL -w '%{http_code}' --max-time 15 "$mine/health"
+    Say "tunnel: $mine"
+    Say "  through Cloudflare: $(if ($edge) { $edge } else { 'no answer' })"
+} else {
+    Say 'tunnel: nothing published, so the site has no address for this PC'
+}
+
+Say ''
+Say 'errors in the logs (nothing below means none in the last 400 lines of each)'
+$hits = @()
+foreach ($log in @('run_web.err', 'run_web.log', 'build\downloader_err.log',
+                   'song_service\logs\service_err.log', 'voice_service\logs\service_err.log')) {
+    $path = Join-Path $appDir $log
+    if (Test-Path $path) {
+        $hits += @(Get-Content -Path $path -Tail 400 -ErrorAction SilentlyContinue |
+            Where-Object { $_ -match 'Traceback|Exception|\bERROR\b|\bCRITICAL\b' } |
+            ForEach-Object { '  ' + (Split-Path $log -Leaf) + ': ' + $_.Trim() })
+    }
+}
+if ($hits.Count) { $hits | Select-Object -Last 8 | ForEach-Object { Say $_ } }
 Say ''
 Say 'The site finds this PC on the next click, and it rejoins at every logon'

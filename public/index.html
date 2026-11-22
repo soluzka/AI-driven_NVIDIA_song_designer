@@ -9055,9 +9055,18 @@
         function fitShift(samples, semitones, rate = 44100) {
             if (!semitones) return samples.slice();
             const ratio = Math.pow(2, semitones / 12);
+            // Nothing can fold unless the take has content above rate/(2*ratio), so the
+            // filter is only worth its 136 ms (of a 30-second take) once that comes
+            // down into the top of a voice: 17 kHz, the upper limit of sibilance. At
+            // +0.5 the fold point is 21.4 kHz on a 44.1 kHz take, above anything a microphone put
+            // there, so it ran for nothing; at +5 and +7 it is 16.5 and 14.7 kHz, where
+            // it measured 7-8 dB of noise removed from the 10-20 kHz band.
             // 0.42 rather than 0.5 of the new Nyquist leaves the filter's transition
             // band inside the audible band instead of straddling the fold point.
-            const source = ratio > 1.0001 ? fitAntiAlias(samples, rate, 0.42 * rate / ratio) : samples;
+            const foldPoint = rate / (2 * ratio);
+            const source = ratio > 1.0001 && foldPoint < 17000
+                ? fitAntiAlias(samples, rate, 0.42 * rate / ratio)
+                : samples;
             const resampled = fitResample(source, ratio);
             return fitStretch(resampled, source.length / resampled.length, samples.length, rate);
         }

@@ -810,8 +810,18 @@ only the sound is moved and shaped.
    consonants it came from — RMS 0.177 in, **0.177 out**. A Hamming-windowed sinc
    (63 taps, −61 dB at that frequency, measured on the tone) replaces it: the same
    tone now comes back at RMS 0.0001, 65 dB down, while a 200 Hz tone keeps its level
-   exactly (peak 0.301, RMS 0.211) and 10 kHz passes at −1.5 dB. An upward shift
-   costs about 400 ms of filtering for a 30-second take.
+   exactly (peak 0.301, RMS 0.211) and 10 kHz passes at −1.5 dB.
+
+   It only runs when folding is possible. Nothing can fold unless the take has
+   content above `rate / (2 × ratio)`, and a voice's top is sibilance around 17 kHz:
+   at +0.5 that frequency is 21.4 kHz on a 44.1 kHz take, above anything a microphone
+   put there, so the filter was work with no result. It now runs from the shift where
+   the fold point reaches 17 kHz — 16.5 kHz at +5, 14.7 kHz at +7. Measured on the
+   reference, the fitted bands at +0.5 are unchanged by the skip (10-20 kHz −36.3 /
+   −29.4 dB against −36.3 / −29.3 with the filter), and a 17 kHz tone still comes
+   back at RMS 0.0001 at +7 while passing at 0.114 at +1 and +3, where it cannot fold.
+   The filter itself costs 136 ms of a 431 ms shift on a 30-second take (the stretch
+   is 375 ms of that); skipping it holds the shift at 367 ms.
 
    The second was the drive. The profile's lowpass sat *before* the waveshaper, so
    every harmonic the drive made ignored the ceiling — and a waveshaper runs at the

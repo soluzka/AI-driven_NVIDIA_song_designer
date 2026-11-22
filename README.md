@@ -222,9 +222,13 @@ npx wrangler deploy                          # or let Workers Builds deploy on p
 ```
 
 The exporter copies the live database over the snapshot, so it refuses to run when
-`../video_index.db` holds no videos: on this machine that database was empty (36 KB)
-and one run replaced a 4.2 MB snapshot and the 8,724-row JSON with nothing. It now
-checks the count first and writes nothing.
+the live database is much smaller than the snapshot it would replace. On this machine
+that database was empty (36 KB) and one run replaced a 4.2 MB snapshot and the
+8,724-row JSON with nothing; a database with five rows would have done the same.
+The rule is 90%: `tools/export_index.py` counts videos in `../video_index.db` and in
+`data/video_index.db` before anything is written, and exits with both numbers when
+the live count is under nine tenths of the snapshot's. A deliberate cut passes
+`--allow-shrink`.
 
 **Re-exporting is not what labels the cards.** Running it over the snapshot
 reproduces 1,542 of 8,724 with a genre, row for row, because that is what the model

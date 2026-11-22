@@ -26,6 +26,42 @@ SNAPSHOT_DB = os.path.join(ROOT, "data", "video_index.db")
 STATIC_JSON = os.path.join(ROOT, "public", "data", "videos.json")
 
 
+# A reset live database does not announce itself: it is a valid database with fewer
+# rows, and the backup below copies it straight over the committed snapshot. One run
+# against 36 KB of empty tables took the 8,724-row snapshot and the static index with
+# it, and a database with five rows would do exactly the same. Anything under this
+# share of the snapshot is treated as a reset rather than as news.
+MIN_KEEP = 0.9
+
+
+def count_videos(path):
+    """Videos in a database, or 0 when it is missing or has no such table."""
+    if not os.path.exists(path):
+        return 0
+    connection = sqlite3.connect(path)
+    try:
+        return connection.execute("SELECT COUNT(*) FROM videos").fetchone()[0]
+    except sqlite3.Error:
+        return 0
+    finally:
+        connection.close()
+
+
+def shrink_refusal(live_count, snapshot_count):
+    """Why this live database must not be copied over the snapshot, or None.
+
+    Kept as a function of the two counts so the rule can be checked without
+    touching either database.
+    """
+    if snapshot_count <= 0:
+        return None  # nothing to protect yet
+    if live_count >= snapshot_count * MIN_KEEP:
+        return None
+    return ("live database holds %d videos against %d in the committed snapshot, "
+            "under the %d%% a refresh must keep"
+            % (live_count, snapshot_count, round(MIN_KEEP * 100)))
+
+
 def main():
     if not os.path.exists(LIVE_DB):
         raise SystemExit("Live database not found: %s" % LIVE_DB)
@@ -34,21 +70,11 @@ def main():
     os.makedirs(os.path.dirname(STATIC_JSON), exist_ok=True)
 
     # Checked before the backup, because the backup is what overwrites the snapshot.
-    # The live database on this machine was empty - 36 KB, no videos - and running
-    # this script copied that emptiness over a 4.2 MB snapshot and a 8,724-row JSON
-    # in one step, leaving the static site with nothing at all.
-    probe = sqlite3.connect(LIVE_DB)
-    try:
-        live_count = probe.execute("SELECT COUNT(*) FROM videos").fetchone()[0]
-    except sqlite3.Error as err:
-        raise SystemExit("Live database has no videos table (%s): %s" % (err, LIVE_DB))
-    finally:
-        probe.close()
-    if not live_count:
+    reason = shrink_refusal(count_videos(LIVE_DB), count_videos(SNAPSHOT_DB))
+    if reason and "--allow-shrink" not in sys.argv[1:]:
         raise SystemExit(
-            "Live database %s holds no videos, so refreshing from it would empty the "
-            "snapshot and the static index. Nothing was written."
-            % os.path.relpath(LIVE_DB, ROOT))
+            "%s. Refreshing from it would replace the index with a reset database, so "
+            "nothing was written. Pass --allow-shrink if the drop is intended." % reason)
 
     # backup() copies a consistent database even while the app is running.
     live = sqlite3.connect(LIVE_DB)

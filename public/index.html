@@ -9635,7 +9635,20 @@
                 return;
             }
             try {
-                fit.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+                // Nothing may be playing when the microphone opens. A phrase played through the
+            // speakers is recorded back into the take, and the two copies a few milliseconds
+            // apart are a comb: a whistle over a wobble, with the room's low end under it.
+            if (fit.audio) {
+                try { fit.audio.pause(); fit.audio.currentTime = 0; } catch (err) {}
+                fit.audio = null;
+            }
+            // A sung take is not a phone call. autoGainControl rides a held note up and
+                // down and noiseSuppression gates the room between words, and both are heard
+                // as the take pumping and dropping out - "shaky". Echo cancellation stays:
+                // a phrase played back while recording would otherwise be picked up again.
+                fit.stream = await navigator.mediaDevices.getUserMedia({
+                    audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false }
+                });
             } catch (err) {
                 fitSay('The microphone was refused: ' + (err && err.name ? err.name : 'no access') +
                     '. Allow it in the browser, and note that a plain http address on the LAN blocks it.');
@@ -9747,7 +9760,10 @@
         function fitPlayback() {
             const url = fit.mixUrl || fit.url;
             if (!url) return;
+            // Held so recording can stop it: see the microphone opening in the recorder.
+            if (fit.audio) { try { fit.audio.pause(); } catch (err) {} }
             const audio = new Audio(url);
+            fit.audio = audio;
             audio.play().catch(() => fitSay('The browser blocked playback. Press Play once more.'));
         }
 

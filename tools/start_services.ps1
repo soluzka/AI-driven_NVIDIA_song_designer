@@ -590,13 +590,43 @@ if ($NoTunnel) {
         }
     }
 
+    # A Quick Tunnel name is not usable just because it was printed. Cloudflare refuses to
+    # route a fresh one while several are open from the same machine - the run opens, prints
+    # an address, and every request to it answers 530 - and the tunnel that does answer is
+    # then one started by an earlier run. So every address this machine has seen recently is
+    # probed, oldest-first being useless: the newest that answers is the one that goes in
+    # the pool. Without this a start that failed to get a routable name left the site naming
+    # a tunnel that had closed, which is the "not in the pool" that kept happening.
+    $candidates = @()
+    if ($tunnelUrl) { $candidates += $tunnelUrl }
+    if ($recorded) { $candidates += $recorded }
+    if (Test-Path $tunnelLog) {
+        $seenInLog = @(Select-String -Path $tunnelLog -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' |
+            ForEach-Object { $_.Matches[0].Value } | Select-Object -Unique | Select-Object -Last 4)
+        [array]::Reverse($seenInLog)
+        $candidates += $seenInLog
+    }
+    # Three sweeps, ten seconds apart: a tunnel that has just printed its address needs a
+    # few seconds before Cloudflare routes it, and one bad look is not a verdict.
+    $liveAddress = ''
+    for ($sweep = 0; $sweep -lt 3 -and -not $liveAddress; $sweep++) {
+        if ($sweep) { Start-Sleep -Seconds 10 }
+        foreach ($candidate in ($candidates | Select-Object -Unique)) {
+            if (Test-TunnelHealth $candidate 1) { $liveAddress = $candidate; break }
+        }
+    }
+    if ($liveAddress) {
+        if ($liveAddress -ne $tunnelUrl) { Say "tunnel: $liveAddress is the one answering through Cloudflare; using it" }
+        $tunnelUrl = $liveAddress
+    }
+
     if (-not $tunnelUrl) {
         Say 'tunnel: no address yet, see tunnel.log'
-    } elseif (-not (Test-TunnelHealth $tunnelUrl 8)) {
+    } elseif (-not (Test-TunnelHealth $tunnelUrl 4)) {
         # Written down and published only when it answers: a name the edge cannot route is
         # exactly the failure this block exists to prevent, and putting it in
         # build\tunnel_url.txt would point the page and the pool at nothing.
-        Say "tunnel: $tunnelUrl is open but does not answer through Cloudflare yet; the address on file is unchanged"
+        Say "tunnel: no quick tunnel of this machine answers through Cloudflare yet ($tunnelUrl was the newest); the address on file is unchanged"
     } else {
         try { Set-Content -Path (Join-Path $root 'build\tunnel_url.txt') -Value $tunnelUrl -Encoding ascii } catch { }
         try { Set-Clipboard -Value $tunnelUrl } catch { }
@@ -624,6 +654,8 @@ if ($NoTunnel) {
                 if (Test-Path $idFile) { $machineId = ((Get-Content -Raw -Path $idFile) -as [string]).Trim() }
                 $payload = Join-Path $root 'build\tunnel_publish.json'
                 $statePayload = Join-Path $root 'build\tunnel_state.json'
+                $sitePayload = Join-Path $root 'build\tunnel_site.json'
+                $removePayload = Join-Path $root 'build\tunnel_site_remove.json'
                 try {
                     Set-Content -Path $payload -Encoding ascii `
                         -Value ('{"url":"' + $tunnelUrl + '","note":"' + $machineId + '"}')
@@ -646,8 +678,29 @@ if ($NoTunnel) {
                         -H 'Content-Type: application/json' -H "x-join-key: $key" `
                         --data-binary "@$payload"
                     Say "tunnel: joined the pool: $poolAnswer"
+
+                    # The site keeps its own copy of the list, signed with SONG_ENDPOINT_KEY
+                    # (the same value), so it is told the same address. Without this the two
+                    # lists drifted: the pool named the new tunnel while the site's copy
+                    # still named one from hours ago, and the page counted both as GPUs.
+                    # The address this machine used before is removed rather than appended,
+                    # so a rotation replaces it instead of adding a second card.
+                    $siteUrl = 'https://browser.bpiersing.workers.dev/api/song/endpoint'
+                    if ($recorded -and $recorded -ne $tunnelUrl) {
+                        Set-Content -Path $removePayload -Encoding ascii `
+                            -Value ('{"remove":"' + $recorded + '"}')
+                        $null = & curl.exe -s --max-time 15 -X POST $siteUrl `
+                            -H 'Content-Type: application/json' -H "x-song-key: $key" `
+                            --data-binary "@$removePayload"
+                    }
+                    Set-Content -Path $sitePayload -Encoding ascii `
+                        -Value ('{"url":"' + $tunnelUrl + '"}')
+                    $siteAnswer = & curl.exe -s --max-time 15 -X POST $siteUrl `
+                        -H 'Content-Type: application/json' -H "x-song-key: $key" `
+                        --data-binary "@$sitePayload"
+                    Say "tunnel: named in the site's list: $siteAnswer"
                 } finally {
-                    Remove-Item $payload, $statePayload -ErrorAction SilentlyContinue
+                    Remove-Item $payload, $statePayload, $sitePayload, $removePayload -ErrorAction SilentlyContinue
                 }
             }
         }

@@ -113,12 +113,12 @@ if ($Restart) {
 # is also written to a file: "an error flashed up" is not diagnosable. A second
 # run cannot take the same transcript, so failure here is not fatal.
 try {
-    Start-Transcript -Path (Join-Path $root 'build\launcher_run.log') -Append | Out-Null
+    Start-Transcript -Path (Join-Path $root 'build/launcher_run.log') -Append | Out-Null
 } catch { }
 
 # A line per run, so "the site started it" can be checked instead of assumed.
 try {
-    Add-Content -Path (Join-Path $root 'build\launcher_trace.txt') `
+    Add-Content -Path (Join-Path $root 'build/launcher_trace.txt') `
         -Value ('{0:yyyy-MM-dd HH:mm:ss} launcher ran' -f (Get-Date))
 } catch { }
 
@@ -153,7 +153,7 @@ Ensure-Protocol
 
 function Trace([string]$text) {
     try {
-        Add-Content -Path (Join-Path $root 'build\launcher_trace.txt') `
+        Add-Content -Path (Join-Path $root 'build/launcher_trace.txt') `
             -Value ('{0:yyyy-MM-dd HH:mm:ss} {1}' -f (Get-Date), $text)
     } catch { }
 }
@@ -206,7 +206,7 @@ if (Answers $DownloadPort) {
     if (-not (Test-Path $python)) {
         Say 'downloader: creating its environment (a minute or two)'
         $venvDir = Join-Path $service '.venv'
-        $venvLog = Join-Path $root 'build\downloader_venv.log'
+        $venvLog = Join-Path $root 'build/downloader_venv.log'
         # `python` on PATH on this machine is the Microsoft Store stub, which only
         # prints "Python was not found". Building the venv by its bare name
         # therefore failed silently and left a service that never started, so try
@@ -256,8 +256,8 @@ if (Answers $DownloadPort) {
         $env:PORT = "$DownloadPort"
         Start-Process -FilePath $python -ArgumentList 'app.py', '--role', 'downloader' -WorkingDirectory $service `
             -WindowStyle Hidden `
-            -RedirectStandardOutput (Join-Path $root 'build\downloader_out.log') `
-            -RedirectStandardError (Join-Path $root 'build\downloader_err.log') | Out-Null
+            -RedirectStandardOutput (Join-Path $root 'build/downloader_out.log') `
+            -RedirectStandardError (Join-Path $root 'build/downloader_err.log') | Out-Null
         Say "downloader starting on 127.0.0.1:$DownloadPort (log: build\downloader_err.log)"
     }
 }
@@ -448,7 +448,7 @@ function Stop-EmptyTunnelWindows {
 # The key is piped to wrangler on stdin from the file, so it never appears in an argument
 # list, in this script's output, or in a log.
 function Sync-JoinKey([string]$keyFile) {
-    $wranglerJs = Join-Path $root 'build\wrangler-tool\node_modules\wrangler\bin\wrangler.js'
+    $wranglerJs = Join-Path $root 'build/wrangler-tool\node_modules\wrangler\bin\wrangler.js'
     $nodeExe = Join-Path $root 'tools\node\node.exe'
     # A working checkout, not merely a folder with a wrangler copy in it: the installed app
     # carries build\wrangler-tool too, and pushing secrets from a machine that is being
@@ -567,7 +567,7 @@ if ($NoTunnel) {
     # is how a dead address came to be published next to the live one. While an address
     # answers it is reused and nothing is rotated, so restarting a service - or running
     # this script again - never changes the name a phone or the pool is holding.
-    $recordedFile = Join-Path $root 'build\tunnel_url.txt'
+    $recordedFile = Join-Path $root 'build/tunnel_url.txt'
     $recorded = ''
     if (Test-Path $recordedFile) { $recorded = ((Get-Content -Raw -Path $recordedFile) -as [string]).Trim().TrimEnd('/') }
     $reuse = $false
@@ -674,7 +674,7 @@ if ($NoTunnel) {
         # build\tunnel_url.txt would point the page and the pool at nothing.
         Say "tunnel: no quick tunnel of this machine answers through Cloudflare yet ($tunnelUrl was the newest); the address on file is unchanged"
     } else {
-        try { Set-Content -Path (Join-Path $root 'build\tunnel_url.txt') -Value $tunnelUrl -Encoding ascii } catch { }
+        try { Set-Content -Path (Join-Path $root 'build/tunnel_url.txt') -Value $tunnelUrl -Encoding ascii } catch { }
         try { Set-Clipboard -Value $tunnelUrl } catch { }
         Say "tunnel: $tunnelUrl"
 
@@ -684,7 +684,7 @@ if ($NoTunnel) {
         # which meant a machine that was running the model perfectly well sat outside the
         # pool and the site kept saying no GPUs were connected until somebody opened the
         # page. Holding the key is the whole condition now: with it, this PC joins itself.
-        $keyFile = Join-Path $root 'build\song_endpoint.key'
+        $keyFile = Join-Path $root 'build/song_endpoint.key'
         if (-not (Test-Path $keyFile)) {
             Say 'tunnel: build\song_endpoint.key is missing, so the site was not told the address'
         } else {
@@ -696,12 +696,12 @@ if ($NoTunnel) {
                 # This machine's id, so the card this run adds can be recognised and the
                 # address it replaces dropped by the same id rather than left listed.
                 $machineId = ''
-                $idFile = Join-Path $root 'build\machine_id.txt'
+                $idFile = Join-Path $root 'build/machine_id.txt'
                 if (Test-Path $idFile) { $machineId = ((Get-Content -Raw -Path $idFile) -as [string]).Trim() }
-                $payload = Join-Path $root 'build\tunnel_publish.json'
-                $statePayload = Join-Path $root 'build\tunnel_state.json'
-                $sitePayload = Join-Path $root 'build\tunnel_site.json'
-                $removePayload = Join-Path $root 'build\tunnel_site_remove.json'
+                $payload = Join-Path $root 'build/tunnel_publish.json'
+                $statePayload = Join-Path $root 'build/tunnel_state.json'
+                $sitePayload = Join-Path $root 'build/tunnel_site.json'
+                $removePayload = Join-Path $root 'build/tunnel_site_remove.json'
                 try {
                     # The join carries this PC's id, and the pool drops every row with the same
                     # note as it saves the new one: a rotated address replaces this machine's
@@ -790,7 +790,7 @@ if ($songHealth) { Say "song now: $songHealth" } else { Say 'song: still loading
 # answers now is what goes into the lists.
 if (-not $NoTunnel) {
     $publishedAddress = ''
-    $urlFile = Join-Path $root 'build	unnel_url.txt'
+    $urlFile = Join-Path $root 'build/unnel_url.txt'
     if (Test-Path $urlFile) { $publishedAddress = ((Get-Content -Raw -Path $urlFile) -as [string]).Trim() }
     if ($publishedAddress -and -not (Test-TunnelHealth $publishedAddress 1)) {
         $late = @()
@@ -811,14 +811,14 @@ if (-not $NoTunnel) {
         } else {
             Set-Content -Path $urlFile -Value $foundLate -Encoding ascii
             Say "tunnel: $foundLate answers now; publishing it"
-            $lateKeyFile = Join-Path $root 'build\song_endpoint.key'
+            $lateKeyFile = Join-Path $root 'build/song_endpoint.key'
             $lateKey = if (Test-Path $lateKeyFile) { (Get-Content $lateKeyFile -Raw).Trim() } else { '' }
             if ($lateKey) {
-                $lateIdFile = Join-Path $root 'build\machine_id.txt'
+                $lateIdFile = Join-Path $root 'build/machine_id.txt'
                 $lateId = if (Test-Path $lateIdFile) { ((Get-Content -Raw -Path $lateIdFile) -as [string]).Trim() } else { '' }
-                $lateJoin = Join-Path $root 'build	unnel_late.json'
-                $lateState = Join-Path $root 'build	unnel_late_state.json'
-                $lateSite = Join-Path $root 'build	unnel_late_site.json'
+                $lateJoin = Join-Path $root 'build/unnel_late.json'
+                $lateState = Join-Path $root 'build/unnel_late_state.json'
+                $lateSite = Join-Path $root 'build/unnel_late_site.json'
                 try {
                     Set-Content -Path $lateJoin -Encoding ascii -Value ('{"url":"' + $foundLate + '","note":"' + $lateId + '"}')
                     Set-Content -Path $lateState -Encoding ascii -Value ('{"value":"' + $foundLate + '"}')
@@ -845,7 +845,7 @@ if (-not $NoTunnel) {
 # address on file does not answer, the newest address in tunnel.log that does is written
 # down, named in the site's endpoint record and list, and joined to the pool.
 function Publish-AnsweringTunnel {
-    $urlFile = Join-Path $root 'build	unnel_url.txt'
+    $urlFile = Join-Path $root 'build/unnel_url.txt'
     $current = if (Test-Path $urlFile) { ((Get-Content -Raw -Path $urlFile) -as [string]).Trim() } else { '' }
     if ($current -and (Test-TunnelHealth $current 1)) { return }
     $candidates = @()
@@ -859,16 +859,16 @@ function Publish-AnsweringTunnel {
         if (Test-TunnelHealth $candidate 1) { $live = $candidate; break }
     }
     if (-not $live) { return }
-    $keyFile = Join-Path $root 'build\song_endpoint.key'
+    $keyFile = Join-Path $root 'build/song_endpoint.key'
     if (-not (Test-Path $keyFile)) { return }
     $key = (Get-Content $keyFile -Raw).Trim()
     if (-not $key) { return }
-    $idFile = Join-Path $root 'build\machine_id.txt'
+    $idFile = Join-Path $root 'build/machine_id.txt'
     $machineId = if (Test-Path $idFile) { ((Get-Content -Raw -Path $idFile) -as [string]).Trim() } else { '' }
     Set-Content -Path $urlFile -Value $live -Encoding ascii
-    $joinFile = Join-Path $root 'build\watch_join.json'
-    $stateFile = Join-Path $root 'build\watch_state.json'
-    $siteFile = Join-Path $root 'build\watch_site.json'
+    $joinFile = Join-Path $root 'build/watch_join.json'
+    $stateFile = Join-Path $root 'build/watch_state.json'
+    $siteFile = Join-Path $root 'build/watch_site.json'
     try {
         Set-Content -Path $joinFile -Encoding ascii -Value ('{"url":"' + $live + '","note":"' + $machineId + '"}')
         Set-Content -Path $stateFile -Encoding ascii -Value ('{"value":"' + $live + '"}')
@@ -889,8 +889,18 @@ function Publish-AnsweringTunnel {
 # Only one watchdog should exist: two would fight over the same 8090 and each
 # would restart a service the other had just started.
 function Watchers {
+    # Matching the two words anywhere on a command line found any shell that merely
+    # mentioned them - a monitor, an editor, the launcher's own parent - so a real watchdog
+    # could be refused as "already running" while none existed, and none was ever left
+    # watching. The file argument and its -Watch switch have to be adjacent, which is how
+    # this script is actually started, and anything carrying -like/-match is a search, not
+    # a watchdog.
     Get-CimInstance Win32_Process -Filter "Name like '%powershell%'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like '*start_services.ps1*' -and $_.CommandLine -like '*-Watch*' -and $_.ProcessId -ne $PID }
+        Where-Object {
+            $_.ProcessId -ne $PID -and
+            $_.CommandLine -match 'start_services\.ps1"?\s+-Watch\b' -and
+            $_.CommandLine -notmatch '-like|-match'
+        }
 }
 
 if ($Watch) {

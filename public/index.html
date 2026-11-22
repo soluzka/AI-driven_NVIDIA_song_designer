@@ -8825,18 +8825,38 @@
             return folded[Math.floor(folded.length / 2)];
         }
 
-        // A two-pole lowpass, used only before a faster read. Reading a phrase faster
-        // folds everything above the new Nyquist back down as grit, and a voice carries
-        // sibilance up there to fold. A downward shift reads slower and cannot alias.
+        // A band limit, used only before a faster read. Reading a phrase faster folds
+        // everything above the new Nyquist back down, and a voice carries sibilance up
+        // there to fold. Measured on a 17 kHz tone shifted +7 semitones: the fold landed
+        // at 18.6 kHz only 3.7 dB under the whole signal, and a two-pole lowpass - which
+        // is 12 dB/octave - changed it by nothing at all. This is a Hamming-windowed
+        // sinc instead: 63 taps, about -60 dB in the stopband, so the fold goes under the
+        // noise floor instead of sitting on top of the consonants. A downward shift
+        // reads slower and cannot alias, so it is never applied.
         function fitAntiAlias(samples, rate, cutoff) {
+            const taps = 63;
+            const mid = (taps - 1) / 2;
+            const limit = Math.min(cutoff, rate * 0.45);
+            const kernel = new Float32Array(taps);
+            let sum = 0;
+            for (let i = 0; i < taps; i++) {
+                const t = i - mid;
+                const x = 2 * limit * t / rate;
+                const sinc = x === 0 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x);
+                const window = 0.54 - 0.46 * Math.cos(2 * Math.PI * i / (taps - 1));
+                kernel[i] = sinc * window;
+                sum += kernel[i];
+            }
+            if (!sum) return samples.slice();
+            for (let i = 0; i < taps; i++) kernel[i] /= sum;
             const out = new Float32Array(samples.length);
-            const k = 1 - Math.exp(-2 * Math.PI * Math.min(cutoff, rate * 0.45) / rate);
-            let first = 0;
-            let second = 0;
             for (let i = 0; i < samples.length; i++) {
-                first += (samples[i] - first) * k;
-                second += (first - second) * k;
-                out[i] = second;
+                let acc = 0;
+                for (let k = 0; k < taps; k++) {
+                    const j = i + mid - k;
+                    if (j >= 0 && j < samples.length) acc += samples[j] * kernel[k];
+                }
+                out[i] = acc;
             }
             return out;
         }
@@ -9035,7 +9055,9 @@
         function fitShift(samples, semitones, rate = 44100) {
             if (!semitones) return samples.slice();
             const ratio = Math.pow(2, semitones / 12);
-            const source = ratio > 1.0001 ? fitAntiAlias(samples, rate, 0.45 * rate / ratio) : samples;
+            // 0.42 rather than 0.5 of the new Nyquist leaves the filter's transition
+            // band inside the audible band instead of straddling the fold point.
+            const source = ratio > 1.0001 ? fitAntiAlias(samples, rate, 0.42 * rate / ratio) : samples;
             const resampled = fitResample(source, ratio);
             return fitStretch(resampled, source.length / resampled.length, samples.length, rate);
         }
@@ -9176,7 +9198,19 @@
             highAgain.frequency.value = profile.hp;
             highAgain.Q.value = 0.54;
 
-            source.connect(highAgain).connect(high).connect(low).connect(presence).connect(shaper).connect(comp);
+            // The profile's ceiling was applied before the drive, so every harmonic the
+            // drive created ignored it: measured on the voice reference, the neutral
+            // 0.18 drive turned the 10-20 kHz band from a few components (flatness
+            // -21 dB) into noise (-18 dB) at the same level, and a waveshaper runs at
+            // the context rate, so what it generates above Nyquist folds back into the
+            // band. The same ceiling after the shaper keeps the drive's harmonics where
+            // the profile wants them.
+            const ceiling = ctx.createBiquadFilter();
+            ceiling.type = 'lowpass';
+            ceiling.frequency.value = profile.lp;
+            ceiling.Q.value = 0.54;
+
+            source.connect(highAgain).connect(high).connect(low).connect(presence).connect(shaper).connect(ceiling).connect(comp);
             comp.connect(body).connect(presenceTrim);
             presenceTrim.connect(dry).connect(ctx.destination);
             presenceTrim.connect(room).connect(wet).connect(ctx.destination);

@@ -803,6 +803,40 @@ only the sound is moved and shaped.
    tones come back as 81 and 110 Hz, where a 1024-sample frame (under two periods of
    a low voice) called the 80 Hz tone 498 Hz.
 
+   Above the voice, the fit had two ways of adding frequency that belongs to
+   nothing being sung. The first was aliasing: linear interpolation is not a band
+   limit, and the two-pole guard in front of an upward shift was 12 dB/octave. A
+   17 kHz component shifted +7 semitones folded to 18.6 kHz at the level of the
+   consonants it came from — RMS 0.177 in, **0.177 out**. A Hamming-windowed sinc
+   (63 taps, −61 dB at that frequency, measured on the tone) replaces it: the same
+   tone now comes back at RMS 0.0001, 65 dB down, while a 200 Hz tone keeps its level
+   exactly (peak 0.301, RMS 0.211) and 10 kHz passes at −1.5 dB. An upward shift
+   costs about 400 ms of filtering for a 30-second take.
+
+   The second was the drive. The profile's lowpass sat *before* the waveshaper, so
+   every harmonic the drive made ignored the ceiling — and a waveshaper runs at the
+   context rate, so what it generates past Nyquist folds back inside the band. On the
+   voice reference, the 10-20 kHz band went from a few tonal components (flatness
+   −21.2 dB) to noise (−17.6 dB) at the same level: broadband hiss with nothing to do
+   with the phrase. The same ceiling now runs after the shaper too, and the band comes
+   back at −29.3 dB flatness — less noise-like than the dry take.
+
+   Measured band by band on the reference (share of total power / flatness, in dB):
+
+   | band | dry | fit +0.5 | fit +5 | fit −5 |
+   | --- | --- | --- | --- | --- |
+   | under 60 Hz | −36.8 | −38.3 | −34.7 | −36.2 |
+   | 60-120 Hz | −23.4 | −20.6 | −22.7 | −11.9 |
+   | 500 Hz-2 kHz | −1.2 / −7.9 | −2.2 / −7.2 | −2.7 / −7.0 | −4.7 / −6.1 |
+   | 2-5 kHz | −16.2 / −2.9 | −17.0 / −2.3 | −14.4 / −5.2 | −13.7 / −1.9 |
+   | 5-10 kHz | −21.3 / −4.0 | −19.5 / −3.6 | −22.4 / −2.4 | −19.1 / −4.8 |
+   | 10-20 kHz | −36.9 / −21.2 | −36.3 / −29.3 | −35.0 / −25.4 | −49.0 / −19.1 |
+
+   Below 60 Hz the fit is now under the dry take in every case but +5, where it sits
+   2.1 dB above it; the 120-500 Hz band is 2.3 dB above dry at +0.5, which is the
+   profile's own low shelf and body, not rumble. The 2-5 kHz band being about a dB
+   above dry and slightly flatter is the presence peak the tone is built on.
+
    The low end needed its own work. A vocoder builds energy where the phrase has
    none — the lowest bins drift against each other and beat, which is heard as
    rumble — and the tone chain added to it. Measured on the voice reference at a

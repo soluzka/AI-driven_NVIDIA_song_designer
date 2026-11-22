@@ -153,8 +153,21 @@ more than a common one. Word-boundary matching keeps `dub` out of `dubstep`, and
 a veto list of workshop/catalogue words stops non-music pages from being labelled
 unless a strong music cue is present.
 
+The veto list is split by how its entries have to be matched. `manufactur` is a
+stem — it has to catch manufacturer, manufacturing and manufactured — and is matched
+anywhere in the text; everything else is a word and matches on word boundaries like
+the rest of the model. Matched as plain substrings, `trim` was found inside Albanian
+`ushtrimeve` and `pipe` inside `Pipet`, which refused two real dubstep tracks and a
+reggae one as workshop listings. The material sense of metal is now named too
+(`metal detector`, `detectorist`, `oxidation`/`oxydation`), because those rows had
+only been refused by accident — `scrap` appearing inside a longer word — and came
+out as `rock / metal` once the matching was fixed. Re-exporting after the change
+labels the three tracks and drops four false `rock / metal` labels on metal-detector
+and metal-polish videos: 1,542 genres became 1,541, and all six changed rows are
+right.
+
 The percentage on a card is **decisiveness, not a probability**: it says how
-clearly the questions were answered. `why?` on a chip shows the evidence.
+clearly the questions were answered. `why?` on a card shows the evidence.
 
 On the desktop app the model fits in a background thread at startup (~8 s on a
 large index) so startup is not delayed; inference is ~1.5 ms per video.

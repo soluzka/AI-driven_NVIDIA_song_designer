@@ -319,11 +319,31 @@ TEMPO_RE = re.compile(r'\b(\d{2,3})\s*(?:bpm|beats per minute)\b', re.IGNORECASE
 # Words that put a listing in a workshop, a catalogue or a factory rather than in
 # music. "Metal Cutting" and "Gable Trim" are not heavy metal; a listing that
 # also talks about music overrides these.
-NON_MUSIC_MARKERS = [
+#
+# Split in two because they cannot be matched the same way. A stem is deliberately
+# partial - 'manufactur' has to catch manufacturer, manufacturing and manufactured -
+# and so is matched anywhere in the text. The rest are words and are matched on word
+# boundaries, like every other phrase in this model. As plain substrings, 'pipe' was
+# found inside 'Pipet' and refused a dubstep track, and 'trim' inside 'trimmer'.
+NON_MUSIC_STEMS = ['manufactur']
+NON_MUSIC_WORDS = [
     'cutting', 'welding', 'fabrication', 'installation', 'roofing', 'scrap',
-    'manufactur', 'supplier', 'wholesale', 'in stock', 'sheet metal', 'alloy',
+    'scrapyard', 'supplier', 'wholesale', 'in stock', 'sheet metal', 'alloy',
     'gable', 'trim', 'pipe', 'drill bit', 'hand tool', 'fixtures', 'catalogue',
+    # The material sense of "metal". Two metal-detecting videos were only being
+    # refused because 'scrap' happened to appear inside a longer word in their
+    # descriptions; with word boundaries they came out as rock / metal.
+    'detectorist', 'metal detector', 'oxydation', 'oxidation',
 ]
+# Kept for callers that only want the list.
+NON_MUSIC_MARKERS = NON_MUSIC_STEMS + NON_MUSIC_WORDS
+
+
+def _non_music(text: str) -> bool:
+    """Whether the text reads as a workshop or catalogue rather than a piece of music."""
+    if any(stem in text for stem in NON_MUSIC_STEMS):
+        return True
+    return any(_phrase_pattern(word).search(text) for word in NON_MUSIC_WORDS)
 
 
 def _phrase_pattern(phrase: str) -> re.Pattern:
@@ -496,7 +516,7 @@ class MusicGenreModel:
         if not any(
             re.search(r'(?<![a-z0-9])' + re.escape(cue) + r's?(?![a-z0-9])', text)
             for cue in strong_cues
-        ) and any(marker in text for marker in NON_MUSIC_MARKERS):
+        ) and _non_music(text):
             return None
 
         confidence = best_score / (best_score + 0.4 * runner_up + 1.0)

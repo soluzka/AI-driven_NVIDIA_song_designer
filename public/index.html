@@ -8591,8 +8591,17 @@
             if (!fitSong) {
                 return 'No song open: fitting to a neutral A minor, 110 BPM. Open a card\u2019s Remix panel first for a closer fit.';
             }
-            return 'Fitting to ' + fitSong.title + ' \u00b7 ' + (fitSong.genre || 'unclassified') +
-                ' \u00b7 ' + fitSong.key + ' \u00b7 ' + fitSong.tempo;
+            // The key is the remix's proposal, not something the listing said, and a
+            // listing with no genre gets the neutral key. Both used to be printed as
+            // though the song had declared them - "unclassified \u00b7 A minor" beside a
+            // video that says neither.
+            const genre = fitSong.genre || 'unclassified (the listing names no genre)';
+            const fitted = window._fitForSong;
+            const stale = fitted && fitted !== fitSong.title
+                ? ' \u2014 the take on hand was fitted to ' + fitted + '; record again for this one'
+                : '';
+            return 'Fitting to ' + fitSong.title + ' \u00b7 ' + genre + ' \u00b7 ' + fitSong.key +
+                ' (proposed: the listing gives no key) \u00b7 ' + fitSong.tempo + stale;
         }
 
         function fitProfileFor(name) {
@@ -8767,6 +8776,22 @@
             return folded[Math.floor(folded.length / 2)];
         }
 
+        // A two-pole lowpass, used only before a faster read. Reading a phrase faster
+        // folds everything above the new Nyquist back down as grit, and a voice carries
+        // sibilance up there to fold. A downward shift reads slower and cannot alias.
+        function fitAntiAlias(samples, rate, cutoff) {
+            const out = new Float32Array(samples.length);
+            const k = 1 - Math.exp(-2 * Math.PI * Math.min(cutoff, rate * 0.45) / rate);
+            let first = 0;
+            let second = 0;
+            for (let i = 0; i < samples.length; i++) {
+                first += (samples[i] - first) * k;
+                second += (first - second) * k;
+                out[i] = second;
+            }
+            return out;
+        }
+
         function fitResample(samples, ratio) {
             const length = Math.max(1, Math.floor(samples.length / ratio));
             const out = new Float32Array(length);
@@ -8823,10 +8848,18 @@
         // held note. Each bin here advances by its own measured frequency instead, so
         // the pitch is exactly what the resampled audio carries and there are no
         // splices at all.
-        function fitStretch(samples, factor, targetLength) {
+        function fitStretch(samples, factor, targetLength, rate = 44100) {
             const frame = 2048;
             const half = frame >> 1;
             const analysisHop = 512;
+            // Nothing below 45 Hz belongs to a voice, and a vocoder will build it
+            // anyway: the lowest bins drift against each other and beat, which is the
+            // rumble heard under the fitted phrase. Measured on the voice reference, a
+            // half-semitone shift put 5 dB more energy into 60-120 Hz than the resampled
+            // audio carried. These bins are dropped before they are summed.
+            // A bin is rate/frame hertz, so 45 Hz is 45 frames per rate - about two bins
+            // at 44.1 kHz with this window.
+            const lowBin = Math.max(1, Math.round(45 * frame / rate));
             if (samples.length < frame * 2 || targetLength < frame) {
                 // Too short to frame: hold the pitch, fit the length by repeating the
                 // samples there are, which is shorter than a syllable either way.
@@ -8863,7 +8896,7 @@
                 }
                 fitFft(re, im, false);
                 for (let k = 0; k <= half; k++) {
-                    magnitude[k] = Math.hypot(re[k], im[k]);
+                    magnitude[k] = k < lowBin ? 0 : Math.hypot(re[k], im[k]);
                     phase[k] = Math.atan2(im[k], re[k]);
                 }
                 // Identity phase locking. Advancing every bin by its own measured
@@ -8950,11 +8983,12 @@
 
         // Pitch shift with the length kept: resampling does the pitch and the
         // stretch puts the phrase back to its original duration.
-        function fitShift(samples, semitones) {
+        function fitShift(samples, semitones, rate = 44100) {
             if (!semitones) return samples.slice();
             const ratio = Math.pow(2, semitones / 12);
-            const resampled = fitResample(samples, ratio);
-            return fitStretch(resampled, samples.length / resampled.length, samples.length);
+            const source = ratio > 1.0001 ? fitAntiAlias(samples, rate, 0.45 * rate / ratio) : samples;
+            const resampled = fitResample(source, ratio);
+            return fitStretch(resampled, source.length / resampled.length, samples.length, rate);
         }
 
         // How loud the room arrives, as the sqrt of the impulse's power: 0.14 puts
@@ -9026,9 +9060,14 @@
             buffer.copyToChannel(shifted, 0);
             source.buffer = buffer;
 
+            // Q 0.54 is the flat half of a two-pole cascade: two highpasses at the
+            // default Q of 1 put a 6 dB bump right at the corner, which is 90-120 Hz
+            // on the neutral profile - heard as rumble, and the very thing the filter
+            // was added to remove.
             const high = ctx.createBiquadFilter();
             high.type = 'highpass';
             high.frequency.value = profile.hp;
+            high.Q.value = 0.54;
             const low = ctx.createBiquadFilter();
             low.type = 'lowpass';
             low.frequency.value = profile.lp;
@@ -9080,7 +9119,15 @@
             const echoWet = ctx.createGain();
             echoWet.gain.value = profile.echo;
 
-            source.connect(high).connect(low).connect(presence).connect(shaper).connect(comp);
+            // Two highpasses, so the slope is 24 dB/octave rather than 12: what is
+            // left under the voice at the profile's corner reads as rumble once the
+            // compressor lifts it, and one pole is not enough to be rid of it.
+            const highAgain = ctx.createBiquadFilter();
+            highAgain.type = 'highpass';
+            highAgain.frequency.value = profile.hp;
+            highAgain.Q.value = 0.54;
+
+            source.connect(highAgain).connect(high).connect(low).connect(presence).connect(shaper).connect(comp);
             comp.connect(body).connect(presenceTrim);
             presenceTrim.connect(dry).connect(ctx.destination);
             presenceTrim.connect(room).connect(wet).connect(ctx.destination);
@@ -9256,6 +9303,10 @@
                 const rendered = await fitRender(raw, profile, semitones);
                 if (fit.url) URL.revokeObjectURL(fit.url);
                 fit.result = rendered;
+                // Which song this take belongs to. Clicking another card used to move
+                // the target line while the phrase on hand stayed fitted to the first
+                // song, so the other cards looked like they had never been fitted.
+                window._fitForSong = fitSong ? fitSong.title : '';
                 // Kept as numbers, not just baked into the phrase: the model sings
                 // its own take on the words, so the same map has to be sent with
                 // the job or the sung vocal lands in no relation to the song.

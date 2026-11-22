@@ -715,6 +715,15 @@ back in the key and tone of the song the page has open. A card's **Remix** panel
 makes that card the target; with nothing open it fits to a neutral A minor at
 110 BPM.
 
+The target line says what is known and what is assumed. A listing the model cannot
+classify reads `unclassified (the listing names no genre)`, and the key is marked
+`(proposed: the listing gives no key)` because the remix proposes it from the
+style — the page used to print `unclassified · A minor` beside a video that said
+neither, as though the song had declared both. A take also remembers which song it
+was fitted to and says so when another card is opened: clicking through several
+remix cards used to move the target line while the phrase on hand stayed fitted to
+the first song, so the other cards looked like they had never been fitted at all.
+
 All of it runs in the tab — no model, no upload, and the words are never read:
 only the sound is moved and shaped.
 
@@ -768,6 +777,21 @@ only the sound is moved and shaped.
    against 2.3 dB for the unshifted recording. The shift itself is fractional, not
    whole semitones, and the pitch estimate is refined between samples, so a phrase
    sung 44 cents flat is moved 44 cents rather than being left where it was.
+
+   The low end needed its own work. A vocoder builds energy where the phrase has
+   none — the lowest bins drift against each other and beat, which is heard as
+   rumble — and the tone chain added to it. Measured on the voice reference at a
+   half-semitone shift, everything under 60 Hz sat at -33.2 dB of the total, *above*
+   the -33.5 dB of the dry take. Three changes: bins below 45 Hz are zeroed before
+   they are summed (nothing in a voice lives there), the two highpasses in the tone
+   chain run at Q 0.54 instead of Web Audio's default 1 — two cascaded corners at
+   Q 1 put a 6 dB bump at 90-120 Hz, which is rumble made by the filter meant to
+   remove it — and a two-pole lowpass sits in front of an upward resample so
+   sibilance cannot fold back down as grit. Measured again: the vocoder's output
+   under 60 Hz went from -33.2 dB to -51.1 dB, and the full neutral chain now sits
+   at -36.3 dB under 60 Hz against -33.5 dB for the dry take. The 60-120 Hz band is
+   still about 5 dB above the dry take at a small shift; that is window smear, not
+   rumble.
 
    What this cannot fix: the whole phrase is moved by one number, its median. A
    sung melody wanders - the reference's frames span roughly 130-150 Hz - so its

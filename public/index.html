@@ -9323,7 +9323,12 @@
             // (-30.3) because the products were still above the split. At 400 Hz the band
             // falls to -58.2 dB at 0 semitones and -55.3 at -5, while a 110 Hz fundamental
             // keeps its own band (-0.1 dB): only what is above the split is shaped.
-            const splitAt = Number(profile.split) || 400;
+            // A split of 0 is a real request (drive the whole signal), so it cannot be
+            // written as `Number(profile.split) || 400` - that turned it back into 400 and
+            // made the broken chain the self test checks against look fixed.
+            const splitAt = profile.split === undefined || !Number.isFinite(Number(profile.split))
+                ? 400
+                : Number(profile.split);
             const driveHigh = ctx.createBiquadFilter();
             driveHigh.type = 'highpass';
             driveHigh.frequency.value = splitAt;
@@ -9418,6 +9423,75 @@
                 for (let i = 0; i < data.length; i++) data[i] *= trim;
             }
             return rendered;
+        }
+
+        // The low-end self test. It renders a test tone through the real chain - the same
+        // fitRender the panel uses - and reports the energy in fixed bands, so a change to
+        // the filters or the drive that brings the rumble back fails
+        // tools/check_fit_low_end.py instead of being noticed by ear months later. The
+        // query parameters exist so the check can be run against a deliberately broken
+        // chain (?fittest=1&split=0 puts the drive back over the whole signal) and confirm
+        // that it does fail.
+        window.fitSelfTest = async function fitSelfTest(overrides = {}) {
+            const RATE = 44100, SECONDS = 1.2, N = 16384;
+            const bands = [[0, 40], [40, 80], [80, 120], [120, 250], [250, 2000], [2000, 8000]];
+            const envelope = t => Math.min(1, t * 40) * Math.min(1, (SECONDS - t) * 40);
+            const tone = (fn) => {
+                const ctx = new OfflineAudioContext(1, Math.floor(RATE * SECONDS), RATE);
+                const buffer = ctx.createBuffer(1, Math.floor(RATE * SECONDS), RATE);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < data.length; i++) data[i] = fn(i / RATE);
+                return buffer;
+            };
+            const spectrum = (samples) => {
+                const re = new Float32Array(N), im = new Float32Array(N);
+                for (let i = 0; i < N; i++) {
+                    re[i] = (samples[20000 + i] || 0) * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / N));
+                }
+                fitFft(re, im, false);
+                const power = [];
+                for (let k = 0; k < N / 2; k++) power.push(re[k] * re[k] + im[k] * im[k]);
+                const total = power.reduce((a, b) => a + b, 0) || 1e-12;
+                return bands.map(([lo, hi]) => {
+                    const a = Math.round(lo * N / RATE), b = Math.max(a + 1, Math.round(hi * N / RATE));
+                    let sum = 0;
+                    for (let k = a; k < b; k++) sum += power[k];
+                    return +(10 * Math.log10(sum / total)).toFixed(1);
+                });
+            };
+            const intermod = tone(t => 0.3 * envelope(t) * (Math.sin(2 * Math.PI * 220 * t) + 0.4 * Math.sin(2 * Math.PI * 1000 * t)));
+            const lowVoice = tone(t => 0.3 * envelope(t) * (Math.sin(2 * Math.PI * 110 * t) + 0.3 * Math.sin(2 * Math.PI * 220 * t)));
+            const cases = [
+                ['neutral 0 st', intermod, 0, { ...FIT_NEUTRAL, ...overrides }],
+                ['neutral -5 st', intermod, -5, { ...FIT_NEUTRAL, ...overrides }],
+                ['dub -5 st', intermod, -5, { ...FIT_PROFILES.dub, ...overrides }],
+                ['low voice 110 Hz', lowVoice, 0, { ...FIT_NEUTRAL, ...overrides }],
+            ];
+            const rows = [];
+            for (const [label, buffer, semitones, profile] of cases) {
+                const out = await fitRender(buffer, profile, semitones);
+                rows.push({ label, bands: spectrum(out.getChannelData(0)) });
+            }
+            return { rate: RATE, bands: bands.map(b => b.join('-')), rows };
+        };
+
+        // Opened as ?fittest=1 the page runs it and writes the answer where a headless
+        // browser's --dump-dom can be read: the title and a <pre>.
+        if (/[?&]fittest=1/.test(location.search)) {
+            const params = new URLSearchParams(location.search);
+            const overrides = {};
+            if (params.has('split')) overrides.split = Number(params.get('split'));
+            if (params.has('drive')) overrides.drive = Number(params.get('drive'));
+            window.fitSelfTest(overrides).then(result => {
+                const text = 'FITTEST ' + JSON.stringify(result);
+                document.title = text;
+                const pre = document.createElement('pre');
+                pre.id = 'fittest';
+                pre.textContent = text;
+                document.body.appendChild(pre);
+            }).catch(err => {
+                document.title = 'FITTEST-ERROR ' + (err && err.message ? err.message : err);
+            });
         }
 
         const fit = { stream: null, recorder: null, chunks: [], result: null, url: null, busy: false, timer: 0 };

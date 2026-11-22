@@ -8677,15 +8677,12 @@
         function fitStretch(samples, factor, targetLength) {
             const grain = 2048;
             const hop = grain >> 2;
-            // A quarter hop, not the whole hop. Four grains overlap, and the search
-            // is only against the grain before it; one that wanders a full hop away
-            // (11.6 ms) lands a pitch period or more out of phase with the two older
-            // grains still underneath it, and the four sum with a beat at the hop
-            // rate - heard as an interference rattle under the whole fitted phrase.
-            // Bounded, they stay within about half a period of each other: measured
-            // on a real 2.5 s reference, the modulation at 86 Hz falls from
-            // 20.9/19.0/11.7 dB to 15.0/14.3/3.1 dB for +3/-3/+5 semitones.
-            const search = hop >> 2;
+            // An eighth of a hop, not the whole hop. Four grains overlap, and one that
+            // wanders a whole hop away lands a pitch period or more out of phase with
+            // the three still underneath it, and they sum with a beat at the hop rate -
+            // an interference under the fitted phrase. At this bound the grains stay
+            // within 1.45 ms of each other, under a period even at 300 Hz.
+            const search = hop >> 3;
             const out = new Float32Array(targetLength);
             const win = new Float32Array(grain);
             for (let i = 0; i < grain; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / grain);
@@ -8693,7 +8690,7 @@
             for (let pos = 0; pos < targetLength; pos += hop) {
                 const ideal = Math.round(pos / factor);
                 let chosen = ideal;
-                if (previous >= 0) {
+                if (pos > 0) {
                     let bestScore = -Infinity;
                     const from = Math.max(0, ideal - search);
                     const to = Math.min(samples.length - grain - 1, ideal + search);

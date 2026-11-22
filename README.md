@@ -715,13 +715,21 @@ only the sound is moved and shaped.
    every sample (a quarter-grain hop): at half overlap the splice between grains
    is left bare, and on a held note it flutters at the grain rate, which is the
    rattle heard when a fitted phrase is played back. The position search that
-   keeps the grains continuous is bounded to a quarter hop: a grain allowed to
-   wander a whole hop (11.6 ms) lands a pitch period or more out of phase with
-   the older grains still underneath it, and the four sum with a beat at the hop
-   rate - the interference under the whole phrase. Measured on a real 2.5 s
-   reference, the 86 Hz modulation added by a shift falls from 20.9/19.0/11.7 dB
-   to 15.0/14.3/3.1 dB for +3/-3/+5 semitones, against a 12.1 dB floor that the
-   reference's own syllables put there.
+   keeps the grains continuous is bounded to an eighth of a hop: a grain allowed
+   to wander a whole hop (11.6 ms) lands a pitch period or more out of phase with
+   the three older grains still underneath it, and the four sum with a beat at the
+   hop rate - interference under the whole phrase. Bounded, the grains stay within
+   1.45 ms of each other, under a period even at 300 Hz.
+
+   Measured on the service's own 2.5 s voice reference, the 86 Hz modulation a
+   shift adds falls from 20.9/19.0/11.7 dB over the clip's own level to
+   15.0/14.3/3.1 dB at +3/-3/+5 semitones. On 40 s of real singing, measured as
+   the median hop-rate modulation per 1.5 s window (the stabler of the two
+   measures, and the one that covers the ±7 limit), a shift leaves at most 2 dB
+   over the recording's own modulation at that rate: -0.3/4.2/2.9 dB at +3/+5/+7
+   against a 2.3 dB floor, 1.2/1.0/0.8 dB at -3/-5/-7. Two things this does not
+   settle: those 2 dB are inside the measurement's own spread, and the fix has
+   not been checked by ear.
 2. **Tone.** Per-genre filters, drive, room and a half-beat echo: `dub` and
    `ambient` are mostly space, `trap` and `riddim` almost none, `lo-fi` is a 4.2
    kHz ceiling, `trance` and `house` keep the top end. The profile table is

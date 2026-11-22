@@ -273,23 +273,12 @@ in the browser when the service is not running. It also stops asking the Worker
 for the song model after the first 501, so a compose goes straight to the machine
 that can actually render.
 
-That band's electric guitars go through a bit-crush before the drive bus:
-`GUITAR_CRUSH_STEP`, one shaper curve on the guitar parts' own path into the band.
-The grid is an absolute 1/32 rather than a bit count over full scale, because the
-sampled parts arrive at about 0.15 of full scale and a four-bit curve over the
-whole scale would put a chord on two steps. Measured on the `distortion_guitar`
-sample, the part's energy above 6 kHz rises from 0.204 to 0.266 of its RMS, and on
-a metal bounce from 0.201 to 0.264, with the peak unchanged at 0.94 and nothing
-clipped; the bounce's RMS drops 1.5 dB, because the crushed peaks make the master
-compressor work harder for the same peak. The clean steel-string parts are left
-out: a country or reggae arrangement with an acoustic guitar renders bit-identical
-with the crush on or off.
-
-The step size is the whole trade, measured on the same seeded bounce. 1/64 (about
-5 bits at the level the parts arrive at) is 2.3% THD on a held note, +18% top end
-and 0.5 dB of level; 1/32 is 4.8%, +31% and 1.5 dB; 1/16 is 14.3%, +31% and 5 dB.
-The coarse end buys no extra top end over 1/32 and costs three times the level, so
-1/32 is the widest crush that still earns what it costs.
+That band's guitars are the one part that was tried with a bit-crush and taken back
+out. A quantising shaper on the electric parts raised the share of the bounce above
+6 kHz from 0.041 to 0.070 and above 12 kHz from 0.0047 to 0.011, heard as an
+interference rattle under the whole song rather than as grit; oversampling at 2x
+and a low-pass after the shaper both left that alias band in place, so the crush is
+gone rather than turned down.
 
 ### Installing the AI packages
 

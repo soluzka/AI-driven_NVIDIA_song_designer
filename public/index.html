@@ -2531,32 +2531,6 @@
             src.stop(time + 0.3);
         }
 
-        // The bit-crush on the electric guitars: the amplitude quantised to a grid,
-        // which is the lo-fi grit. The grid is named in absolute steps because the
-        // sampled parts arrive at about 0.15 of full scale - a four-bit curve over
-        // the full scale would put a whole chord on two steps - so 1/32 is about
-        // five steps across a chord. A shaper curve costs nothing per sample and
-        // behaves the same in the offline render.
-        const GUITAR_CRUSH_STEP = 1 / 32;
-
-        function crushCurve(step) {
-            const size = 4096;
-            const curve = new Float32Array(size);
-            for (let i = 0; i < size; i++) {
-                const x = (i / (size - 1)) * 2 - 1;
-                curve[i] = Math.round(x / step) * step;
-            }
-            return curve;
-        }
-
-        function isGuitar(name) {
-            const text = String(name || '');
-            // The clean steel-string parts stay out of it: crushing an acoustic
-            // strum in a country or reggae arrangement is grit the genre did not
-            // ask for, and those voices already carry their own top end.
-            return /guitar/i.test(text) && !/acoustic/i.test(text);
-        }
-
         // A soft-clipping curve whose amount sets how hard the band is pushed:
         // a little for pop, a lot for industrial.
         function distortionCurve(amount) {
@@ -3550,15 +3524,6 @@
                 musicBus.connect(master);
             }
 
-            // The electric guitars come in through here on their way to the band, so
-            // the grit lands on them alone: the bass and the drums are on `master`
-            // and everything else on `musicBus`.
-            const crusher = offline.createWaveShaper();
-            crusher.curve = crushCurve(GUITAR_CRUSH_STEP);
-            // No oversampling: 2x would smooth the steps straight back out.
-            crusher.oversample = 'none';
-            crusher.connect(musicBus);
-
             const reverb = offline.createConvolver();
             reverb.buffer = roomImpulse(offline, 1.5, 2.6);
             const reverbReturn = offline.createGain();
@@ -3655,11 +3620,9 @@
                             const leadFreq = root * 4 * Math.pow(2, motif / 12);
                             const leadVoice = bank[band.lead] || bank.acoustic_grand_piano;
                             const leadDur = leadMode === 1 ? barSeconds * 0.45 : 0.46;
-                            // A guitar lead goes through the crush with the chords.
-                            const leadDest = isGuitar(band.lead) ? crusher : musicBus;
-                            const plucked = playSample(offline, leadDest, leadVoice,
+                            const plucked = playSample(offline, musicBus, leadVoice,
                                 midiOf(leadFreq), time, leadDur, 0.19, { attack: 0.004, lowpass: 5200 });
-                            if (!plucked) voiceLead(offline, leadDest, time, leadFreq, leadDur * 0.55);
+                            if (!plucked) voiceLead(offline, musicBus, time, leadFreq, leadDur * 0.55);
                         }
                         // A fill at the end of every fourth bar, so the sections turn over.
                         if (bar % 4 === 3 && fills[bar % 64] !== -1 && section.energy > 0.6) {
@@ -3672,10 +3635,9 @@
                     const comp = bank[band.comp] || bank.acoustic_grand_piano;
                     // Heavy families voice chords as fifths, not triads.
                     const compOffsets = (fx.drive || 0) > 0.35 ? [0, 5] : [0, 3];
-                    const compDest = isGuitar(band.comp) ? crusher : musicBus;
                     compOffsets.forEach((offset, index) => {
                         const chordFreq = root * 2 * Math.pow(2, (degree + offset) / 12);
-                        playSample(offline, compDest, comp, midiOf(chordFreq),
+                        playSample(offline, musicBus, comp, midiOf(chordFreq),
                             barTime + index * barSeconds * 0.5, barSeconds * 0.62, 0.15,
                             { attack: 0.01, lowpass: (fx.drive || 0) > 0.35 ? 3000 : 3600 });
                     });

@@ -458,6 +458,75 @@ def _env_int(name: str, default: int, minimum: int) -> int:
 # index grow toward what you actually search for, at the cost of slower
 # searches; override with SCRAPE_DEPTH / DAILYMOTION_DEPTH when needed.
 SCRAPE_DEPTH = _env_int('SCRAPE_DEPTH', 200, 25)
+
+_YOUTUBE_VIDEO_ID = re.compile(r'"videoId":"([a-zA-Z0-9_-]{11})"')
+_YOUTUBE_TITLE_PATTERNS = (
+    re.compile(r'"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.)+)"'),
+    re.compile(r'"title":\{"simpleText":"((?:[^"\\]|\\.)+)"'),
+)
+_YOUTUBE_SNIPPET = re.compile(r'"snippetText":\{"runs":\[\{"text":"((?:[^"\\]|\\.)+)"')
+
+
+def _unescape_text(text: str) -> str:
+    """Undo the JSON escapes YouTube leaves in its inline page data."""
+    if not text:
+        return ''
+    try:
+        return json.loads('"%s"' % text.replace('"', '\\"'))
+    except Exception:
+        return text.replace('\\"', '"').replace('\\/', '/')
+
+
+def _youtube_results(html_text: str, limit: int, platform: str) -> List[Dict]:
+    """Read a YouTube search page one video block at a time.
+
+    The page used to be read as three flat lists (ids, titles, durations) zipped by
+    position, which paired a title from one shelf with an id from another and, whenever
+    YouTube's markup changed shape, left every row "Untitled Video" - and still stored it.
+    A block with no title to read is skipped instead: a row with no words cannot be
+    searched, labelled or routed, and keeping it only makes the index look larger than it is.
+    """
+    blocks = html_text.split('"videoRenderer":')[1:]
+    if not blocks:
+        blocks = ['"videoId":"' + part for part in html_text.split('"videoId":"')[1:]]
+
+    results: List[Dict] = []
+    seen = set()
+    for block in blocks:
+        if len(results) >= limit:
+            break
+        id_match = _YOUTUBE_VIDEO_ID.search(block)
+        if not id_match or id_match.group(1) in seen:
+            continue
+        title = ''
+        for pattern in _YOUTUBE_TITLE_PATTERNS:
+            title_match = pattern.search(block)
+            if title_match:
+                title = _unescape_text(title_match.group(1)).strip()
+                break
+        if not title:
+            continue
+        seen.add(id_match.group(1))
+
+        snippet = _YOUTUBE_SNIPPET.search(block)
+        description = _unescape_text(snippet.group(1)).strip() if snippet else ''
+        duration = 'Unknown'
+        duration_match = (re.search(r'"lengthText":\{"(?:simpleText|accessibility)":\{"simpleText":"([0-9:]+)"', block)
+                          or re.search(r'"simpleText":"([0-9:]+)"', block))
+        if duration_match:
+            duration = duration_match.group(1)
+
+        results.append({
+            'url': f'https://www.youtube.com/watch?v={id_match.group(1)}',
+            'title': title,
+            'description': description or f'YouTube video: {title}',
+            'thumbnail': f'https://i.ytimg.com/vi/{id_match.group(1)}/hqdefault.jpg',
+            'duration': duration,
+            'source': platform,
+            'platform': platform,
+            'tags': '',
+        })
+    return results
 DAILYMOTION_DEPTH = _env_int('DAILYMOTION_DEPTH', 200, 50)
 DISCOVERY_TIMEOUT_DEFAULT = float(os.environ.get('DISCOVERY_TIMEOUT', 75))
 
@@ -641,34 +710,10 @@ class VideoScraper:
                         return results
                     html_text = await response.text()
 
-            # Extract video IDs using regex (YouTube embeds data in JSON)
-            video_ids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', html_text)
-            video_titles = re.findall(r'"title":{"runs":\[{"text":"([^"]+)"}]}', html_text)
-            video_durations = re.findall(r'"simpleText":"([0-9:]+)"', html_text)
-
-            seen = set()
-            for i, vid_id in enumerate(video_ids):
-                if vid_id in seen or len(results) >= SCRAPE_DEPTH:
-                    continue
-                seen.add(vid_id)
-
-                title = video_titles[i] if i < len(video_titles) else 'Untitled Video'
-                duration = video_durations[i] if i < len(video_durations) else 'Unknown'
-
-                results.append({
-                    'url': f'https://www.youtube.com/watch?v={vid_id}',
-                    'title': title,
-                    'description': f'YouTube video: {title}',
-                    'thumbnail': f'https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg',
-                    'duration': duration,
-                    'source': 'YouTube',
-                    'platform': 'YouTube',
-                })
-
-                if socketio:
-                    socketio.emit('new_result', {
-                        'result': results[-1]
-                    })
+            results = _youtube_results(html_text, SCRAPE_DEPTH, 'YouTube')
+            if socketio:
+                for result in results:
+                    socketio.emit('new_result', {'result': result})
 
         except Exception as e:
             logger.error(f'YouTube search error: {e}')
@@ -687,30 +732,10 @@ class VideoScraper:
                         return results
                     html_text = await response.text()
 
-            video_ids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', html_text)
-            video_titles = re.findall(r'"title":"([^"]+)"', html_text)
-
-            seen = set()
-            for i, vid_id in enumerate(video_ids):
-                if vid_id in seen or len(results) >= SCRAPE_DEPTH:
-                    continue
-                seen.add(vid_id)
-
-                title = video_titles[i] if i < len(video_titles) else 'Untitled Video'
-                results.append({
-                    'url': f'https://www.youtube.com/watch?v={vid_id}',
-                    'title': title,
-                    'description': f'YouTube video: {title}',
-                    'thumbnail': f'https://i.ytimg.com/vi/{vid_id}/hqdefault.jpg',
-                    'duration': 'Unknown',
-                    'source': 'YouTube',
-                    'platform': 'YouTube',
-                })
-
-                if socketio:
-                    socketio.emit('new_result', {
-                        'result': results[-1]
-                    })
+            results = _youtube_results(html_text, SCRAPE_DEPTH, 'YouTube')
+            if socketio:
+                for result in results:
+                    socketio.emit('new_result', {'result': result})
 
         except Exception as e:
             logger.error(f'YouTube Mobile search error: {e}')
@@ -1196,6 +1221,7 @@ class DiscoveryAgent:
                     duration=r.get('duration', 'Unknown'),
                     source=r.get('source', 'Unknown'),
                     platform=r.get('platform', 'Unknown'),
+                    tags=r.get('tags', ''),
                 ):
                     added += 1
                     added_urls.add(r['url'])
@@ -1551,6 +1577,7 @@ def setup_routes(app, socketio):
                         duration=r.get('duration', 'Unknown'),
                         source=r.get('source', 'Unknown'),
                         platform=r.get('platform', 'Unknown'),
+                        tags=r.get('tags', ''),
                     ):
                         added += 1
 
@@ -1741,6 +1768,7 @@ def setup_routes(app, socketio):
                         duration=r.get('duration', 'Unknown'),
                         source=r.get('source', 'Unknown'),
                         platform=r.get('platform', 'Unknown'),
+                        tags=r.get('tags', ''),
                     ):
                         added += 1
 

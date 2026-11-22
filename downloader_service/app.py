@@ -359,6 +359,7 @@ def _video_entries(info) -> list:
             'thumbnail': _best_thumbnail(entry),
             'duration': _clock(entry.get('duration')),
             'source': entry.get('ie_key') or 'YouTube',
+            'tags': str(tags)[:200],
             'genre': _genre_of(title[:300], description, str(tags)[:200]),
         })
     return videos

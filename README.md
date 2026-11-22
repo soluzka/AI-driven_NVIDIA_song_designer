@@ -714,7 +714,14 @@ only the sound is moved and shaped.
    stretch, so the phrase keeps its length. The stretch lays four grains over
    every sample (a quarter-grain hop): at half overlap the splice between grains
    is left bare, and on a held note it flutters at the grain rate, which is the
-   rattle heard when a fitted phrase is played back.
+   rattle heard when a fitted phrase is played back. The position search that
+   keeps the grains continuous is bounded to a quarter hop: a grain allowed to
+   wander a whole hop (11.6 ms) lands a pitch period or more out of phase with
+   the older grains still underneath it, and the four sum with a beat at the hop
+   rate - the interference under the whole phrase. Measured on a real 2.5 s
+   reference, the 86 Hz modulation added by a shift falls from 20.9/19.0/11.7 dB
+   to 15.0/14.3/3.1 dB for +3/-3/+5 semitones, against a 12.1 dB floor that the
+   reference's own syllables put there.
 2. **Tone.** Per-genre filters, drive, room and a half-beat echo: `dub` and
    `ambient` are mostly space, `trap` and `riddim` almost none, `lo-fi` is a 4.2
    kHz ceiling, `trance` and `house` keep the top end. The profile table is

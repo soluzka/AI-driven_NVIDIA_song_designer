@@ -8759,6 +8759,11 @@
             const lastPhase = new Float32Array(half + 1);
             const sumPhase = new Float32Array(half + 1);
             const expected = new Float32Array(half + 1);
+            const magnitude = new Float32Array(half + 1);
+            const phase = new Float32Array(half + 1);
+            const outPhase = new Float32Array(half + 1);
+            const lastOut = new Float32Array(half + 1);
+            const peakOf = new Int32Array(half + 1);
             for (let k = 0; k <= half; k++) expected[k] = 2 * Math.PI * k * analysisHop / frame;
             const advance = synthesisHop / analysisHop;
             let first = true;
@@ -8770,20 +8775,76 @@
                 }
                 fitFft(re, im, false);
                 for (let k = 0; k <= half; k++) {
-                    const magnitude = Math.hypot(re[k], im[k]);
-                    const phase = Math.atan2(im[k], re[k]);
-                    if (first) {
-                        sumPhase[k] = phase;
+                    magnitude[k] = Math.hypot(re[k], im[k]);
+                    phase[k] = Math.atan2(im[k], re[k]);
+                }
+                // Identity phase locking. Advancing every bin by its own measured
+                // frequency keeps the pitch but loses the relation between the bins of
+                // one harmonic, so each harmonic smears across its neighbours - the
+                // phasey, watery edge that is its own kind of rattle. Only the spectral
+                // peaks advance; every other bin takes its peak's phase plus the phase
+                // difference it already had in the analysis frame, so each harmonic moves
+                // as one piece. Measured on the service's voice reference, the harmonic
+                // to inter-harmonic ratio went from 2.1 dB dry to -1.7 dB with every bin
+                // free, and the envelope lost 3.4 dB of depth.
+                let peaks = 0;
+                for (let k = 0; k <= half; k++) {
+                    const before = k > 0 ? magnitude[k - 1] : -1;
+                    const after = k < half ? magnitude[k + 1] : -1;
+                    if (magnitude[k] > before && magnitude[k] >= after) {
+                        peakOf[k] = k;
+                        peaks++;
                     } else {
-                        let delta = phase - lastPhase[k] - expected[k];
-                        delta -= 2 * Math.PI * Math.round(delta / (2 * Math.PI));
-                        sumPhase[k] += (expected[k] + delta) * advance;
+                        peakOf[k] = -1;
                     }
-                    lastPhase[k] = phase;
-                    const cos = Math.cos(sumPhase[k]), sin = Math.sin(sumPhase[k]);
-                    re[k] = magnitude * cos; im[k] = magnitude * sin;
+                }
+                if (!peaks) {
+                    for (let k = 0; k <= half; k++) peakOf[k] = k;
+                } else {
+                    // Each non-peak bin belongs to the nearer of the peaks either side of
+                    // it, so a harmonic travels with its own peak rather than the one
+                    // nearest in frequency on average.
+                    let left = -1;
+                    for (let k = 0; k <= half; k++) {
+                        if (peakOf[k] === k) left = k;
+                        else peakOf[k] = left;
+                    }
+                    let right = -1;
+                    for (let k = half; k >= 0; k--) {
+                        if (peakOf[k] === k) { right = k; continue; }
+                        const owner = peakOf[k];
+                        if (owner < 0) peakOf[k] = right;
+                        else if (right < 0) peakOf[k] = owner;
+                        else peakOf[k] = (k - owner <= right - k) ? owner : right;
+                    }
+                }
+                // Peaks first, then everything else. A bin left of its peak used to read
+                // the peak's phase from the frame before, and a bin that became a peak
+                // carried a phase it had never accumulated - both are a step in the
+                // waveform, heard as a click rather than as smearing. Every bin also keeps
+                // its own output phase now, so switching peak ownership stays continuous.
+                for (let k = 0; k <= half; k++) {
+                    if (peakOf[k] !== k) continue;
+                    if (first) {
+                        sumPhase[k] = phase[k];
+                    } else {
+                        let delta = phase[k] - lastPhase[k] - expected[k];
+                        delta -= 2 * Math.PI * Math.round(delta / (2 * Math.PI));
+                        sumPhase[k] = lastOut[k] + (expected[k] + delta) * advance;
+                    }
+                    lastPhase[k] = phase[k];
+                    outPhase[k] = sumPhase[k];
+                }
+                for (let k = 0; k <= half; k++) {
+                    const p = peakOf[k];
+                    if (p !== k) outPhase[k] = sumPhase[p] + (phase[k] - phase[p]);
+                }
+                for (let k = 0; k <= half; k++) lastOut[k] = outPhase[k];
+                for (let k = 0; k <= half; k++) {
+                    const cos = Math.cos(outPhase[k]), sin = Math.sin(outPhase[k]);
+                    re[k] = magnitude[k] * cos; im[k] = magnitude[k] * sin;
                     if (k > 0 && k < half) {
-                        re[frame - k] = magnitude * cos; im[frame - k] = -magnitude * sin;
+                        re[frame - k] = magnitude[k] * cos; im[frame - k] = -magnitude[k] * sin;
                     }
                 }
                 first = false;

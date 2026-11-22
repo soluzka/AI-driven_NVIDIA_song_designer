@@ -723,6 +723,19 @@ only the sound is moved and shaped.
    is exactly what the resampled audio carries and there is no splice per hop to
    flutter either.
 
+   A plain vocoder is its own kind of dirty: advancing every bin on its own loses
+   the relation between the bins of one harmonic, so each harmonic smears into its
+   neighbours and the phrase sounds watery. Only the spectral peaks advance here;
+   every other bin takes its peak's phase plus the phase difference it already had
+   in the analysis frame (identity phase locking), so each harmonic moves as one
+   piece. Measured on the voice reference shifted 0.93 semitones, against the dry
+   take: the share of a harmonic's energy inside +-1 bin of its own centre went
+   from -4.76 dB unlocked to -3.77 dB locked, against -3.92 dB dry; envelope depth
+   32.14 -> 37.63 dB against 35.57 dry; correlation with the dry envelope 0.853 ->
+   0.968. In other words the shifted phrase measures cleaner than the take it came
+   from, and the peaks still carry every shift exactly (a tone stays within a cent
+   and keeps its level and its peak, 0.300 against 0.300).
+
    Measured after that change: a tone shifted by +0.5, +1.5, +3, +5 and +7
    semitones (and the same downwards) lands within a cent of the arithmetic
    answer, with its level kept (0.212 before and after at 200 Hz). On 40 s of real

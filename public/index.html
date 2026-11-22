@@ -1957,7 +1957,9 @@
                     duration: video.duration || 'Unknown',
                     source: video.source || 'YouTube',
                     score: 1,
-                    genre: null,
+                    // The downloader names the genre for what its own search found;
+                    // a card with none stays unclassified rather than guessed at.
+                    genre: video.genre || null,
                 }));
                 results.forEach(row => seenLinks.add(String(row.url).toLowerCase()));
 
@@ -2001,7 +2003,7 @@
                     duration: video.duration || 'Unknown',
                     source: video.source || 'YouTube',
                     score: 1,
-                    genre: null,
+                    genre: video.genre || null,
                 });
             });
             return { results: fresh.concat(results), added: fresh.length };
@@ -2180,7 +2182,15 @@
         }
 
         // Words that say nothing about the content; dropped before the theory.
-        const REMIX_NOISE = new Set(['official', 'video', 'audio', 'lyrics', 'lyric', 'hd', 'hq', 'full', 'new', 'the', 'and', 'with', 'from', 'that', 'this', 'for', 'you', 'your', 'feat', 'ft', 'prod', 'remix', 'edit', 'clip', 'music']);
+        const REMIX_NOISE = new Set(['official', 'video', 'audio', 'lyrics', 'lyric', 'hd', 'hq', 'full', 'new', 'the', 'and', 'with', 'from', 'that', 'this', 'for', 'you', 'your', 'feat', 'ft', 'prod', 'remix', 'edit', 'clip', 'music',
+            // Function words. Without these a title like "Midnight Rain has a
+            // bassline" put "has" in the hook and in the card's name, where it reads
+            // as a mistake rather than as a word from the listing.
+            'has', 'have', 'had', 'was', 'were', 'are', 'been', 'being', 'its', 'his', 'her',
+            'they', 'them', 'their', 'our', 'who', 'what', 'when', 'where', 'why', 'how',
+            'not', 'but', 'than', 'then', 'too', 'very', 'just', 'can', 'will', 'would',
+            'could', 'should', 'does', 'did', 'get', 'got', 'all', 'out', 'over', 'into',
+            'about', 'after', 'before', 'more', 'most', 'some', 'any', 'also', 'still']);
 
         // Words for the theory and the hook. The title first, because it is the
         // only part of a listing someone chose deliberately, then the description
@@ -8595,34 +8605,112 @@
             return FIT_NEUTRAL;
         }
 
-        // Octaves are the same note, so the voice is moved to the nearest octave of
-        // the song's root rather than dragged to one exact frequency. A step up
-        // carries the formants with it, and that is what makes a voice come out
-        // sounding like a child, so an upward step is charged two semitones and has
-        // to be clearly smaller than the downward one to win. Equal candidates go
-        // to the lower one.
-        //
-        // The answer is fractional, not whole semitones. Singing sits anywhere on the
-        // grid: a phrase 44 cents flat of the root is a whole semitone away from both
-        // neighbours, so rounding to whole steps left it 44 cents off the song and
-        // beating against it - the "not tuned" sound. The exact shift to the octave
-        // is applied instead, so the phrase lands on the note.
-        function fitSemitones(from, to) {
-            if (!from || !to) return 0;
-            const cents = 12 * Math.log2(to / from);
-            let best = null;
-            let bestScore = Infinity;
-            for (let octave = -1; octave <= 1; octave++) {
-                const shift = cents + 12 * octave;
-                if (Math.abs(shift) > 7) continue;
-                const score = Math.abs(shift) + (shift > 0 ? 2 : 0);
-                if (score < bestScore) {
-                    bestScore = score;
-                    best = shift;
+        // One frame's fundamental: autocorrelation with the peak refined between
+        // samples, which is worth it because the shift is decided in tenths.
+        function fitFramePitch(samples, start, frame, rate) {
+            const minLag = Math.floor(rate / 500);
+            const maxLag = Math.floor(rate / 70);
+            let best = 0;
+            let bestLag = 0;
+            const acf = new Float32Array(maxLag + 2);
+            for (let lag = minLag; lag <= maxLag; lag++) {
+                let sum = 0;
+                for (let i = 0; i < frame - lag; i += 2) sum += samples[start + i] * samples[start + i + lag];
+                acf[lag] = sum;
+                if (sum > best) {
+                    best = sum;
+                    bestLag = lag;
                 }
             }
-            if (best === null) return 0;
-            return Math.round(best * 100) / 100;
+            if (!bestLag) return 0;
+            const left = acf[bestLag - 1] || 0;
+            const right = acf[bestLag + 1] || 0;
+            const curve = left - 2 * best + right;
+            const between = curve ? 0.5 * (left - right) / curve : 0;
+            return rate / (bestLag + Math.max(-0.5, Math.min(0.5, between)));
+        }
+
+        // The pitch classes a phrase sings, as a histogram at a tenth of a semitone,
+        // weighted by how loud each frame is. A frame that reads an octave out - the
+        // usual failure of a pitch tracker on a voice - keeps its class, so this
+        // survives the octave jumps that move a median of hertz by 1200 cents.
+        function fitPitchClasses(samples, rate) {
+            const frame = 2048;
+            const hist = new Float32Array(120);
+            const stride = Math.max(frame, Math.floor(samples.length / 40));
+            for (let start = 0; start + frame <= samples.length; start += stride) {
+                let energy = 0;
+                for (let i = 0; i < frame; i++) energy += samples[start + i] * samples[start + i];
+                const rms = Math.sqrt(energy / frame);
+                if (rms < 1e-3) continue;
+                const f0 = fitFramePitch(samples, start, frame, rate);
+                if (!f0) continue;
+                // Counted from C, which is where KEY_TABLE and the scales below count
+                // from; a histogram counted from A would slide every key by nine.
+                const cls = ((12 * Math.log2(f0 / 440) + 9) % 12 + 12) % 12;
+                hist[Math.round(cls * 10) % 120] += rms;
+            }
+            // Smoothed, so a phrase sitting between two bins has one peak, not two.
+            const smooth = new Float32Array(120);
+            for (let i = 0; i < 120; i++) {
+                let sum = 0;
+                for (let k = -4; k <= 4; k++) {
+                    sum += hist[((i + k) % 120 + 120) % 120] * (5 - Math.abs(k));
+                }
+                smooth[i] = sum;
+            }
+            return smooth;
+        }
+
+        // The song's scale, as a weight per pitch class counted from its root. Used
+        // to check the shift the phrase's own pitch class asks for: a phrase sung in
+        // the key a semitone either side of the song's lands on the scale one step
+        // away, and that off-by-a-semitone reading is what grinds against the chords.
+        // A phrase is a melody, not one note, so the check is on how much of its
+        // sung time lands on the scale rather than on a single frequency.
+        const FIT_SCALES = {
+            minor: [1, 0.3, 1, 1, 0.3, 1, 0.3, 1, 1, 0.3, 1, 0.3],
+            major: [1, 0.3, 1, 0.3, 1, 1, 0.3, 1, 0.3, 1, 0.3, 1],
+        };
+
+        function fitSemitones(hist, key) {
+            const name = String(key || 'A minor').toLowerCase();
+            const letter = (name.match(/[a-g][#b]?/) || ['a'])[0];
+            const root = KEY_TABLE[letter] !== undefined ? KEY_TABLE[letter] : 9;
+            const scale = /major|lydian|ionian|mixolydian/.test(name) ? FIT_SCALES.major : FIT_SCALES.minor;
+            // The class the phrase spends its sung time on, in tenths of a semitone.
+            let peak = 0;
+            for (let bin = 1; bin < 120; bin++) if (hist[bin] > hist[peak]) peak = bin;
+            // Put that class on the song's root. Folded into a sixth either way, so a
+            // phrase a tone below the key moves up two rather than down ten.
+            let base = ((root - peak / 10) % 12 + 12) % 12;
+            if (base > 6) base -= 12;
+            // The share of the phrase's sung time that lands on the song's scale, so
+            // every candidate is comparable and the margin below is a real fraction.
+            const total = hist.reduce((sum, weight) => sum + weight, 0) || 1;
+            const scaleFit = (semis) => {
+                let on = 0;
+                for (let bin = 0; bin < 120; bin++) {
+                    if (!hist[bin]) continue;
+                    const slot = Math.round(bin / 10 + semis) - root;
+                    on += hist[bin] * scale[((slot % 12) + 12) % 12];
+                }
+                return on / total;
+            };
+            // Every nearby shift competes, including none at all. A phrase that
+            // already sings the song's notes - F major against D minor, which are the
+            // same seven - must be left alone, and only the scale check can tell that
+            // from a phrase a semitone out. Leaving it out moved F major down to D
+            // major, which is the grinding the fit is supposed to remove.
+            // The class shift, unless leaving the phrase alone is clearly more in
+            // key. A phrase in the relative major of a minor song is the same seven
+            // notes, and moving its root onto the song's root turns it major against
+            // a minor backing - the grinding this is meant to remove. So the check
+            // can only ever keep the phrase where it is; it never invents a move of
+            // its own, which is what made other versions jump a fourth or a tritone.
+            let best = base;
+            if (Math.abs(base) > 0.05 && scaleFit(0) > scaleFit(base) + 0.06) best = 0;
+            return Math.round(best * 10) / 10;
         }
 
         // Median fundamental of the loudest frames: enough to place a phrase in a
@@ -9158,7 +9246,9 @@
                 const profile = fitProfileFor(fitSong ? fitSong.genre : '');
                 const mono = raw.getChannelData(0);
                 const heard = fitDetectPitch(mono, raw.sampleRate);
-                const semitones = fitSong && heard ? fitSemitones(heard, fitSong.root) : 0;
+                const semitones = fitSong
+                    ? fitSemitones(fitPitchClasses(mono, raw.sampleRate), fitSong.key)
+                    : 0;
                 fitSay('Shaping ' + (heard ? Math.round(heard) + ' Hz' : 'the phrase') + ' into ' +
                     (fitSong ? fitSong.key : 'A minor') + ' with the ' +
                     ((fitSong && fitSong.genre) || 'neutral') + ' tone\u2026');

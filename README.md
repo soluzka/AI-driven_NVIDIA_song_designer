@@ -231,6 +231,16 @@ site are frozen at export time; scraped videos appear there only after running
 the exporter again and redeploying. Genres must be precomputed because the
 browser has no Python to ask.
 
+Live results are labelled by `downloader_service`, which imports the same
+`genre_model.py` and puts a `genre` on every entry `/api/discover` and `/api/top`
+return; the page passes it through instead of dropping it. Before that, every
+card found by a live search arrived with no genre and the fit panel called it
+"unclassified" — 1,542 of the 8,724 rows in the committed index carry a genre,
+so the bundled cards looked labelled while the freshly found ones never did.
+A listing whose words name nothing stays unclassified: the model answers `None`
+rather than guessing, and "Midnight Rain has a bassline" is still `None` while
+"Aggressive Metal Riff in Drop D" is `rock / metal` at 0.77.
+
 ## Songs and lyrics
 
 The song AI is **local only**: ACE-Step is a 3.5B checkpoint that needs CUDA, and
@@ -708,10 +718,24 @@ makes that card the target; with nothing open it fits to a neutral A minor at
 All of it runs in the tab — no model, no upload, and the words are never read:
 only the sound is moved and shaped.
 
-1. **Pitch.** The median fundamental of the phrase is measured, then moved onto
-   the nearest octave of the song's root, so a voice never has to jump an octave
-   to land in the key. Shifting is resample plus a phase-vocoder time stretch, so
-   the phrase keeps its length.
+1. **Pitch.** The phrase is moved into the song's key. What is measured is not its
+   median frequency but **which pitch classes it sings**: a histogram over the
+   phrase at a tenth of a semitone, weighted by how loud each frame is. An octave
+   error in a frame — the usual failure of a pitch tracker on a voice — leaves the
+   class alone, so the histogram survives what a median of hertz does not.
+
+   The class the phrase spends most of its sung time on is shifted onto the song's
+   root, exactly to a tenth of a semitone, and the song's scale can veto that move
+   but never invent one: if leaving the phrase where it is puts more of it on the
+   scale, it is left alone. That case is real — F major and D minor are the same
+   seven notes, and moving F onto D would make the phrase major against a minor
+   backing, which is grinding rather than tuning. Shifting is resample plus a
+   phase-vocoder time stretch, so the phrase keeps its length.
+
+   Measured on synthetic melodies, the chosen shift matches the key change for
+   C# minor to D minor (+1), Eb minor (−1), E minor (−2), B minor (+3) and A major
+   to D major (+5), and is zero for a phrase already in the song's key, for F major
+   into D minor, and for G major into A minor.
 
    The stretch matters more than it looks. It used to copy grains at a fixed hop
    and search for the placement that best continued the previous grain, and that

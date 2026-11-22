@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -38,6 +39,15 @@ from flask import Flask, Response, jsonify, request, send_file, stream_with_cont
 from flask_cors import CORS
 from imageio_ffmpeg import get_ffmpeg_exe
 import yt_dlp
+
+# The genre guess is the model the bundled index is built with, so a card found
+# here and a card read from that index cannot disagree about what a listing is.
+# It is pure standard library, so it runs in this service's smaller venv.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    from genre_model import MusicGenreModel
+except Exception:  # noqa: BLE001 - a missing model must not stop a search
+    MusicGenreModel = None
 
 app = Flask(__name__)
 
@@ -302,6 +312,32 @@ def api_discover():
     return jsonify({'query': query, 'count': len(videos), 'videos': videos})
 
 
+_GENRE_MODEL = None
+
+
+def _genre_model():
+    global _GENRE_MODEL
+    if _GENRE_MODEL is None and MusicGenreModel is not None:
+        _GENRE_MODEL = MusicGenreModel()
+    return _GENRE_MODEL
+
+
+def _genre_of(title: str, description: str = '', tags: str = ''):
+    """The genre this listing names, or None when its words do not name one.
+
+    Without this every card found by a live search arrived with no genre, and the
+    page's fit panel called it "unclassified" - the one thing a listing that says
+    "aggressive metal" in its title is not.
+    """
+    model = _genre_model()
+    if model is None:
+        return None
+    try:
+        return model.infer(title, description, tags)
+    except Exception:  # noqa: BLE001 - a guess must never fail a search
+        return None
+
+
 def _video_entries(info) -> list:
     """Turns yt-dlp's listing entries into the shape the page's cards read."""
     videos = []
@@ -312,13 +348,18 @@ def _video_entries(info) -> list:
         title = (entry.get('title') or '').strip()
         if not link.startswith('http') or not title:
             continue
+        description = (entry.get('description') or '')[:500]
+        tags = entry.get('tags') or []
+        if isinstance(tags, (list, tuple)):
+            tags = ' '.join(str(tag) for tag in tags[:20])
         videos.append({
             'url': link,
             'title': title[:300],
-            'description': (entry.get('description') or '')[:500],
+            'description': description,
             'thumbnail': _best_thumbnail(entry),
             'duration': _clock(entry.get('duration')),
             'source': entry.get('ie_key') or 'YouTube',
+            'genre': _genre_of(title[:300], description, str(tags)[:200]),
         })
     return videos
 

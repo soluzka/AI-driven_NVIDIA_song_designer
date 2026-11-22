@@ -3167,12 +3167,24 @@
             return 440 * Math.pow(2, (semitone - 9) / 12) / 2;
         }
 
+        // The last stage before the bounce, and the only one that can clip: a
+        // WaveShaper reads its curve at |x| = 1 and holds that value for anything
+        // louder, so a curve that is already bending at 0.2 flattens every peak and
+        // the bass squares off. This one is exactly linear up to SOFT_KNEE and only
+        // bends above it, so the level is won by the compressor in front and the
+        // limiter catches what is left.
+        const SOFT_KNEE = 0.85;
+
         function softClipCurve() {
             const size = 2048;
             const curve = new Float32Array(size);
             for (let i = 0; i < size; i++) {
                 const x = (i / (size - 1)) * 2 - 1;
-                curve[i] = Math.tanh(x * 1.35);
+                const level = Math.abs(x);
+                const shaped = level <= SOFT_KNEE
+                    ? level
+                    : SOFT_KNEE + (1 - SOFT_KNEE) * Math.tanh((level - SOFT_KNEE) / (1 - SOFT_KNEE));
+                curve[i] = Math.sign(x) * shaped;
             }
             return curve;
         }
@@ -3404,6 +3416,21 @@
             return true;
         }
 
+        // The four numbers the band's level and grit hang on, in one place.
+        //
+        // DRIVE_RANGE is what a genre's own drive value buys above unity at the
+        // shaper, so `dubstep` (0.45) and `industrial` (0.75) arrive saturated while
+        // `pop` (0.15) and `ambient` (0.05) stay nearly clean. DRIVE_MAKEUP puts the
+        // bus back in its place against the drums after the curve, and the master
+        // compressor - threshold and ratio - is where the rest of the loudness is
+        // won: measured on a bounce, taking it below -20 lifts the whole song a few
+        // dB without touching the limiter that sets the peak.
+        let DRIVE_RANGE = 3;
+        let DRIVE_MAKEUP = 4.5;
+        let MASTER_THRESHOLD = -30;
+        let MASTER_RATIO = 3.2;
+        let MASTER_MAKEUP = 2.2;
+
         async function renderLibrarySong(summary, seed) {
             const sampleRate = 44100;
             const bpm = libraryTempo(summary, seed);
@@ -3457,15 +3484,17 @@
             highpass.type = 'highpass';
             highpass.frequency.value = 32;
             const comp = offline.createDynamicsCompressor();
-            comp.threshold.value = -20;
+            comp.threshold.value = MASTER_THRESHOLD;
             comp.knee.value = 14;
-            comp.ratio.value = 3.2;
+            comp.ratio.value = MASTER_RATIO;
             comp.attack.value = 0.006;
             comp.release.value = 0.2;
             const limiter = offline.createWaveShaper();
             limiter.curve = softClipCurve();
             limiter.oversample = '2x';
-            master.connect(highpass).connect(comp).connect(limiter).connect(offline.destination);
+            const masterMakeup = offline.createGain();
+            masterMakeup.gain.value = MASTER_MAKEUP;
+            master.connect(highpass).connect(comp).connect(masterMakeup).connect(limiter).connect(offline.destination);
 
             // Instrument bus with the effects a finished track has: a room, a
             // delay locked to the tempo, and ducking under the kick.
@@ -3478,17 +3507,18 @@
                 // The curve's slope at zero is k, not one, so a bus wired straight
                 // into it arrived lifted by k / tanh(k) - eleven to twenty-two dB
                 // depending on the genre - and every peak sat on the flat part of
-                // the curve. On the bass that is not drive, it is a square wave:
-                // the rattle heard under the low end. Feeding the stage at that
-                // same slope leaves the quiet part at unity and lets only the peaks
-                // saturate, which is what a drive is.
-                const stage = offline.createGain();
+                // the curve. On the bass that was not drive, it was a square wave.
+                // Feeding it at k's own slope passes the quiet part at unity; what
+                // the genre's drive value buys on top of that is DRIVE_RANGE, so a
+                // heavy family still arrives on the flat part of the curve and a
+                // quiet one barely touches it.
                 const k = 1 + fx.drive * 22;
-                stage.gain.value = Math.tanh(k) / k;
+                const stage = offline.createGain();
+                stage.gain.value = (1 + fx.drive * DRIVE_RANGE) * Math.tanh(k) / k;
                 // Made back up after the curve, so the bus keeps its place against
                 // the drums instead of the drive being a fader in disguise.
                 const makeup = offline.createGain();
-                makeup.gain.value = 3.3;
+                makeup.gain.value = DRIVE_MAKEUP;
                 musicBus.connect(stage).connect(drive).connect(makeup).connect(master);
             } else {
                 musicBus.connect(master);

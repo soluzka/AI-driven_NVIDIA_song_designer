@@ -213,8 +213,22 @@ back with the bed ducked lightly under it (`DUCK_UNDER_VOICE`) and the voice
 `LEAD_DB` above it. Those two numbers are the balance: 0 dB and 20% measured on all
 twelve real renders in the logs and their separated vocals leaves the voice
 1.3-2.4 dB over the music under a word (mean 1.7), with the music dipping 1.6-1.9
-dB; 1.5 dB over a 45% duck measured 2.8-5.1 dB with the music dipping 4.0-5.1 dB,
+dB; 1.5 dB over a 45% duck measured 2.8-3.9 dB with the music dipping 4.0-5.1 dB,
 which buried the song under the lyric.
+
+Re-measure it after any change to the mix with `tools/check_mix_balance.py` at the
+repository root. It reads `build/stems/htdemucs/<song>/{no_vocals,vocals}.wav`,
+which `demucs` writes from a render in this service's logs:
+
+```
+<service-venv-python> -m demucs --two-stems=vocals -n htdemucs -o build/stems logs/song_<id>.wav
+<service-venv-python> tools/check_mix_balance.py
+```
+
+It prints each song's dip and voice height for the current constants and for the
+pair they replaced, and exits nonzero if `_mix_separated` no longer matches the
+arithmetic it checks - which is the signal that the balance has changed and the
+table is no longer describing the service.
 
 `demucs` is installed by this service's `install.py` — it is in `models.json`, so a
 fresh install covers it. The first separation downloads the htdemucs weights

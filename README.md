@@ -755,8 +755,20 @@ timing belong to the song it is singing over:
    on all twelve real renders in the service's logs and their separated vocals,
    that leaves the voice 1.3-2.4 dB over the music under a word (mean 1.7), the
    music dipping 1.6-1.9 dB; at 1.5 dB over a 45% duck the same songs measured
-   2.8-5.1 dB with the music dipping 4.0-5.1 dB, and the song was hard to hear
+   2.8-3.9 dB with the music dipping 4.0-5.1 dB, and the song was hard to hear
    under the lyric.
+
+To re-measure that after any change to the mix, `tools/check_mix_balance.py`
+prints every separated render's figure with the current constants and with the
+pair they replaced, and exits nonzero if the mix no longer matches the service's
+own `_mix_separated`. It reads the stems `demucs` writes, which stay out of the
+repository (`build/*.wav` is ignored), so they are made from the renders in the
+service's logs first:
+
+```
+<service-venv-python> -m demucs --two-stems=vocals -n htdemucs -o build/stems <install>/song_service/logs/song_<id>.wav
+<service-venv-python> tools/check_mix_balance.py            # defaults to build/stems/htdemucs
+```
 
 Your recording is only a measurement: its pitch sets the semitone shift, and the
 Fit voice panel's tone profile sets the low-pass ceiling and the room. Nothing you

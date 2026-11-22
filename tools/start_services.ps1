@@ -502,11 +502,17 @@ if ($NoTunnel) {
         $tunnelUrl = ''
         if (Ensure-TunnelConfig (Join-Path $root 'tools\bin\quick-tunnel.yml')) {
             Remove-Item $tunnelLog -ErrorAction SilentlyContinue
+            # In a window of its own, not hidden. The address the tunnel is given and
+            # the reason it refuses both live in this output, and a hidden process left
+            # "did the tunnel start" as a question nobody could answer from the
+            # launcher's own lines - the stock output ends on the prune messages either
+            # way. The window closes when the tunnel does; tunnel.log still gets the same
+            # lines, so nothing depends on someone watching it.
             Start-Process -FilePath $cloudflared -WorkingDirectory $root -ArgumentList @(
                 'tunnel', '--config', 'tools\bin\quick-tunnel.yml',
                 '--url', 'http://127.0.0.1:8090', '--no-autoupdate',
                 '--logfile', 'tunnel.log', '--loglevel', 'info'
-            ) -WindowStyle Hidden | Out-Null
+            ) -WindowStyle Normal | Out-Null
             Say 'tunnel: starting'
             # The address is read from the log this run opened, so it belongs to the
             # process just started rather than to a tunnel that has already gone.

@@ -2289,7 +2289,10 @@
 
             const bpm = style.bpm + ((seed % 5) - 2);
             const remix = {
-                title: `${wordA.replace(/^./, c => c.toUpperCase())} / ${wordB} — ${genre || 'unclassified'} rework`,
+                // Without a genre the suffix only contradicted the name beside it:
+                // "Industrial / metal — unclassified rework" was saying both.
+                title: `${wordA.replace(/^./, c => c.toUpperCase())} / ${wordB}` +
+                    (genre ? ` — ${genre} rework` : ''),
                 tempo: `${bpm} BPM`,
                 key: pick(style.keys, seed >>> 5),
                 mood: style.mood,
@@ -8578,6 +8581,11 @@
             fitSong = {
                 title: doc.remix.title || doc.title || 'Untitled',
                 genre: String(doc.genre || ''),
+                // The key is the remix's proposal, and only a listing that named a
+                // genre has a style to propose it from. Without one there is no key
+                // to fit to, which is what the panel now says instead of inventing
+                // a D minor for a listing that never gave one.
+                styleKnown: !!doc.genre,
                 key: doc.remix.key || 'A minor',
                 tempo: doc.remix.tempo || '110 BPM',
                 root: remixRoot(doc),
@@ -8595,13 +8603,19 @@
             // listing with no genre gets the neutral key. Both used to be printed as
             // though the song had declared them - "unclassified \u00b7 A minor" beside a
             // video that says neither.
-            const genre = fitSong.genre || 'unclassified (the listing names no genre)';
             const fitted = window._fitForSong;
             const stale = fitted && fitted !== fitSong.title
                 ? ' \u2014 the take on hand was fitted to ' + fitted + '; record again for this one'
                 : '';
-            return 'Fitting to ' + fitSong.title + ' \u00b7 ' + genre + ' \u00b7 ' + fitSong.key +
-                ' (proposed: the listing gives no key) \u00b7 ' + fitSong.tempo + stale;
+            // Neither a genre nor a key: there is nothing to tune to, so the phrase
+            // keeps its own pitch. Printing "unclassified \u00b7 D minor" beside a listing
+            // that says neither was the page arguing with itself.
+            if (!fitSong.styleKnown) {
+                return 'Fitting to ' + fitSong.title +
+                    ' \u00b7 no genre was inferred for this listing and it gives no key, so the phrase keeps its own pitch' + stale;
+            }
+            return 'Fitting to ' + fitSong.title + ' \u00b7 ' + fitSong.genre + ' \u00b7 ' +
+                fitSong.key + ' \u00b7 ' + fitSong.tempo + stale;
         }
 
         function fitProfileFor(name) {
@@ -9293,12 +9307,15 @@
                 const profile = fitProfileFor(fitSong ? fitSong.genre : '');
                 const mono = raw.getChannelData(0);
                 const heard = fitDetectPitch(mono, raw.sampleRate);
-                const semitones = fitSong
+                // No genre means no style, and no style means the key is arbitrary:
+                // moving the phrase onto it would be tuning to a guess. It keeps its
+                // own pitch and only the tone is shaped.
+                const semitones = fitSong && fitSong.styleKnown
                     ? fitSemitones(fitPitchClasses(mono, raw.sampleRate), fitSong.key)
                     : 0;
-                fitSay('Shaping ' + (heard ? Math.round(heard) + ' Hz' : 'the phrase') + ' into ' +
-                    (fitSong ? fitSong.key : 'A minor') + ' with the ' +
-                    ((fitSong && fitSong.genre) || 'neutral') + ' tone\u2026');
+                fitSay('Shaping ' + (heard ? Math.round(heard) + ' Hz' : 'the phrase') +
+                    (fitSong && fitSong.styleKnown ? ' into ' + fitSong.key + ' with the ' + fitSong.genre + ' tone\u2026'
+                        : ' at its own pitch with a neutral tone: no genre was inferred and no key is given\u2026'));
 
                 const rendered = await fitRender(raw, profile, semitones);
                 if (fit.url) URL.revokeObjectURL(fit.url);

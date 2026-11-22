@@ -715,14 +715,24 @@ back in the key and tone of the song the page has open. A card's **Remix** panel
 makes that card the target; with nothing open it fits to a neutral A minor at
 110 BPM.
 
-The target line says what is known and what is assumed. A listing the model cannot
-classify reads `unclassified (the listing names no genre)`, and the key is marked
-`(proposed: the listing gives no key)` because the remix proposes it from the
-style — the page used to print `unclassified · A minor` beside a video that said
-neither, as though the song had declared both. A take also remembers which song it
-was fitted to and says so when another card is opened: clicking through several
-remix cards used to move the target line while the phrase on hand stayed fitted to
-the first song, so the other cards looked like they had never been fitted at all.
+The target line says what is known and what is assumed. A listing with no genre and
+no key is not tuned at all: the phrase keeps its own pitch and the line says `no
+genre was inferred for this listing and it gives no key, so the phrase keeps its own
+pitch`, because the key a genre-less listing would be fitted to is chosen by the
+neutral style rather than read from anywhere. With a genre, the key is the one the
+remix proposes from that style, printed plainly. Before this the page printed
+`unclassified · A minor` beside a video that said neither, and moved the voice onto
+that invented key — which is a guess the ear hears as being out of tune rather than
+a fit. The remix title drops its `— unclassified rework` suffix in that case too:
+`Industrial / metal — unclassified rework` was arguing with itself. (The model does
+read "Industrial / metal" as `rock / metal`; a card only shows no genre when it came
+from data that predates the inference — a bundled row from before re-export, or a
+search from a downloader that has not been restarted.)
+
+A take also remembers which song it was fitted to and says so when another card is
+opened: clicking through several remix cards used to move the target line while the
+phrase on hand stayed fitted to the first song, so the other cards looked like they
+had never been fitted at all.
 
 All of it runs in the tab — no model, no upload, and the words are never read:
 only the sound is moved and shaped.

@@ -718,6 +718,62 @@ if ($NoTunnel) {
 $songHealth = & curl.exe -s --max-time 20 "http://127.0.0.1:$SongPort/health"
 if ($songHealth) { Say "song now: $songHealth" } else { Say 'song: still loading, check again in a minute' }
 
+# --- the address that answers, once more -------------------------------------
+# A quick tunnel Cloudflare has not started routing yet answers 530 while the block
+# above looks at it, and the pool then keeps an address whose tunnel was just pruned -
+# which is the page reporting the pool offline while all four services are up. Half a
+# minute later the same name usually routes, so the sweep is repeated here and whatever
+# answers now is what goes into the lists.
+if (-not $NoTunnel) {
+    $publishedAddress = ''
+    $urlFile = Join-Path $root 'build	unnel_url.txt'
+    if (Test-Path $urlFile) { $publishedAddress = ((Get-Content -Raw -Path $urlFile) -as [string]).Trim() }
+    if ($publishedAddress -and -not (Test-TunnelHealth $publishedAddress 1)) {
+        $late = @()
+        if (Test-Path $tunnelLog) {
+            $late = @(Select-String -Path $tunnelLog -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' |
+                ForEach-Object { $_.Matches[0].Value } | Select-Object -Unique | Select-Object -Last 4)
+            [array]::Reverse($late)
+        }
+        $foundLate = ''
+        for ($sweepLate = 0; $sweepLate -lt 4 -and -not $foundLate; $sweepLate++) {
+            if ($sweepLate) { Start-Sleep -Seconds 15 }
+            foreach ($candidateLate in $late) {
+                if (Test-TunnelHealth $candidateLate 1) { $foundLate = $candidateLate; break }
+            }
+        }
+        if (-not $foundLate) {
+            Say 'tunnel: still nothing answers through Cloudflare; the next start tries again'
+        } else {
+            Set-Content -Path $urlFile -Value $foundLate -Encoding ascii
+            Say "tunnel: $foundLate answers now; publishing it"
+            $lateKeyFile = Join-Path $root 'build\song_endpoint.key'
+            $lateKey = if (Test-Path $lateKeyFile) { (Get-Content $lateKeyFile -Raw).Trim() } else { '' }
+            if ($lateKey) {
+                $lateIdFile = Join-Path $root 'build\machine_id.txt'
+                $lateId = if (Test-Path $lateIdFile) { ((Get-Content -Raw -Path $lateIdFile) -as [string]).Trim() } else { '' }
+                $lateJoin = Join-Path $root 'build	unnel_late.json'
+                $lateState = Join-Path $root 'build	unnel_late_state.json'
+                $lateSite = Join-Path $root 'build	unnel_late_site.json'
+                try {
+                    Set-Content -Path $lateJoin -Encoding ascii -Value ('{"url":"' + $foundLate + '","note":"' + $lateId + '"}')
+                    Set-Content -Path $lateState -Encoding ascii -Value ('{"value":"' + $foundLate + '"}')
+                    Set-Content -Path $lateSite -Encoding ascii -Value ('{"url":"' + $foundLate + '"}')
+                    $null = & curl.exe -s --max-time 15 -X POST 'https://song-pool.bpiersing.workers.dev/join' `
+                        -H 'Content-Type: application/json' -H "x-join-key: $lateKey" --data-binary "@$lateJoin"
+                    $null = & curl.exe -s --max-time 15 -X POST 'https://song-pool.bpiersing.workers.dev/state/site:endpoint' `
+                        -H 'Content-Type: application/json' -H "x-join-key: $lateKey" --data-binary "@$lateState"
+                    $lateAnswer = & curl.exe -s --max-time 15 -X POST 'https://browser.bpiersing.workers.dev/api/song/endpoint' `
+                        -H 'Content-Type: application/json' -H "x-song-key: $lateKey" --data-binary "@$lateSite"
+                    Say "tunnel: named in the site's list: $lateAnswer"
+                } finally {
+                    Remove-Item $lateJoin, $lateState, $lateSite -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+}
+
 # --- watchdog ------------------------------------------------------------
 # Only one watchdog should exist: two would fight over the same 8090 and each
 # would restart a service the other had just started.

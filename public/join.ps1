@@ -153,6 +153,11 @@ if ($Offline) {
         }
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
         Copy-Item -LiteralPath $file.FullName -Destination $dest -Force
+        # Copy-Item carries the archive's timestamp across, so a file written now still
+        # showed the date of the archive it came from - which is why a folder that had
+        # just been replaced looked untouched. The files that were copied are stamped
+        # with this run's time; the ones that were already the same keep their date.
+        try { (Get-Item -LiteralPath $dest).LastWriteTime = Get-Date } catch { }
     }
     Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue
     Say ("app:   {0} files updated, {1} added, {2} already current" -f $updated, $added, $same)

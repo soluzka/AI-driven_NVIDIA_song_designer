@@ -359,6 +359,53 @@ $siteUrl = 'https://browser.bpiersing.workers.dev'
 # cloudflared refuses a zero-byte config with "Configuration file ... was empty", and a
 # run that rewrites the file can leave it empty for a moment. It is checked and rewritten
 # here instead of being handed over as-is.
+# --- keeping the Workers in step with this PC's key ---------------------------
+# build\song_endpoint.key is the source of truth for the pool, so when the Workers hold a
+# different value - a reinstall brings its own key file, and a key rotated elsewhere answers
+# 401 to every join from here - the launcher sets those secrets from the file, then the join
+# is retried. It is the same three secrets tools\reset_join_key.ps1 writes, and the key is
+# piped to wrangler on stdin so it never appears in an argument list, in this script's
+# output, or in a log. A machine that is not signed in to Cloudflare cannot do this; it says
+# so and returns $false, so nothing pretends the Workers were updated.
+function Sync-JoinKey([string]$keyFile) {
+    $wranglerJs = Join-Path $root 'build\wrangler-tool\node_modules\wrangler\bin\wrangler.js'
+    $nodeExe = Join-Path $root 'tools\node\node.exe'
+    if (-not (Test-Path $wranglerJs) -or -not (Test-Path $nodeExe) -or -not (Test-Path $keyFile)) {
+        Say 'key: no wrangler in this install, so the Workers were left alone'
+        return $false
+    }
+    $keyText = Get-Content -Path $keyFile -Raw
+    if (-not $keyText) { return $false }
+    $pushes = @(
+        @{ Name = 'JOIN_KEY'; Config = @('--config', 'wrangler.pool.jsonc') },
+        @{ Name = 'POOL_JOIN_KEY'; Config = @() },
+        @{ Name = 'SONG_ENDPOINT_KEY'; Config = @() }
+    )
+    $allOk = $true
+    Push-Location $root
+    try {
+        foreach ($push in $pushes) {
+            $cmdArgs = @($wranglerJs, 'secret', 'put', $push.Name) + $push.Config
+            try {
+                $out = $keyText | & $nodeExe @cmdArgs 2>&1
+                $text = ($out -join ' ')
+                if ($LASTEXITCODE -ne 0 -or $text -match 'ERROR|Authentication|not logged|Unauthorized') {
+                    Say ("key: {0} was not set - sign in with wrangler on this machine and start again" -f $push.Name)
+                    $allOk = $false
+                } else {
+                    Say ("key: set {0} on the Worker" -f $push.Name)
+                }
+            } catch {
+                Say ("key: {0} was not set ({1})" -f $push.Name, $_.Exception.Message)
+                $allOk = $false
+            }
+        }
+    } finally {
+        Pop-Location
+    }
+    return $allOk
+}
+
 function Ensure-TunnelConfig([string]$path) {
     # A file of nothing but comments is an EMPTY config to cloudflared: it parses the file,
     # finds no keys, and logs "Configuration file ... was empty" even though the bytes are
@@ -669,18 +716,48 @@ if ($NoTunnel) {
                     # state endpoint: the site's own /api/song/endpoint is signed with the
                     # song key, a different secret, so the join key sent there answers
                     # "Wrong key" while the pool below accepts it.
-                    $stateAnswer = & curl.exe -s --max-time 15 -X POST "https://song-pool.bpiersing.workers.dev/state/site:endpoint" `
-                        -H 'Content-Type: application/json' -H "x-join-key: $key" `
-                        --data-binary "@$statePayload"
-                    Say "tunnel: named on the site: $stateAnswer"
-
+                    $stateUrl = 'https://song-pool.bpiersing.workers.dev/state/site:endpoint'
                     # The pool has its own Worker, and it is asked directly as well: it is
                     # the list the site reads its cards from, so this is the one that has
                     # to succeed for the card to appear without the page being opened.
                     $poolUrl = 'https://song-pool.bpiersing.workers.dev/join'
+                    # The Workers' copies of this key can be older than the file: an install
+                    # carries the build\song_endpoint.key of the moment it was made, and a key
+                    # rotated since answers 401 to everything this machine sends. The file is
+                    # the source of truth, so a key the Workers have not been given yet is
+                    # pushed once, and a refusal means they hold another one and are pushed
+                    # again. The stamp is the key's hash, not a date, so rotating the file is
+                    # what triggers the next push and nothing else does.
+                    $stampFile = Join-Path $root 'build\key_pushed.txt'
+                    $keyHash = ''
+                    try { $keyHash = (Get-FileHash -Path $keyFile -Algorithm SHA256).Hash } catch { }
+                    $pushed = $false
+                    if ($keyHash -and ((-not (Test-Path $stampFile)) -or
+                            (((Get-Content -Raw -Path $stampFile) -as [string]).Trim() -ne $keyHash))) {
+                        if (Sync-JoinKey $keyFile) {
+                            try { Set-Content -Path $stampFile -Value $keyHash -Encoding ascii } catch { }
+                            $pushed = $true
+                        }
+                    }
+                    $stateAnswer = & curl.exe -s --max-time 15 -X POST $stateUrl `
+                        -H 'Content-Type: application/json' -H "x-join-key: $key" `
+                        --data-binary "@$statePayload"
                     $poolAnswer = & curl.exe -s --max-time 20 -X POST $poolUrl `
                         -H 'Content-Type: application/json' -H "x-join-key: $key" `
                         --data-binary "@$payload"
+                    if (-not $pushed -and ("$stateAnswer $poolAnswer" -match 'Wrong|wrong|401|Unauthor')) {
+                        Say 'key: the Workers refused this key, so build\song_endpoint.key is pushed to them'
+                        if (Sync-JoinKey $keyFile) {
+                            try { Set-Content -Path $stampFile -Value $keyHash -Encoding ascii } catch { }
+                            $stateAnswer = & curl.exe -s --max-time 15 -X POST $stateUrl `
+                                -H 'Content-Type: application/json' -H "x-join-key: $key" `
+                                --data-binary "@$statePayload"
+                            $poolAnswer = & curl.exe -s --max-time 20 -X POST $poolUrl `
+                                -H 'Content-Type: application/json' -H "x-join-key: $key" `
+                                --data-binary "@$payload"
+                        }
+                    }
+                    Say "tunnel: named on the site: $stateAnswer"
                     Say "tunnel: joined the pool: $poolAnswer"
 
                     # The site keeps its own copy of the list, signed with SONG_ENDPOINT_KEY

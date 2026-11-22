@@ -1341,6 +1341,10 @@ async function discoverVideos(env, query, limit = 20) {
   } catch (err) {
     return 0;
   }
+  // A discovered video is a video in the library, so it is counted like any other. This
+  // path stored rows without ever moving the total, which is why a search that found
+  // twenty new videos could leave the library figure exactly where it was.
+  if (added) await bumpVideoTotal(env, added);
   return added;
 }
 
@@ -1488,7 +1492,7 @@ async function ingestVideos(env, request) {
   try {
     const results = await env.DB.batch(statements);
     for (const result of results) added += Number((result.meta && result.meta.changes) || 0);
-    if (added) await bumpStats(env, 'total_videos', added);
+    if (added) await bumpVideoTotal(env, added);
   } catch (err) {
     // The reason is useful: a full disk, a locked table and an exhausted daily
     // limit all look identical from the page otherwise.
@@ -1629,19 +1633,100 @@ async function writeStatsDoc(env, doc) {
   }
 }
 
+// How many rows the shipped index actually holds. A counter only starts from whatever the
+// library held the day it was seeded and then counts new ingests, so every re-export left
+// it further behind (8,067 against 8,724). The number is read from the export's own
+// library.json - a few hundred bytes, not the 3 MB index - and kept for ten minutes per
+// isolate, because it changes only when the site is deployed again.
+let shippedLibrary = { count: 0, at: 0 };
+
+async function shippedCount(env) {
+  if (shippedLibrary.count && Date.now() - shippedLibrary.at < 10 * 60 * 1000) {
+    return shippedLibrary.count;
+  }
+  if (!env.ASSETS) return shippedLibrary.count;
+  try {
+    const response = await env.ASSETS.fetch(new Request('https://library.local/data/library.json'));
+    if (!response.ok) return shippedLibrary.count;
+    const entry = await response.json();
+    const count = Number(entry && entry.count) || 0;
+    if (count > 0) shippedLibrary = { count, at: Date.now() };
+  } catch (err) { /* the counter answers without it */ }
+  return shippedLibrary.count;
+}
+
+// The video total lives in D1, where one statement can add to it. It used to live in the
+// same KV document as the search and click counts, and a KV write replaces the whole
+// document: whichever counter wrote last won, so twenty discovered videos disappeared
+// under the next search's write of an older figure. A search's count of searches cannot
+// also decide how many videos there are.
+async function d1Videos(env) {
+  if (!env.DB) return 0;
+  try {
+    const row = await env.DB.prepare(
+      'SELECT total_videos FROM library_stats WHERE id = 1'
+    ).first();
+    return Number(row && row.total_videos) || 0;
+  } catch (err) {
+    return 0;
+  }
+}
+
+// Every path that stores videos counts them the same way, in one statement.
+async function bumpVideoTotal(env, added) {
+  if (!env.DB || !added) return;
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        'INSERT OR IGNORE INTO library_stats (id, total_videos, total_searches, total_clicks) '
+        + 'VALUES (1, 0, 0, 0)'
+      ),
+      env.DB.prepare('UPDATE library_stats SET total_videos = total_videos + ? WHERE id = 1')
+        .bind(added),
+    ]);
+  } catch (err) { /* the library still grew; the page adds what it found */ }
+}
+
+// Raise the stored total to the shipped index, never lower it: a counter below what is
+// served has drifted, a counter above it has counted new rows. The comparison is inside
+// the statement, so two isolates rebasing at once cannot undo each other.
+async function rebaseVideoTotal(env, count) {
+  if (!env.DB || !count) return;
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        'INSERT OR IGNORE INTO library_stats (id, total_videos, total_searches, total_clicks) '
+        + 'VALUES (1, 0, 0, 0)'
+      ),
+      env.DB.prepare('UPDATE library_stats SET total_videos = ? WHERE id = 1 AND total_videos < ?')
+        .bind(count, count),
+    ]);
+  } catch (err) { /* the page falls back to the shipped count */ }
+}
+
 // First use after this change: the database still holds the real totals, so they
 // are copied across once and KV answers from then on. If D1 cannot be read either,
 // the answer is zeroes and the page keeps showing what it already knows.
 async function readStats(env) {
   const doc = await readStatsDoc(env);
-  if (doc.v || doc.s || doc.c) return statsFromDoc(doc);
-  const seeded = await indexTotals(env);
-  if (seeded.total_videos || seeded.total_searches || seeded.total_clicks) {
-    await writeStatsDoc(env, {
-      v: seeded.total_videos, s: seeded.total_searches, c: seeded.total_clicks, ids: [],
-    });
+  if (!doc.v && !doc.s && !doc.c) {
+    const seeded = await indexTotals(env);
+    if (seeded.total_videos || seeded.total_searches || seeded.total_clicks) {
+      await writeStatsDoc(env, {
+        v: seeded.total_videos, s: seeded.total_searches, c: seeded.total_clicks, ids: [],
+      });
+    }
   }
-  return seeded;
+  const shipped = await shippedCount(env);
+  const stored = await d1Videos(env);
+  if (shipped > stored) {
+    await rebaseVideoTotal(env, shipped);
+  }
+  return {
+    total_videos: Math.max(doc.v, shipped, stored),
+    total_searches: Number(doc.s) || 0,
+    total_clicks: Number(doc.c) || 0,
+  };
 }
 
 // The D1 totals, kept only to seed KV once and to answer if KV is missing.

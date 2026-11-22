@@ -1894,18 +1894,14 @@
                         const merged = mergeFound(found.results, extra.videos || []);
                         found.total = found.total + merged.added;
                         found.results = merged.results;
-                        // Count what was found, not only what the database accepted:
-                        // while it is refusing writes the library still grew by these
-                        // videos on screen, and a counter that never moves reads as
-                        // discovery being broken.
+                        // The library figure is what was stored, not what was seen on
+                        // screen: the search's own answer carries the counts after its
+                        // discoveries were inserted, so adding the cards here counted
+                        // the same videos twice (8,882 shown against 8,804 stored).
                         if (merged.added) {
                             found.discovered = (Number(found.discovered) || 0) + merged.added;
-                            if (indexStats) {
-                                indexStats = Object.assign({}, indexStats, {
-                                    total_videos: (indexStats.total_videos || 0) + merged.added,
-                                });
-                            }
                         }
+                        if (found.library) applyLibraryStats(found.library);
                         finish(found);
                     })
                     .catch(err => {

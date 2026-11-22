@@ -39,6 +39,41 @@ $ProgressPreference = 'SilentlyContinue'
 
 function Say([string]$text) { Write-Host $text }
 
+# Every download here is retried, and each has a second address to try. One missed
+# lookup - the resolver blinking, a VPN reconnecting, a laptop that has just woken -
+# ended the join before it started with "The remote name could not be resolved", and
+# the window closed having installed nothing. curl.exe is the second opinion: it has
+# its own resolver and its own timeouts, so which one got through says something.
+function Save-WebFile([string[]]$sources, [string]$path, [int]$tries = 3) {
+    foreach ($source in ($sources | Where-Object { $_ } | Select-Object -Unique)) {
+        for ($attempt = 1; $attempt -le $tries; $attempt++) {
+            try {
+                Invoke-WebRequest -UseBasicParsing -Uri $source -OutFile $path -TimeoutSec 600
+            } catch {
+                Say ("       attempt {0} of {1} from {2} failed: {3}" -f $attempt, $tries, $source, $_.Exception.Message)
+            }
+            if ((Test-Path -LiteralPath $path) -and ((Get-Item -LiteralPath $path).Length -gt 0)) { return $true }
+            try {
+                & curl.exe -s -f -L --max-time 900 -o $path $source 2>$null
+                if ((Test-Path -LiteralPath $path) -and ((Get-Item -LiteralPath $path).Length -gt 0)) { return $true }
+            } catch { }
+            Start-Sleep -Seconds (3 * $attempt)
+        }
+    }
+    return $false
+}
+
+function Test-Address([string]$address) {
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            $probe = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($address + '/health') -TimeoutSec 8
+            if ($probe.StatusCode -eq 200) { return $true }
+        } catch { }
+        Start-Sleep -Seconds 2
+    }
+    return $false
+}
+
 # A join started from a double-click has no console to read afterwards, so "the files
 # did not update" is a guess about a window that has already closed. Everything this
 # run prints also goes to join_report.log in the folder it installs to.
@@ -62,11 +97,7 @@ function Set-ModelEndpoint([string]$address, [string]$appRoot) {
     }
     $held = ((Get-Content -Raw -Path $keyFile) -as [string]).Trim()
     Say '       asking that address to answer ...'
-    $alive = $false
-    try {
-        $probe = Invoke-WebRequest -UseBasicParsing -Method Get -Uri ($address + '/health') -TimeoutSec 8
-        $alive = ($probe.StatusCode -eq 200)
-    } catch { $alive = $false }
+    $alive = Test-Address $address
     if (-not $alive) {
         Say '       it did not answer /health, so the site was not pointed at it.'
         return
@@ -111,11 +142,22 @@ if ($Offline) {
     $staging = Join-Path $Target 'update-staging'
     $downloaded = $false
     try {
-        Invoke-WebRequest -UseBasicParsing -Uri $Source -OutFile $zip
-        if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
-        Expand-Archive -Path $zip -DestinationPath $staging -Force
-        Remove-Item $zip -ErrorAction SilentlyContinue
-        $downloaded = $true
+        # The repository's own zip first, then the GitHub archive of the same branch: the
+        # two hosts resolve and fail independently, and codeload is the one that was
+        # refusing while the site itself answered.
+        $archives = @(
+            $Source,
+            'https://github.com/soluzka/internet/archive/refs/heads/main.zip',
+            'https://github.com/soluzka/AI-driven_NVIDIA_song_designer/archive/refs/heads/main.zip'
+        )
+        if (Save-WebFile $archives $zip) {
+            if (Test-Path $staging) { Remove-Item -Recurse -Force $staging }
+            Expand-Archive -Path $zip -DestinationPath $staging -Force
+            Remove-Item $zip -ErrorAction SilentlyContinue
+            $downloaded = $true
+        } else {
+            throw 'every address for the sources failed'
+        }
     } catch {
         Say "app:   could not fetch or unpack the sources ($($_.Exception.Message))"
         Remove-Item $zip -ErrorAction SilentlyContinue
@@ -124,13 +166,16 @@ if ($Offline) {
         # the folder keeps the files it already had and nothing says they are stale.
         # Stop instead; -Offline is the deliberate way to use what is already here.
         if (Test-Path (Join-Path $appDir 'install_all.ps1')) {
-            Say '       the files already here were NOT updated - run it again for the current ones,'
-            Say '       or pass -Offline on purpose to use this copy as it is'
+            # An install is already here, so this PC can still join and serve on the files it
+            # has. Stopping would trade a stale copy for no machine in the pool at all, and
+            # the line below says plainly which copy is running.
+            Say '       the files already here were NOT updated - this PC joins on that copy;'
+            Say '       run it again when the connection is back to replace them'
         } else {
             Say '       nothing was downloaded and nothing is installed here yet'
             Say '       ask for the project folder and run install.cmd inside it'
+            exit 1
         }
-        exit 1
     }
 
     # Unpacked beside the install and compared file by file rather than extracted
@@ -138,6 +183,7 @@ if ($Offline) {
     # own time: a folder that was just refreshed still shows old dates, so there is no
     # way to tell an update that happened from one that did not. Copying only what
     # differs also makes the count below true.
+    if ($downloaded) {
     $root = Get-ChildItem -LiteralPath $staging -Directory | Select-Object -First 1
     if ($root) { $source = $root.FullName; $destRoot = Join-Path $Target $root.Name }
     else { $source = $staging; $destRoot = $Target }
@@ -189,6 +235,7 @@ if ($Offline) {
         # they are the ones that come back as "did not update" on the next look.
         Say ("app:   {0} could not be written (in use): {1}" -f @($failed).Count, (@($failed) -join ', '))
         Say 'app:   stop the services and run it again to replace them'
+    }
     }
     if ($downloaded -and -not (Test-Path (Join-Path $appDir 'install_all.ps1'))) {
         # A zip whose root folder is named differently (a release, a branch rename).

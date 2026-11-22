@@ -57,20 +57,33 @@ $useShared = (Test-Path (Join-Path $root '.venv\all_services.json')) -and (Test-
 # exactly that reason: without it a corrected package sits in .venv while the old
 # process keeps serving, which is how the py3langid fix looked like it had never
 # installed. Only processes this launcher would have started are touched.
+# One service is two processes, not two copies: a venv's python.exe re-execs the
+# interpreter named in its pyvenv.cfg, so the launcher and the interpreter that owns the
+# port both carry "--role song". Both are stopped (the launcher would otherwise restart
+# nothing, but leaving it would leave a match behind), and the line names the role once
+# with every pid it took down, rather than printing the same sentence twice and looking
+# like two services were running.
 if ($Restart) {
     foreach ($role in @('site', 'downloader', 'song', 'voice')) {
         $procs = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
             Where-Object { $_.CommandLine -like "*--role $role*" })
+        if ($procs.Count -eq 0) { continue }
+        $stopped = @()
+        $refused = @()
         foreach ($p in $procs) {
             try {
                 Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop
-                if (-not $Quiet) { Say "stopped $role (pid $($p.ProcessId)) so the installed code loads" }
+                $stopped += $p.ProcessId
             } catch {
-                if (-not $Quiet) {
-                    Say "could not stop $role (pid $($p.ProcessId)): it belongs to another user"
-                    Say '  log off that user, or stop it there, then rerun this launcher'
-                }
+                $refused += $p.ProcessId
             }
+        }
+        if (-not $Quiet -and $stopped.Count -gt 0) {
+            Say "stopped $role (pid $($stopped -join ', ')) so the installed code loads"
+        }
+        if (-not $Quiet -and $refused.Count -gt 0) {
+            Say "could not stop $role (pid $($refused -join ', ')): it belongs to another user"
+            Say '  log off that user, or stop it there, then rerun this launcher'
         }
     }
     # A socket frees as soon as the process goes; the card needs a moment to drop
@@ -392,6 +405,39 @@ function Test-TunnelHealth([string]$address, [int]$Tries = 1) {
 # and names Cloudflare - a download straight into an executed path is not
 # something to do on trust. "latest" is deliberately not used: that is a moving
 # target nobody reviewing this script can check.
+# The tunnel runs in a window of its own, and that window is the powershell that started
+# cloudflared. Stopping the cloudflared leaves the window sitting there with nothing in it,
+# which is how a morning of restarts ended with three consoles and one working tunnel. These
+# two keep the count at one: a pruned tunnel takes its window with it, and a window whose
+# tunnel has already gone is closed.
+function Stop-TunnelWindow([int]$cloudflaredId) {
+    try {
+        $cf = Get-CimInstance Win32_Process -Filter "ProcessId = $cloudflaredId" -ErrorAction SilentlyContinue
+        if (-not $cf) { return }
+        $parent = Get-CimInstance Win32_Process -Filter "ProcessId = $($cf.ParentProcessId)" -ErrorAction SilentlyContinue
+        if ($parent -and $parent.CommandLine -match 'tunnel --config') {
+            Stop-Process -Id $parent.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+}
+
+function Stop-EmptyTunnelWindows {
+    try {
+        $windows = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -in @('powershell.exe', 'pwsh.exe') -and $_.CommandLine -match 'tunnel --config'
+            })
+        foreach ($w in $windows) {
+            $kids = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($w.ProcessId)" -ErrorAction SilentlyContinue)
+            if (-not ($kids | Where-Object { $_.Name -eq 'cloudflared.exe' })) {
+                try {
+                    Stop-Process -Id $w.ProcessId -Force -ErrorAction Stop
+                    Say "tunnel: closed a window left behind by an old tunnel (pid $($w.ProcessId))"
+                } catch { }
+            }
+        }
+    } catch { }
+}
+
 $cloudflaredVersion = '2026.10.7'
 $cloudflaredUrl = "https://github.com/cloudflare/cloudflared/releases/download/$cloudflaredVersion/cloudflared-windows-amd64.exe"
 
@@ -432,6 +478,7 @@ if ($NoTunnel) {
     # opens, registers, and then answers 530 from the edge. So the pile is pruned here, in
     # the window join.cmd prints, before anything is started: the five newest are kept, the
     # older ones are stopped, and the line says so.
+    Stop-EmptyTunnelWindows
     $keep = 5
     $running = @(Get-Process cloudflared -ErrorAction SilentlyContinue | ForEach-Object {
             $started = $null
@@ -448,6 +495,7 @@ if ($NoTunnel) {
             try {
                 Stop-Process -Id $p.Id -Force -ErrorAction Stop
                 Say "tunnel: pruned the one running as pid $($p.Id)"
+                Stop-TunnelWindow $p.Id
             } catch {
                 Say "tunnel: pid $($p.Id) belongs to another account and cannot be stopped from here"
             }
@@ -494,6 +542,7 @@ if ($NoTunnel) {
             try {
                 Stop-Process -Id $p.Id -Force -ErrorAction Stop
                 Say "tunnel: pruned the one running as pid $($p.Id)"
+                Stop-TunnelWindow $p.Id
             } catch {
                 Say "tunnel: pid $($p.Id) belongs to another account and cannot be stopped from here"
             }

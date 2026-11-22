@@ -8658,16 +8658,50 @@
             return fitStretch(resampled, samples.length / resampled.length, samples.length);
         }
 
-        // A short noise tail shaped by a curve: a room without needing an impulse
-        // response file.
+        // How loud the room arrives, as the sqrt of the impulse's power: 0.14 puts
+        // the tail about 26 dB under the phrase at the wettest profile, which is
+        // under the words rather than over them.
+        const FIT_ROOM_POWER = 0.14;
+
+        // A short tail shaped by a curve: a room without needing an impulse
+        // response file. Raw noise is not a room - it is broadband, so on a held
+        // note it is heard as hiss sitting behind the voice. Two things make it a
+        // room instead: the noise is lowpassed twice, with the cutoff closing from
+        // 6 kHz down to about 900 Hz as the tail decays (a real room eats the top
+        // end first, which is what leaves the words clear), and it starts twelve
+        // milliseconds late, so the consonant that caused it is never inside its
+        // own blur.
         function fitImpulse(ctx, seconds) {
-            const length = Math.max(1, Math.floor(ctx.sampleRate * Math.max(0.4, seconds)));
-            const ir = ctx.createBuffer(1, length, ctx.sampleRate);
+            const rate = ctx.sampleRate;
+            const predelay = Math.max(1, Math.floor(rate * 0.012));
+            const tail = Math.max(1, Math.floor(rate * Math.max(0.4, seconds)));
+            const ir = ctx.createBuffer(1, predelay + tail, rate);
             const data = ir.getChannelData(0);
-            for (let i = 0; i < length; i++) {
-                const t = i / length;
-                data[i] = (Math.random() * 2 - 1) * Math.pow(1 - t, 2.6) * Math.min(1, i / 40);
+            let low = 0;
+            let darker = 0;
+            let below = 0;
+            // One pole at 140 Hz: a tail that carries the voice's own low end is
+            // what booms and washes the words, and no room a phrase is sung in has
+            // that much of it.
+            const highpass = 1 - Math.exp((-2 * Math.PI * 140) / rate);
+            for (let i = 0; i < tail; i++) {
+                const t = i / tail;
+                const cutoff = 6000 * Math.pow(0.15, t);
+                const k = 1 - Math.exp((-2 * Math.PI * cutoff) / rate);
+                low += ((Math.random() * 2 - 1) - low) * k;
+                darker += (low - darker) * k;
+                below += (darker - below) * highpass;
+                data[predelay + i] = (darker - below) * Math.pow(1 - t, 2.6) * Math.min(1, i / 240);
             }
+            // The tail arrives at the gain sqrt of the impulse's power, so its level
+            // is set here, in one place. The convolver's own normalise would hide
+            // it: that scales the impulse to equal power whatever its shape, and a
+            // darker tail then lands louder on a voice, which has more energy down
+            // there than flat noise does.
+            let power = 0;
+            for (let i = 0; i < data.length; i++) power += data[i] * data[i];
+            const gain = power > 0 ? FIT_ROOM_POWER / Math.sqrt(power) : 0;
+            for (let i = 0; i < data.length; i++) data[i] *= gain;
             return ir;
         }
 
@@ -8735,6 +8769,7 @@
             const wet = ctx.createGain();
             wet.gain.value = profile.wet;
             const room = ctx.createConvolver();
+            room.normalize = false;
             room.buffer = fitImpulse(ctx, profile.decay);
 
             // The echo is half a beat of the song, so it lands with the music rather

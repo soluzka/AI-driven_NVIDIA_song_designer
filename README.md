@@ -712,6 +712,16 @@ only the sound is moved and shaped.
    `ambient` are mostly space, `trap` and `riddim` almost none, `lo-fi` is a 4.2
    kHz ceiling, `trance` and `house` keep the top end. The profile table is
    `FIT_PROFILES` in `public/index.html`.
+   The room is generated, not sampled, but it is not raw noise: the tail is
+   lowpassed twice with the cutoff closing from 6 kHz to about 900 Hz as it
+   decays, starts twelve milliseconds late so a consonant is never inside its own
+   blur, and is highpassed at 140 Hz so it carries the room rather than the
+   voice's low end. Its level is set by `FIT_ROOM_POWER` with the convolver's own
+   normalise off, because normalise scales the impulse to equal power whatever
+   its shape and a darker tail would then land louder on a voice. Measured on
+   speech at the wettest profile, the part of the tail above 4 kHz is 4 dB lower
+   than the old noise tail, the 1-4 kHz part 2 dB lower, and the phrase's own
+   envelope still matches the dry take at 0.88.
 3. **Output.** Play it, or save 16-bit mono WAV. The result is trimmed under full
    scale because dry, room and echo add up on a loud phrase.
 

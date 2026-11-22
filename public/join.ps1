@@ -258,8 +258,12 @@ if (-not $NoWindow) {
         (Join-Path $appDir 'voice_service\logs\service_err.log')
     ) | Where-Object { Test-Path -LiteralPath $_ }
     if (@($follow).Count -gt 0) {
+        # The ICMP proxy lines cloudflared writes name this machine's LAN and IPv6
+        # addresses; they say nothing is routed to them, and they are dropped from
+        # what is shown here all the same.
         $following = (@($follow) | ForEach-Object {
-            "Get-Content -Path '$_' -Wait -Tail 8 -ErrorAction SilentlyContinue"
+            "Get-Content -Path '$_' -Wait -Tail 8 -ErrorAction SilentlyContinue | " +
+                "Where-Object { `$_ -notmatch 'ICMP proxy' }"
         }) -join '; '
         Start-Process -FilePath 'powershell' -ArgumentList @(
             '-NoProfile', '-NoExit', '-Command', $following) | Out-Null
@@ -316,17 +320,22 @@ if ($mine) {
 }
 
 Say ''
-Say 'errors in the logs (nothing below means none in the last 400 lines of each)'
+Say 'errors in the logs, last 400 lines of each'
 $hits = @()
 foreach ($log in @('run_web.err', 'run_web.log', 'build\downloader_err.log',
                    'song_service\logs\service_err.log', 'voice_service\logs\service_err.log')) {
     $path = Join-Path $appDir $log
     if (Test-Path $path) {
         $hits += @(Get-Content -Path $path -Tail 400 -ErrorAction SilentlyContinue |
-            Where-Object { $_ -match 'Traceback|Exception|\bERROR\b|\bCRITICAL\b' } |
+            Where-Object { $_ -match 'Traceback|Exception|\bERROR\b|\bCRITICAL\b|" 5\d\d ' } |
             ForEach-Object { '  ' + (Split-Path $log -Leaf) + ': ' + $_.Trim() })
     }
 }
-if ($hits.Count) { $hits | Select-Object -Last 8 | ForEach-Object { Say $_ } }
+if ($hits.Count) {
+    $hits | Select-Object -Last 8 | ForEach-Object { Say $_ }
+    if ($hits.Count -gt 8) { Say "  ... and $($hits.Count - 8) more" }
+} else {
+    Say '  none'
+}
 Say ''
 Say 'The site finds this PC on the next click, and it rejoins at every logon'

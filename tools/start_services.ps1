@@ -838,6 +838,53 @@ if (-not $NoTunnel) {
     }
 }
 
+# --- publishing whatever answers --------------------------------------------
+# A quick tunnel's process can be running while its name has stopped answering - Cloudflare
+# retires one and every request to it turns 530 - and the pool then names a machine nobody
+# can reach, which is the page's "pool offline". The watchdog calls this each cycle: if the
+# address on file does not answer, the newest address in tunnel.log that does is written
+# down, named in the site's endpoint record and list, and joined to the pool.
+function Publish-AnsweringTunnel {
+    $urlFile = Join-Path $root 'build	unnel_url.txt'
+    $current = if (Test-Path $urlFile) { ((Get-Content -Raw -Path $urlFile) -as [string]).Trim() } else { '' }
+    if ($current -and (Test-TunnelHealth $current 1)) { return }
+    $candidates = @()
+    if (Test-Path $tunnelLog) {
+        $candidates = @(Select-String -Path $tunnelLog -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' |
+            ForEach-Object { $_.Matches[0].Value } | Select-Object -Unique | Select-Object -Last 4)
+        [array]::Reverse($candidates)
+    }
+    $live = ''
+    foreach ($candidate in $candidates) {
+        if (Test-TunnelHealth $candidate 1) { $live = $candidate; break }
+    }
+    if (-not $live) { return }
+    $keyFile = Join-Path $root 'build\song_endpoint.key'
+    if (-not (Test-Path $keyFile)) { return }
+    $key = (Get-Content $keyFile -Raw).Trim()
+    if (-not $key) { return }
+    $idFile = Join-Path $root 'build\machine_id.txt'
+    $machineId = if (Test-Path $idFile) { ((Get-Content -Raw -Path $idFile) -as [string]).Trim() } else { '' }
+    Set-Content -Path $urlFile -Value $live -Encoding ascii
+    $joinFile = Join-Path $root 'build\watch_join.json'
+    $stateFile = Join-Path $root 'build\watch_state.json'
+    $siteFile = Join-Path $root 'build\watch_site.json'
+    try {
+        Set-Content -Path $joinFile -Encoding ascii -Value ('{"url":"' + $live + '","note":"' + $machineId + '"}')
+        Set-Content -Path $stateFile -Encoding ascii -Value ('{"value":"' + $live + '"}')
+        Set-Content -Path $siteFile -Encoding ascii -Value ('{"url":"' + $live + '"}')
+        $null = & curl.exe -s --max-time 15 -X POST 'https://song-pool.bpiersing.workers.dev/join' `
+            -H 'Content-Type: application/json' -H "x-join-key: $key" --data-binary "@$joinFile"
+        $null = & curl.exe -s --max-time 15 -X POST 'https://song-pool.bpiersing.workers.dev/state/site:endpoint' `
+            -H 'Content-Type: application/json' -H "x-join-key: $key" --data-binary "@$stateFile"
+        $null = & curl.exe -s --max-time 15 -X POST 'https://browser.bpiersing.workers.dev/api/song/endpoint' `
+            -H 'Content-Type: application/json' -H "x-song-key: $key" --data-binary "@$siteFile"
+        Say "watchdog: the address on file had stopped answering; published $live"
+    } finally {
+        Remove-Item $joinFile, $stateFile, $siteFile -ErrorAction SilentlyContinue
+    }
+}
+
 # --- watchdog ------------------------------------------------------------
 # Only one watchdog should exist: two would fight over the same 8090 and each
 # would restart a service the other had just started.
@@ -859,6 +906,10 @@ if ($Watch) {
 
     while ($true) {
         Start-Sleep -Seconds 120
+
+        # The tunnel can be alive while its address no longer answers; the pool is then
+        # naming a machine nobody can reach. Whichever address does answer is published.
+        if (-not $NoTunnel) { Publish-AnsweringTunnel }
 
         # A service that is answering needs nothing. One whose process exists but
         # is not answering is still importing torch or waiting on the model, so

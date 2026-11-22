@@ -187,27 +187,28 @@ the voice fit (`lowpass`, `room`). Each stage is a status the page polls:
 | `writing` | the lyric model writes the words (skipped when the designer sends its own) |
 | `loading`, `generating` | ACE-Step renders the song **with its own sung vocal** |
 | `separating` | `demucs` splits that render into a vocal stem and a backing stem |
-| `mixing` | the vocal is shifted by the computed semitones, then laid back over the backing |
+| `mixing` | the vocal is mapped (room only) and laid back over the backing |
 
-The model sings; your recording is a measurement. The recording's median pitch is
-compared with the sung vocal's, the difference is folded into the nearest register
-and applied as a semitone shift on a half-semitone grid, at most ±7 semitones. The
-service computes that itself because only it has both pitches; the page sends no
-semitones.
+The model sings; your recording is a measurement. Both pitches are still measured
+and reported - the recording's and the sung vocal's - but the difference is **not
+applied**: the model sings its own melody over its own backing, so its vocal is
+already in the song's key, and a fractional shift moves the words off the music. One
+render came out at **-5.5 semitones** that way, and on that job's own separated
+vocal the shift put **+7.4 dB** into 60-120 Hz and took **5-6 dB** out of 250 Hz-3
+kHz: a soft, muffled, low voice under the track. The number it matched on was not
+real either - pyin's median on that stem was **70.0 Hz**, exactly its search floor,
+against an autocorrelation of 46 Hz and a 90th percentile of 233 Hz. The log line is
+now `pitch: recording … Hz, model vocal … Hz, no transpose (already in key)` and the
+map carries the room only.
 
-The shift keeps the formants. A bare phase vocoder moves the whole spectrum, so +3
-semitones lifts F1 by 20% and the singer sounds like a thinner person rather than
-the same one singing higher. The shift is therefore two steps: the phase vocoder
-moves the pitch and keeps the texture, then the source's own spectral envelope is
-divided back over the result as a smooth per-frame gain curve (cepstral lifter
-2 ms, gain limited to ±18 dB a band), so the resonances end where the singer left
-them.
-
-Measured on a separated vocal shifted +3 semitones: F1/F2/F3 moved
-×0.993/×0.966/×0.976, against ×1.205/×0.915/×0.978 for the uncorrected vocoder.
-Spectral flatness came out 23% *below* the source's, which is why this is used
-rather than a WORLD resynthesis: WORLD held the formants (×1.019/×0.986/×0.995)
-but measured +281% flatness, heard as a grain or grind. Nothing you said into the microphone is in the track and no voice is
+The shift machinery is still in `_map_vocal` and would hold the formants if it were
+ever called with a non-zero value - phase vocoder for pitch and texture, then the
+source's own spectral envelope divided back over the result (cepstral lifter 2 ms,
+gain limited to ±18 dB a band). Measured back when it ran on a +3 semitone shift:
+F1/F2/F3 moved ×0.993/×0.966/×0.976, against ×1.205/×0.915/×0.978 for the
+uncorrected vocoder, and spectral flatness came out 23% *below* the source's - which
+is why it was used rather than a WORLD resynthesis (WORLD held the formants at
+×1.019/×0.986/×0.995 but measured +281% flatness, a grain or grind). Nothing you said into the microphone is in the track and no voice is
 cloned: the vocal is ACE-Step's own, separated from the music, mapped, and mixed
 back with the bed ducked lightly under it (`DUCK_UNDER_VOICE`) and the voice
 `LEAD_DB` above it. Those two numbers are the balance: 0 dB and 20% measured on all
@@ -229,6 +230,15 @@ It prints each song's dip and voice height for the current constants and for the
 pair they replaced, and exits nonzero if `_mix_separated` no longer matches the
 arithmetic it checks - which is the signal that the balance has changed and the
 table is no longer describing the service.
+
+The write path also closes a **gated tail**. The model does not always fill the length
+it was asked for: six 59.9 s requests truly ended at 55.3-59.9 s, and four of them
+ended in a burst pattern (10-120 ms of level, 10-120 ms at about -60 dB) rather than
+a fade, heard as a stutter before the stop. `tailfix.py` - called from `_write_samples`
+before the peak lift - finds the last continuous block, fades 300 ms into it and
+writes silence after it; a take that already runs to the end of the file is left
+alone. `build/measure/test_tailfix.py` at the repository root runs it over every
+render on disk.
 
 `demucs` is installed by this service's `install.py` — it is in `models.json`, so a
 fresh install covers it. The first separation downloads the htdemucs weights

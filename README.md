@@ -309,6 +309,16 @@ keep their weight. It does not lower or raise the music's pitch: the renders sit
 because their bass is written low, which is a question for the prompt and key, not
 for a filter.
 
+The same write path closes the model's **gated tail**. ACE-Step does not always fill
+the length it was asked for: across six 59.9 s requests the audio truly ended at
+**55.3, 57.9, 58.2, 59.84, 59.85 and 59.9 s**, and in four of them the last half
+second to 4.6 s was not a fade but a burst pattern - 10-120 ms of level alternating
+with 10-120 ms at about -60 dB - which is heard as a **stutter just before the song
+stops**. `song_service/tailfix.py` finds the last block that is still continuous,
+fades 300 ms into it and writes silence after the bursts, before the peak lift, so
+the take ends once and quietly. A render whose audio already runs to the end of the
+file is returned untouched (`total - end < 0.15 s`).
+
 Both models pick their device themselves: the lyric model runs on CUDA when
 torch can see a card and in system RAM when it cannot. On the GPU the lyric model
 is loaded only after the song model has been released, because 7.9 GB of ACE-Step
@@ -407,6 +417,13 @@ So the pairing is: the PC owns the tunnel and the key, the site only remembers
 the last address it was told. If the address looks stale, run
 `tools\start_services.ps1` again — it republishes — and reload the page, which is
 the only step a phone needs.
+
+`tools\start_services.ps1 -Restart` is the other mode: it stops every role by pid
+(`stopped song (pid 1980, 7376) so the installed code loads`) and starts them again.
+That is what a reinstall needs, because a running service keeps the code it loaded at
+start-up. It used to abort before stopping anything - it called `Say` at line 86 and
+defined it at line 125 - so a reinstall printed that it was restarting the services
+and restarted none, and the old code kept serving.
 
 `tools\start_services.ps1 -NoTunnel` skips the tunnel entirely when you only want
 the local services.
@@ -628,7 +645,11 @@ address can point at nothing. The symptoms are a phone that says **AI off**, a T
 will not start, while the PC itself is fine.
 
 1. Run `tools\start_services.ps1`. It starts or reuses the tunnel and republishes
-   the current address by itself.
+   the current address by itself. It writes and publishes only an address that
+   answers `/health` **through Cloudflare** - six probes ten seconds apart, because
+   a fresh Quick Tunnel took about 40 s to become routable here - and when nothing
+   can be verified it removes the dead address from the pool by name, so the site
+   stops routing clicks at a 530 that never answers.
 2. Check what the site now holds: `curl https://<your worker>/api/song/endpoint`.
 3. Reload the page on the phone. The new address is only read on load.
 

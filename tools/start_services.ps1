@@ -657,8 +657,11 @@ if ($NoTunnel) {
                 $sitePayload = Join-Path $root 'build\tunnel_site.json'
                 $removePayload = Join-Path $root 'build\tunnel_site_remove.json'
                 try {
+                    # No note on the join: the pool keys machines by address, and a note that
+                    # names this PC would make the next address replace this one. Naming the
+                    # address alone is what lets a second tunnel stay listed beside the first.
                     Set-Content -Path $payload -Encoding ascii `
-                        -Value ('{"url":"' + $tunnelUrl + '","note":"' + $machineId + '"}')
+                        -Value ('{"url":"' + $tunnelUrl + '"}')
                     Set-Content -Path $statePayload -Encoding ascii `
                         -Value ('{"value":"' + $tunnelUrl + '"}')
                     # The address the header names is written through the pool Worker's
@@ -686,7 +689,12 @@ if ($NoTunnel) {
                     # The address this machine used before is removed rather than appended,
                     # so a rotation replaces it instead of adding a second card.
                     $siteUrl = 'https://browser.bpiersing.workers.dev/api/song/endpoint'
-                    if ($recorded -and $recorded -ne $tunnelUrl) {
+                    # A previous address is only taken off the lists when it no longer answers:
+                    # a tunnel this machine left running is still a way into this PC's model,
+                    # and both names used to sit in the pool - that is the two GPUs someone
+                    # running two tunnels expects to see. What must not stay is an address
+                    # that answers nothing, which the site would probe and count as a dead GPU.
+                    if ($recorded -and $recorded -ne $tunnelUrl -and -not (Test-TunnelHealth $recorded 1)) {
                         Set-Content -Path $removePayload -Encoding ascii `
                             -Value ('{"remove":"' + $recorded + '"}')
                         $null = & curl.exe -s --max-time 15 -X POST $siteUrl `

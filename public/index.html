@@ -2203,8 +2203,8 @@
                 instruments: ['one-drop drums', 'sub bass', 'spring reverb throws', 'melodica'],
                 sample: 'Send one phrase of the original through a long tape delay and mix it as the lead.' },
             'hip hop': { bpm: 88, keys: ['C minor', 'F minor'], mood: 'dusty and conversational', palette: 'sepia with a single neon accent',
-                instruments: ['boom-bap drums', 'upright bass', 'vinyl-textured keys', 'finger snaps'],
-                sample: 'Loop four bars of the original and leave the crackle in.' },
+                instruments: ['boom-bap drums', 'upright bass', 'muted electric piano', 'finger snaps'],
+                sample: 'Loop four bars of the original and keep the room, not the crackle.' },
             trap: { bpm: 78, keys: ['F minor', 'G# minor'], mood: 'still and heavy, all space between hits', palette: 'black glass and violet',
                 instruments: ['808 slides', 'triplet hats', 'bell melody', 'wide clap'],
                 sample: 'Take the original hook and let it decay under an 808 slide.' },
@@ -3814,8 +3814,14 @@
             trap: 'clean modern master, 808 sub, crisp hi-hats',
             trance: 'clean and bright, wide supersaw chords, punchy kick',
             garage: 'clean mix, rubbery bass, shuffled two-step drums',
-            'hip hop': 'warm analog, dusty boom-bap drums, vinyl texture',
-            'lo-fi': 'tape hiss, soft transients, deliberately muffled',
+            // No hiss or crackle in these prompts any more. "tape hiss" and "vinyl
+            // texture" were asked for by name, and the model delivered: measured on two
+            // renders, the quiet frames carried 12-17% of their power at 4-8 kHz against
+            // 0.1-1% in the loud ones - a broadband hiss under the whole track, which is
+            // heard as noise (or a buzz) behind everything, and is worst exactly when the
+            // music is ducked under a voice. Warmth is asked for as tone, not as noise.
+            'hip hop': 'warm analog, dusty boom-bap drums, muted keys',
+            'lo-fi': 'warm tape tone, soft transients, gently rolled-off highs',
             ambient: 'wide and clean, no drums, long reverb tails',
             dub: 'long tape echo, deep low end, spacious',
             reggae: 'warm and spacious, rounded bass, dry vocal',
@@ -9305,6 +9311,13 @@
                 curve[i] = profile.drive > 0 ? Math.tanh(amount * x) / Math.tanh(amount) : x;
             }
             shaper.curve = curve;
+            // The shaper runs at the context rate, so its harmonics above Nyquist fold back
+            // into the band as inharmonic noise - heard as a buzz, and worst exactly where the
+            // drive now sits: only content above the split reaches it, which is the content
+            // whose harmonics are highest. Oversampling the node pushes the fold-back up.
+            if (profile.oversample === undefined || Number(profile.oversample) > 0) {
+                shaper.oversample = profile.oversample ? Number(profile.oversample) + 'x' : '4x';
+            }
 
             // A highpass after the drive, because the drive *makes* low end that no
             // filter before it can touch. Measured on a 220 Hz + 1 kHz test tone through
@@ -9537,6 +9550,7 @@
             if (params.has('split')) overrides.split = Number(params.get('split'));
             if (params.has('drive')) overrides.drive = Number(params.get('drive'));
             if (params.has('posthp')) overrides.posthp = Number(params.get('posthp'));
+            if (params.has('oversample')) overrides.oversample = Number(params.get('oversample'));
             window.fitSelfTest(overrides).then(result => {
                 const text = 'FITTEST ' + JSON.stringify(result);
                 document.title = text;

@@ -132,6 +132,8 @@ def main():
     parser.add_argument("--limit", type=float, default=LIMIT_DB)
     parser.add_argument("--profiles", default="")
     parser.add_argument("--batch", type=int, default=BATCH)
+    parser.add_argument("--show-bands", action="store_true",
+                        help="print every band, not only 80-120 Hz")
     args = parser.parse_args()
 
     names = [name.strip() for name in args.profiles.split(",") if name.strip()] or PROFILES
@@ -163,7 +165,12 @@ def main():
             verdict = "FAIL"
         else:
             verdict = "ok"
-        print("%-4s %-20s 80-120 Hz: %6.1f dB" % (verdict, row["label"], level))
+        if args.show_bands:
+            print("%-4s %-20s 80-120 Hz: %6.1f dB   all: %s" % (
+                verdict, row["label"], level,
+                " ".join("%6.1f" % value for value in row["bands"])))
+        else:
+            print("%-4s %-20s 80-120 Hz: %6.1f dB" % (verdict, row["label"], level))
 
     print()
     worst = max((row for row in rows if row["label"] != LOW_VOICE),

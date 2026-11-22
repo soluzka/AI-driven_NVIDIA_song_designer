@@ -491,7 +491,7 @@ def _map_vocal(mono, rate, mapping):
 # makes), which is a lyric you cannot hear the song behind. At 0 dB and 20% it is
 # about 3.5 dB - the voice is still the lead, and the music is still there.
 LEAD_DB = 0.0
-DUCK_UNDER_VOICE = 0.2
+DUCK_UNDER_VOICE = 0.15
 MAX_LEAD_GAIN = 8.0
 
 
@@ -1708,7 +1708,10 @@ def api_song_mix():
         lead = str(request.args.get('lead') or '') in ('1', 'true', 'yes')
         levels = [0.95, 0.8, 0.9, 0.72] if lead else [0.62, 0.45, 0.55, 0.38]
         pans = [0.5, 0.5, 0.5, 0.5] if lead else [0.35, 0.75, 0.6, 0.3]
-        duck = 0.4 if lead else 0.55
+        # Was 0.4 (lead) / 0.55: the track dropped 8 dB every time the phrase came back,
+        # which reads as a hole opening under the voice rather than the voice sitting in
+        # the song - and a hole is where the track's own noise floor becomes audible.
+        duck = 0.55 if lead else 0.7
 
         placed = []
         for step, (level, pan) in enumerate(zip(levels, pans)):

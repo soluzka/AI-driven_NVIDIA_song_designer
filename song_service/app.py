@@ -551,6 +551,55 @@ def _layout_vocal(song_path, vocal_bytes, out_path, bpm, mapping=(0.0, 0.0, 0.0)
             'lead_db': round(20 * float(np.log10(lead_gain)), 1)}
 
 
+def _place_phrases(out, mono, envelope, rate, fade, lead, duck, first_start, bar_seconds):
+    """Add the recorded phrase on bar lines without stacking it on itself.
+
+    Copies used to be placed one bar apart whatever the phrase's length, so a ten second
+    phrase over a two second bar overlapped itself four times. That is two faults in one:
+    identical audio offset by a bar combs against itself - a buzz that moves with the pans -
+    and the duck was applied per copy, so 0.4 four times over is -32 dB. That is not the
+    track stepping back under the voice, it is a hole with the track's noise floor at the
+    bottom of it. Each copy now starts on the first bar line after the previous one ends,
+    and the duck is applied once, at the deepest placement.
+
+    Returns (out, placed), where placed is where each copy starts as a percentage of the
+    track - the numbers the endpoint prints.
+    """
+    import numpy as np
+
+    levels = [0.95, 0.8, 0.9, 0.72] if lead else [0.62, 0.45, 0.55, 0.38]
+    pans = [0.5, 0.5, 0.5, 0.5] if lead else [0.35, 0.75, 0.6, 0.3]
+    bar_samples = max(1, int(bar_seconds * rate))
+
+    placements = []
+    cursor = int(first_start)
+    for level, pan in zip(levels, pans):
+        if len(out) - cursor <= fade * 2:
+            break
+        placements.append((cursor, level, pan))
+        cursor += len(mono)
+        cursor = ((cursor + bar_samples - 1) // bar_samples) * bar_samples
+
+    bed = np.ones(len(out), dtype='float32')
+    for start, _level, _pan in placements:
+        bed[start:min(len(out), start + len(mono))] = np.minimum(
+            bed[start:min(len(out), start + len(mono))], duck)
+    out *= bed[:, None]
+
+    channels = out.shape[1]
+    placed = []
+    for start, level, pan in placements:
+        part = mono[:len(out) - start]
+        env = envelope[:len(part)]
+        spread = np.stack([
+            (part * env) * level * (1.0 - pan),
+            (part * env) * level * pan if channels > 1 else (part * env) * level * (1.0 - pan),
+        ][:channels], axis=1)
+        out[start:start + len(part)] += spread
+        placed.append(round(100 * start / max(1, len(out))))
+    return out, placed
+
+
 def _mix_separated(backing_path, vocal_path, out_path, mapping=(0.0, 0.0, 0.0)):
     """Map the model's own vocal and lay it back over the backing it was sung with."""
     import numpy as np
@@ -1706,28 +1755,11 @@ def api_song_mix():
         # Lead means the voice carries the song: louder, and the track steps further
         # back under it. A layer is quieter and leaves the track where it is.
         lead = str(request.args.get('lead') or '') in ('1', 'true', 'yes')
-        levels = [0.95, 0.8, 0.9, 0.72] if lead else [0.62, 0.45, 0.55, 0.38]
-        pans = [0.5, 0.5, 0.5, 0.5] if lead else [0.35, 0.75, 0.6, 0.3]
-        # Was 0.4 (lead) / 0.55: the track dropped 8 dB every time the phrase came back,
-        # which reads as a hole opening under the voice rather than the voice sitting in
-        # the song - and a hole is where the track's own noise floor becomes audible.
+        # Was 0.4 (lead) / 0.55, applied once per copy: with copies overlapping that
+        # compounded to -32 dB of the track. See _place_phrases.
         duck = 0.55 if lead else 0.7
-
-        placed = []
-        for step, (level, pan) in enumerate(zip(levels, pans)):
-            start = int((first_bar + step) * bar * rate)
-            room = len(out) - start
-            if room <= fade * 2:
-                break
-            part = mono[:room]
-            env = envelope[:len(part)]
-            spread = np.stack([
-                (part * env) * level * (1.0 - pan),
-                (part * env) * level * pan if channels > 1 else (part * env) * level * (1.0 - pan),
-            ][:channels], axis=1)
-            out[start:start + len(part)] *= duck
-            out[start:start + len(part)] += spread
-            placed.append(round(100 * (first_bar + step) * bar * rate / max(1, len(out))))
+        out, placed = _place_phrases(out, mono, envelope, rate, fade, lead, duck,
+                                     int(first_bar * bar * rate), bar)
 
         loudest = float(np.max(np.abs(out)) or 0.0)
         if loudest > 0.98:

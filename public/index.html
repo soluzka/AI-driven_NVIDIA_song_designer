@@ -1273,6 +1273,12 @@
          on its own. Vendored, like the page's other scripts, so nothing third-party
          is fetched at runtime. -->
     <script src="vendor/hls.min.js"></script>
+    <!-- One definition of "the same video", shared with the Worker and the exporter
+         (public/lib/video-key.js). This page must not keep a copy. -->
+    <script type="module">
+        import { videoKey } from '/lib/video-key.js';
+        window.videoKey = videoKey;
+    </script>
     <script>
         // Detect if Socket.IO is available (works locally, falls back on Vercel)
         let socket = null;
@@ -1524,53 +1530,6 @@
 
         function tokenize(text) {
             return String(text || '').toLowerCase().match(/[a-z0-9']+/g) || [];
-        }
-
-        // One video, one card. A YouTube video is watch?v=, youtu.be/, /shorts/ or /embed/,
-        // a Dailymotion one is /video/ or /embed/video/, so two rows that look different can
-        // be the same video - and the library count already keys them this way. The results
-        // use the same key, so a video the index has and the database also holds arrives once.
-        const TRACKING_PARAMS = new Set(['si', 'feature', 'pp', 't', 'fbclid', 'gclid', 'igshid', 'ref', 'ref_src']);
-
-        function videoKey(link) {
-            const text = String(link || '').trim();
-            if (!text) return '';
-            let url;
-            try { url = new URL(text); } catch (err) { return text.toLowerCase(); }
-            const host = url.hostname.replace(/^www\./, '').toLowerCase();
-            const path = url.pathname || '';
-            if (host === 'youtu.be' || /(^|\.)youtube\.com$/.test(host)) {
-                let id = '';
-                if (host === 'youtu.be') {
-                    id = path.replace(/^\/+/, '').split('/')[0] || '';
-                } else if (path === '/watch') {
-                    id = url.searchParams.get('v') || '';
-                } else if (path === '/playlist') {
-                    const list = url.searchParams.get('list') || '';
-                    if (list) return 'p:' + list;
-                } else {
-                    const match = path.match(/^\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{11})/);
-                    id = match ? match[1] : '';
-                }
-                if (id) return 'y:' + id;
-            }
-            if (/(^|\.)dailymotion\.com$/.test(host)) {
-                const match = path.match(/\/(?:embed\/)?video\/([A-Za-z0-9]+)/);
-                if (match) return 'd:' + match[1];
-            }
-            if (/(^|\.)vimeo\.com$/.test(host)) {
-                const match = path.match(/(\d{6,})/);
-                if (match) return 'v:' + match[1];
-            }
-            // The path alone is not an identity: every app on Google Play and every YouTube
-            // playlist shares its path, and differs in the query.
-            const kept = [];
-            for (const [name, value] of url.searchParams.entries()) {
-                const lowered = String(name).toLowerCase();
-                if (!lowered || TRACKING_PARAMS.has(lowered) || lowered.startsWith('utm_')) continue;
-                kept.push(name + '=' + value);
-            }
-            return 'u:' + (host + path).replace(/\/+$/, '').toLowerCase() + (kept.length ? '?' + kept.sort().join('&') : '');
         }
 
         // Drops a row whose video is already in the list, filling what the kept row lacks

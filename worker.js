@@ -1,3 +1,5 @@
+import { videoKey } from './public/lib/video-key.js';
+
 /**
  * Cloudflare Worker for the video discovery site.
  *
@@ -1120,58 +1122,7 @@ function isVideoUrl(link) {
   return VIDEO_URL_PATTERNS.some((pattern) => lowered.includes(pattern));
 }
 
-// A video's identity in both the shipped index and the database. The same link has to key
-// the same way on both sides, or "the library already has this" is a guess: the same
-// YouTube video is watch?v=, youtu.be/, /shorts/ and /embed/, and a Dailymotion one is
-// /video/ or /embed/video/.
-function videoKey(link) {
-  const text = String(link || '').trim();
-  if (!text) return '';
-  let url;
-  try { url = new URL(text); } catch (err) { return text.toLowerCase(); }
-  const host = url.hostname.replace(/^www\./, '').toLowerCase();
-  const path = url.pathname || '';
-  if (host === 'youtu.be' || /(^|\.)youtube\.com$/.test(host)) {
-    let id = '';
-    if (host === 'youtu.be') {
-      id = path.replace(/^\/+/, '').split('/')[0] || '';
-    } else if (path === '/watch') {
-      id = url.searchParams.get('v') || '';
-    } else if (path === '/playlist') {
-      // A playlist is not the page: every playlist in YouTube Music shares the path.
-      const list = url.searchParams.get('list') || '';
-      if (list) return 'p:' + list;
-    } else {
-      const match = path.match(/^\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{11})/);
-      id = match ? match[1] : '';
-    }
-    if (id) return 'y:' + id;
-  }
-  if (/(^|\.)dailymotion\.com$/.test(host)) {
-    const match = path.match(/\/(?:embed\/)?video\/([A-Za-z0-9]+)/);
-    if (match) return 'd:' + match[1];
-  }
-  if (/(^|\.)vimeo\.com$/.test(host)) {
-    const match = path.match(/(\d{6,})/);
-    if (match) return 'v:' + match[1];
-  }
-  // Anything else: the path alone is not an identity. Every app on Google Play and every
-  // YouTube Music playlist shares its path and differs in the query, so dropping the query
-  // merged dozens of unrelated videos into one key - which also made the total too low.
-  return 'u:' + (host + path).replace(/\/+$/, '').toLowerCase() + _queryKey(url);
-}
 
-const TRACKING_PARAMS = new Set(['si', 'feature', 'pp', 't', 'fbclid', 'gclid', 'igshid', 'ref', 'ref_src']);
-
-function _queryKey(url) {
-  const kept = [];
-  for (const [name, value] of url.searchParams.entries()) {
-    const lowered = String(name).toLowerCase();
-    if (!lowered || TRACKING_PARAMS.has(lowered) || lowered.startsWith('utm_')) continue;
-    kept.push(`${name}=${value}`);
-  }
-  return kept.length ? '?' + kept.sort().join('&') : '';
-}
 
 // The shipped index's keys. Read once per isolate from a small asset, never the 3 MB
 // index itself, so an ingest can tell an old video from a new one without fetching the

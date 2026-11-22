@@ -16,8 +16,8 @@ import math
 import os
 import re
 import sqlite3
+import subprocess
 import sys
-from urllib.parse import parse_qs, urlsplit
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,72 +39,33 @@ MIN_KEEP = 0.9
 _ESCAPED = re.compile(r'\\u([0-9a-fA-F]{4})')
 
 
-def video_key(link: str) -> str:
-    """The identity the Worker uses, so a link this index ships is recognised there.
+NODE = os.path.join(ROOT, "tools", "node", "node.exe")
+KEY_CLI = os.path.join(ROOT, "tools", "video_key_cli.mjs")
+_KEY_CACHE = {}
 
-    One video is watch?v=, youtu.be/, /shorts/ and /embed/; a Dailymotion one is /video/
-    or /embed/video/. Both sides have to agree, or "the library already has this" is a
-    guess and the count of what the database adds is wrong.
+
+def video_keys(links):
+    """Keys for a list of links, from the one definition the page and the Worker use.
+
+    The key decides whether a video is already in the library and whether two results are
+    one card, so it is not written here at all: tools/video_key_cli.mjs runs
+    public/lib/video-key.js and the answers come back. A copy in Python would be a fourth
+    thing to drift, which is exactly what happened to the first three.
     """
-    text = (link or "").strip()
-    if not text:
-        return ""
-    try:
-        parts = urlsplit(text)
-    except ValueError:
-        return text.lower()
-    host = (parts.hostname or "").lower()
-    if host.startswith("www."):
-        host = host[4:]
-    path = parts.path or ""
-    if host == "youtu.be":
-        vid = path.strip("/").split("/")[0]
-        if vid:
-            return "y:" + vid
-    elif host.endswith("youtube.com"):
-        if path == "/watch":
-            vid = (parse_qs(parts.query).get("v") or [""])[0]
-        elif path == "/playlist":
-            # A playlist is not the page: every playlist in YouTube Music shares the path.
-            playlist = (parse_qs(parts.query).get("list") or [""])[0]
-            if playlist:
-                return "p:" + playlist
-            vid = ""
-        else:
-            match = re.match(r"^/(?:shorts|embed|live)/([A-Za-z0-9_-]{11})", path)
-            vid = match.group(1) if match else ""
-        if vid:
-            return "y:" + vid
-    elif host.endswith("dailymotion.com"):
-        match = re.search(r"/(?:embed/)?video/([A-Za-z0-9]+)", path)
-        if match:
-            return "d:" + match.group(1)
-    elif host.endswith("vimeo.com"):
-        match = re.search(r"(\d{6,})", path)
-        if match:
-            return "v:" + match.group(1)
-    # Anything else: the path alone is not an identity. Every app on Google Play and every
-    # YouTube Music playlist shares its path and differs in the query, so dropping the query
-    # merged dozens of unrelated videos into one key - which also made the total too low.
-    return "u:" + (host + path).rstrip("/").lower() + _query_key(parts)
+    wanted = [link for link in links if link not in _KEY_CACHE]
+    if wanted:
+        result = subprocess.run([NODE, KEY_CLI], input=json.dumps(wanted).encode("utf-8"),
+                                capture_output=True)
+        if result.returncode != 0:
+            raise SystemExit("The video key module did not run: "
+                             + result.stderr.decode("utf-8", "replace")[-400:])
+        for link, key in zip(wanted, json.loads(result.stdout.decode("utf-8"))):
+            _KEY_CACHE[link] = key
+    return [_KEY_CACHE.get(link, "") for link in links]
 
 
-TRACKING_PARAMS = {"si", "feature", "pp", "t", "fbclid", "gclid", "igshid", "ref", "ref_src"}
-
-
-def _query_key(parts) -> str:
-    try:
-        pairs = parse_qs(parts.query, keep_blank_values=False)
-    except ValueError:
-        return ""
-    kept = []
-    for name, values in pairs.items():
-        lowered = name.lower()
-        if lowered in TRACKING_PARAMS or lowered.startswith("utm_"):
-            continue
-        for value in values:
-            kept.append(f"{name}={value}")
-    return "?" + "&".join(sorted(kept)) if kept else ""
+def video_key(link: str) -> str:
+    return video_keys([link])[0]
 
 
 def plain_text(value) -> str:
@@ -427,7 +388,8 @@ def main():
     # The keys are what the Worker compares against, and one video can be two rows, so the
     # count here is videos, not rows: the page and the database then agree on what they are
     # counting.
-    seen_keys = sorted({video_key(video["u"]) for video in videos if video.get("u")})
+    links = [video["u"] for video in videos if video.get("u")]
+    seen_keys = sorted(set(video_keys(links)))
     with open(os.path.join(ROOT, "public", "data", "library.json"), "w", encoding="utf-8") as handle:
         json.dump({
             "generated": payload["generated"],

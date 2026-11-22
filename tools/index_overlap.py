@@ -61,8 +61,7 @@ def main():
 
     index_by_key = {}
     index_dupes = 0
-    for row in index:
-        key = exporter.video_key(row.get("u", ""))
+    for row, key in zip(index, exporter.video_keys([row.get("u", "") for row in index])):
         if key in index_by_key:
             index_dupes += 1
         else:
@@ -70,8 +69,7 @@ def main():
 
     database_by_key = {}
     database_dupes = 0
-    for row in database:
-        key = exporter.video_key(row.get("url", ""))
+    for row, key in zip(database, exporter.video_keys([row.get("url", "") for row in database])):
         if key in database_by_key:
             database_dupes += 1
         else:

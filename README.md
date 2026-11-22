@@ -273,15 +273,17 @@ in the browser when the service is not running. It also stops asking the Worker
 for the song model after the first 501, so a compose goes straight to the machine
 that can actually render.
 
-That band's electric guitars go through a bit-crush before the drive bus
-(`GUITAR_CRUSH_BITS`, four bits, fed at a fixed level so the crush is a property of
-the curve rather than of how loud the part arrives). Measured on the
-`distortion_guitar` sample, the part's energy above 6 kHz rises from 0.204 to
-0.267 of its RMS, and on a metal bounce from 0.201 to 0.271, with the peak
-unchanged at 0.94 and nothing clipped; the bounce's RMS drops 1 dB, because the
-crushed peaks make the master compressor work harder for the same peak. The clean
-steel-string parts are left out: a country or reggae arrangement with an acoustic
-guitar renders bit-identical with the crush on or off.
+That band's electric guitars go through a bit-crush before the drive bus:
+`GUITAR_CRUSH_STEP`, one shaper curve on the guitar parts' own path into the band.
+The grid is an absolute 1/32 rather than a bit count over full scale, because the
+sampled parts arrive at about 0.15 of full scale and a four-bit curve over the
+whole scale would put a chord on two steps. Measured on the `distortion_guitar`
+sample, the part's energy above 6 kHz rises from 0.204 to 0.266 of its RMS, and on
+a metal bounce from 0.201 to 0.264, with the peak unchanged at 0.94 and nothing
+clipped; the bounce's RMS drops 1.5 dB, because the crushed peaks make the master
+compressor work harder for the same peak. The clean steel-string parts are left
+out: a country or reggae arrangement with an acoustic guitar renders bit-identical
+with the crush on or off.
 
 ### Installing the AI packages
 

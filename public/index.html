@@ -1362,7 +1362,15 @@
                 offset = results.length;
             }
 
-            return { results, total, discovered: first.discovered, stats };
+            // The database can hold one video twice when it was stored under two links;
+            // the page shows it once.
+            const unique = uniqueByVideo(results);
+            return {
+                results: unique,
+                total: unique.length + Math.max(0, total - results.length),
+                discovered: first.discovered,
+                stats,
+            };
         }
 
         // YouTube is only reachable from this machine: YouTube refuses a Worker's
@@ -1375,6 +1383,18 @@
         // words is a request for the next page of the world, not a reprint of the
         // one before it, so what has been seen is skipped and the list moves on.
         const seenLinks = new Set();
+        // The same links by video key, because mergeFound compares keys now: a link the
+        // index lists as watch?v= and the database as youtu.be/ is one video.
+        const seenKeys = new Set();
+
+        function markSeen(rows) {
+            (rows || []).forEach(row => {
+                const url = String((row && row.url) || '').toLowerCase();
+                if (url) seenLinks.add(url);
+                const key = videoKey(row && row.url);
+                if (key) seenKeys.add(key);
+            });
+        }
 
         function clockSeconds(value) {
             const total = Number(value) || 0;
@@ -1506,6 +1526,75 @@
             return String(text || '').toLowerCase().match(/[a-z0-9']+/g) || [];
         }
 
+        // One video, one card. A YouTube video is watch?v=, youtu.be/, /shorts/ or /embed/,
+        // a Dailymotion one is /video/ or /embed/video/, so two rows that look different can
+        // be the same video - and the library count already keys them this way. The results
+        // use the same key, so a video the index has and the database also holds arrives once.
+        const TRACKING_PARAMS = new Set(['si', 'feature', 'pp', 't', 'fbclid', 'gclid', 'igshid', 'ref', 'ref_src']);
+
+        function videoKey(link) {
+            const text = String(link || '').trim();
+            if (!text) return '';
+            let url;
+            try { url = new URL(text); } catch (err) { return text.toLowerCase(); }
+            const host = url.hostname.replace(/^www\./, '').toLowerCase();
+            const path = url.pathname || '';
+            if (host === 'youtu.be' || /(^|\.)youtube\.com$/.test(host)) {
+                let id = '';
+                if (host === 'youtu.be') {
+                    id = path.replace(/^\/+/, '').split('/')[0] || '';
+                } else if (path === '/watch') {
+                    id = url.searchParams.get('v') || '';
+                } else if (path === '/playlist') {
+                    const list = url.searchParams.get('list') || '';
+                    if (list) return 'p:' + list;
+                } else {
+                    const match = path.match(/^\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{11})/);
+                    id = match ? match[1] : '';
+                }
+                if (id) return 'y:' + id;
+            }
+            if (/(^|\.)dailymotion\.com$/.test(host)) {
+                const match = path.match(/\/(?:embed\/)?video\/([A-Za-z0-9]+)/);
+                if (match) return 'd:' + match[1];
+            }
+            if (/(^|\.)vimeo\.com$/.test(host)) {
+                const match = path.match(/(\d{6,})/);
+                if (match) return 'v:' + match[1];
+            }
+            // The path alone is not an identity: every app on Google Play and every YouTube
+            // playlist shares its path, and differs in the query.
+            const kept = [];
+            for (const [name, value] of url.searchParams.entries()) {
+                const lowered = String(name).toLowerCase();
+                if (!lowered || TRACKING_PARAMS.has(lowered) || lowered.startsWith('utm_')) continue;
+                kept.push(name + '=' + value);
+            }
+            return 'u:' + (host + path).replace(/\/+$/, '').toLowerCase() + (kept.length ? '?' + kept.sort().join('&') : '');
+        }
+
+        // Drops a row whose video is already in the list, filling what the kept row lacks
+        // (a genre, a description, a duration) from the copy it drops. The first row wins
+        // because it is the better ranked one.
+        function uniqueByVideo(rows) {
+            const byKey = new Map();
+            const out = [];
+            (rows || []).forEach(row => {
+                if (!row) return;
+                const key = videoKey(row.url) || String(row.url || '').toLowerCase();
+                const kept = byKey.get(key);
+                if (!kept) {
+                    byKey.set(key, row);
+                    out.push(row);
+                    return;
+                }
+                ['genre', 'description', 'thumbnail', 'duration', 'title'].forEach(field => {
+                    if (!kept[field] && row[field]) kept[field] = row[field];
+                });
+            });
+            return out;
+        }
+
         // Keyword scoring over the bundled index: title beats tags beats description.
         function localSearch(query, limit = Infinity) {
             const terms = tokenize(query);
@@ -1532,19 +1621,19 @@
             });
             scored.sort((a, b) => b.score - a.score);
             const best = scored.length ? scored[0].score : 0;
-            return {
-                total: scored.length,
-                results: scored.slice(0, limit).map(item => ({
-                    url: item.video.u,
-                    title: item.video.t,
-                    description: item.video.d,
-                    thumbnail: item.video.th,
-                    duration: item.video.du,
-                    source: item.video.s,
-                    score: best ? Math.min(item.score / best, 1) : 0,
-                    genre: bundledGenre(item.video.g),
-                })),
-            };
+            // The export can hold the same video under two links as well (36 keys in the
+            // current index do): one card per video, not one per row.
+            const rows = uniqueByVideo(scored.map(item => ({
+                url: item.video.u,
+                title: item.video.t,
+                description: item.video.d,
+                thumbnail: item.video.th,
+                duration: item.video.du,
+                source: item.video.s,
+                score: best ? Math.min(item.score / best, 1) : 0,
+                genre: bundledGenre(item.video.g),
+            })));
+            return { total: rows.length, results: rows.slice(0, limit) };
         }
 
         // Genres are inferred when the index is exported and stored in the JSON
@@ -1845,10 +1934,7 @@
                     // older matches stay below.
                     results.sort((a, b) => Number(seenLinks.has(String(a.url || '').toLowerCase()))
                         - Number(seenLinks.has(String(b.url || '').toLowerCase())));
-                    results.forEach(row => {
-                        const key = String(row.url || '').toLowerCase();
-                        if (key) seenLinks.add(key);
-                    });
+                    markSeen(results);
 
                     // Remove empty state and show results
                     const empty = document.getElementById('emptyState');
@@ -1978,7 +2064,7 @@
                     // a card with none stays unclassified rather than guessed at.
                     genre: video.genre || null,
                 }));
-                results.forEach(row => seenLinks.add(String(row.url).toLowerCase()));
+                markSeen(results);
 
                 aiStatus.innerHTML = renderSummary(
                     isPlaylist ? 'this playlist' : query,
@@ -2004,14 +2090,15 @@
         // screen. A link the index already has is skipped: the same video from two
         // searches is still one card.
         function mergeFound(results, extra) {
-            if (!extra.length) return { results: results, added: 0 };
-            const known = new Set(results.map(row => String(row.url || '').toLowerCase()));
+            if (!extra.length) return { results: uniqueByVideo(results), added: 0 };
+            const known = new Set(results.map(row => videoKey(row.url) || String(row.url || '').toLowerCase()));
             const fresh = [];
             extra.forEach(video => {
-                const key = String((video && video.url) || '').toLowerCase();
-                if (!key || known.has(key) || seenLinks.has(key)) return;
+                const key = videoKey(video && video.url) || String((video && video.url) || '').toLowerCase();
+                if (!key || known.has(key) || seenKeys.has(key)) return;
                 known.add(key);
-                seenLinks.add(key);
+                seenKeys.add(key);
+                if (video.url) seenLinks.add(String(video.url).toLowerCase());
                 fresh.push({
                     url: video.url,
                     title: video.title,
@@ -2023,7 +2110,7 @@
                     genre: video.genre || null,
                 });
             });
-            return { results: fresh.concat(results), added: fresh.length };
+            return { results: uniqueByVideo(fresh.concat(results)), added: fresh.length };
         }
 
         // --- Results ---

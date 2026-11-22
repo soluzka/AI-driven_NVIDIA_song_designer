@@ -1137,6 +1137,10 @@ function videoKey(link) {
       id = path.replace(/^\/+/, '').split('/')[0] || '';
     } else if (path === '/watch') {
       id = url.searchParams.get('v') || '';
+    } else if (path === '/playlist') {
+      // A playlist is not the page: every playlist in YouTube Music shares the path.
+      const list = url.searchParams.get('list') || '';
+      if (list) return 'p:' + list;
     } else {
       const match = path.match(/^\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{11})/);
       id = match ? match[1] : '';
@@ -1151,7 +1155,22 @@ function videoKey(link) {
     const match = path.match(/(\d{6,})/);
     if (match) return 'v:' + match[1];
   }
-  return 'u:' + (host + path).replace(/\/+$/, '').toLowerCase();
+  // Anything else: the path alone is not an identity. Every app on Google Play and every
+  // YouTube Music playlist shares its path and differs in the query, so dropping the query
+  // merged dozens of unrelated videos into one key - which also made the total too low.
+  return 'u:' + (host + path).replace(/\/+$/, '').toLowerCase() + _queryKey(url);
+}
+
+const TRACKING_PARAMS = new Set(['si', 'feature', 'pp', 't', 'fbclid', 'gclid', 'igshid', 'ref', 'ref_src']);
+
+function _queryKey(url) {
+  const kept = [];
+  for (const [name, value] of url.searchParams.entries()) {
+    const lowered = String(name).toLowerCase();
+    if (!lowered || TRACKING_PARAMS.has(lowered) || lowered.startsWith('utm_')) continue;
+    kept.push(`${name}=${value}`);
+  }
+  return kept.length ? '?' + kept.sort().join('&') : '';
 }
 
 // The shipped index's keys. Read once per isolate from a small asset, never the 3 MB
@@ -1382,8 +1401,8 @@ async function discoverVideos(env, query, limit = 20) {
         + "VALUES (?, ?, ?, ?, ?, 'Dailymotion', 'Dailymotion', ?, 0, 0, '')"
       ).bind(
         link,
-        title.slice(0, 300),
-        String(row.description || '').slice(0, 2000),
+        tidyText(title).slice(0, 300),
+        tidyText(row.description).slice(0, 2000),
         String(row.thumbnail_360_url || ''),
         formatSeconds(row.duration),
         Date.now() / 1000
@@ -1540,8 +1559,8 @@ async function ingestVideos(env, request) {
         + ' click_count, relevance_score, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, \'\')'
       ).bind(
         link,
-        title.slice(0, 300),
-        String(video.description || '').slice(0, 2000),
+        tidyText(title).slice(0, 300),
+        tidyText(video.description).slice(0, 2000),
         String(video.thumbnail || ''),
         String(video.duration || 'Unknown'),
         source,
@@ -1712,6 +1731,17 @@ async function shippedCount(env) {
   }
   if (!env.ASSETS) return shippedLibrary.count;
   try {
+    // The key list is the count that matters: the index can hold one video twice under two
+    // links, and the library should count the video once.
+    const response = await env.ASSETS.fetch(new Request('https://library.local/data/seen.json'));
+    if (response.ok) {
+      const entry = await response.json();
+      const count = Number(entry && entry.count) || 0;
+      if (count > 0) shippedLibrary = { count, at: Date.now() };
+      return shippedLibrary.count;
+    }
+  } catch (err) { /* fall back to the row count */ }
+  try {
     const response = await env.ASSETS.fetch(new Request('https://library.local/data/library.json'));
     if (!response.ok) return shippedLibrary.count;
     const entry = await response.json();
@@ -1776,7 +1806,15 @@ async function rebaseVideoTotal(env, count) {
 // per export - the rows the database holds are compared against the shipped keys - and
 // after that the ingest path keeps new rows out of the overlap by refusing them.
 // The marker remembers which export was reconciled, so a new export reconciles again.
-const RECONCILE_VERSION = 2;
+const RECONCILE_VERSION = 4;
+
+// The database kept `\u0026` where the index kept `&`, because a title arrived as escaped
+// JSON text and was stored as given. Decoded on the way in, so the two sides say the same
+// thing about a video.
+function tidyText(text) {
+  return String(text == null ? '' : text).replace(/\\u([0-9a-fA-F]{4})/g,
+    (match, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
 
 async function exactVideoTotal(env, shipped) {
   if (!env.DB || !shipped) return 0;

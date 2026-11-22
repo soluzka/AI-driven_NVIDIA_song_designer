@@ -64,6 +64,12 @@ def video_key(link: str) -> str:
     elif host.endswith("youtube.com"):
         if path == "/watch":
             vid = (parse_qs(parts.query).get("v") or [""])[0]
+        elif path == "/playlist":
+            # A playlist is not the page: every playlist in YouTube Music shares the path.
+            playlist = (parse_qs(parts.query).get("list") or [""])[0]
+            if playlist:
+                return "p:" + playlist
+            vid = ""
         else:
             match = re.match(r"^/(?:shorts|embed|live)/([A-Za-z0-9_-]{11})", path)
             vid = match.group(1) if match else ""
@@ -77,7 +83,28 @@ def video_key(link: str) -> str:
         match = re.search(r"(\d{6,})", path)
         if match:
             return "v:" + match.group(1)
-    return "u:" + (host + path).rstrip("/").lower()
+    # Anything else: the path alone is not an identity. Every app on Google Play and every
+    # YouTube Music playlist shares its path and differs in the query, so dropping the query
+    # merged dozens of unrelated videos into one key - which also made the total too low.
+    return "u:" + (host + path).rstrip("/").lower() + _query_key(parts)
+
+
+TRACKING_PARAMS = {"si", "feature", "pp", "t", "fbclid", "gclid", "igshid", "ref", "ref_src"}
+
+
+def _query_key(parts) -> str:
+    try:
+        pairs = parse_qs(parts.query, keep_blank_values=False)
+    except ValueError:
+        return ""
+    kept = []
+    for name, values in pairs.items():
+        lowered = name.lower()
+        if lowered in TRACKING_PARAMS or lowered.startswith("utm_"):
+            continue
+        for value in values:
+            kept.append(f"{name}={value}")
+    return "?" + "&".join(sorted(kept)) if kept else ""
 
 
 def plain_text(value) -> str:
@@ -397,10 +424,15 @@ def main():
     # the server's ingest counter, which is seeded once and then only counts new rows, so
     # a re-export was always bigger than the number shown (8,067 against 8,724). What is
     # actually shipped now says so itself, without the 3 MB index being fetched first.
+    # The keys are what the Worker compares against, and one video can be two rows, so the
+    # count here is videos, not rows: the page and the database then agree on what they are
+    # counting.
+    seen_keys = sorted({video_key(video["u"]) for video in videos if video.get("u")})
     with open(os.path.join(ROOT, "public", "data", "library.json"), "w", encoding="utf-8") as handle:
         json.dump({
             "generated": payload["generated"],
-            "count": len(videos),
+            "count": len(seen_keys),
+            "rows": len(videos),
             "searches": searches,
             "clicks": clicks,
             "genres": sum(1 for video in videos if video.get("g")),
@@ -411,9 +443,8 @@ def main():
     # it once per isolate to tell a video the library already has from one it is adding,
     # so an ingest skips the first without fetching the 3 MB index on every search, and the
     # total counts a video once.
-    keys = sorted({video_key(video["u"]) for video in videos if video.get("u")})
     with open(os.path.join(ROOT, "public", "data", "seen.json"), "w", encoding="utf-8") as handle:
-        json.dump({"generated": payload["generated"], "count": len(keys), "keys": keys},
+        json.dump({"generated": payload["generated"], "count": len(seen_keys), "keys": seen_keys},
                   handle, separators=(",", ":"))
 
     print("videos %d | sources %d | searches %d | clicks %d"

@@ -35,6 +35,10 @@ build/*.wav
 build/*.mp3
 build/*.json
 build/*.sql
+# Separated stems from a render: a few megabytes a song, made by demucs from the
+# files in song_service/logs and re-made whenever the balance is checked. `build/*.wav`
+# only reaches the files directly in build/, not these.
+build/stems/
 
 # Wrangler's own cache, written by every deploy
 dist/

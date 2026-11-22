@@ -285,6 +285,12 @@ compressor work harder for the same peak. The clean steel-string parts are left
 out: a country or reggae arrangement with an acoustic guitar renders bit-identical
 with the crush on or off.
 
+The step size is the whole trade, measured on the same seeded bounce. 1/64 (about
+5 bits at the level the parts arrive at) is 2.3% THD on a held note, +18% top end
+and 0.5 dB of level; 1/32 is 4.8%, +31% and 1.5 dB; 1/16 is 14.3%, +31% and 5 dB.
+The coarse end buys no extra top end over 1/32 and costs three times the level, so
+1/32 is the widest crush that still earns what it costs.
+
 ### Installing the AI packages
 
 The song service keeps its own environment, separate from the web app's venv,

@@ -439,6 +439,35 @@ class MusicGenreModel:
         idf = max(0.0, min(1.0, idf))
         return floor + (1.0 - floor) * idf
 
+    def has_music_cue(self, title: str = '', description: str = '', tags: str = '') -> bool:
+        """Whether the listing says music, song, remix, album, audio, band or similar.
+
+        Used where a name alone is the evidence: "Tool" is a band and also a thing in a
+        workshop, so an artist-only reading is only offered to a listing that says it is
+        music somewhere.
+        """
+        text = f'{title or ""} {description or ""} {tags or ""}'.lower()
+        return any(re.search(r'(?<![a-z0-9])' + re.escape(cue) + r's?(?![a-z0-9])', text)
+                   for cue in MUSIC_CUES)
+
+    def is_music_listing(self, title: str = '', description: str = '', tags: str = '') -> bool:
+        """Whether the words read as a piece of music at all.
+
+        "Application du PURE M\u00e9tal" is a workshop video that happens to say metal, and
+        infer() refuses it. Exposed so the exporter can refuse a reading to the same
+        listings the model would never label - a weak reading on a metalwork tutorial is
+        the page claiming a genre for something that is not a song.
+        """
+        text = f'{title or ""} {description or ""} {tags or ""}'.lower()
+        if not text.strip():
+            return False
+        strong = ('music', 'song', 'remix', 'mix', 'album', 'band', 'dj',
+                  'concert', 'lyrics', 'instrumental', 'playlist')
+        if any(re.search(r'(?<![a-z0-9])' + re.escape(cue) + r's?(?![a-z0-9])', text)
+               for cue in strong):
+            return True
+        return not _non_music(text)
+
     def rank(self, title: str = '', description: str = '', tags: str = '') -> List[Dict]:
         """Every genre the words point at, strongest first, with the words doing it.
 
@@ -451,8 +480,33 @@ class MusicGenreModel:
         scores, evidence, _bpm = self._scored(title, description, tags)
         ranked: List[Dict] = []
         for genre, score in sorted(scores.items(), key=lambda item: item[1], reverse=True)[:3]:
+            findings = evidence.get(genre, [])
+            # One word is a coincidence, not a reading: "Mexico Cruises" is not latin because
+            # it says Mexico, and "BibleGateway" is not rock because it says tool. A reading
+            # needs either a finding about the music itself (genre, scene, tempo, mood) or a
+            # distinctive artist name - and a name only counts on a listing that says it is
+            # music, because "Tool" is also something in a workshop.
+            if score < 1.0:
+                continue
+            kinds = {item.get('kind') for item in findings}
+            # Anything a listing says about the music itself stands on its own: the genre, a
+            # scene, an artist or label from it, the bass, the drums, the vocals, an
+            # instrument, a place, a tempo.
+            sound_evidence = kinds & {'genre', 'scene', 'artists', 'labels', 'bass', 'drums',
+                                     'vocals', 'instruments', 'place', 'tempo'}
+            if not sound_evidence:
+                # Mood words alone ("sleep", "calm") describe a use, not a genre. Two of them
+                # on a listing that says it is music is a reading; one is a word.
+                if len(findings) < 2 or not self.has_music_cue(title, description, tags):
+                    continue
+            elif sound_evidence == {'artists'}:
+                # A name on its own has to be distinctive, and the listing has to be music:
+                # "Tool" is a band and also a thing on a workbench.
+                if (max(item['points'] for item in findings) < 1.2
+                        or not self.has_music_cue(title, description, tags)):
+                    continue
             terms: List[str] = []
-            for finding in sorted(evidence.get(genre, []), key=lambda item: item['points'], reverse=True):
+            for finding in sorted(findings, key=lambda item: item['points'], reverse=True):
                 term = finding.get('term') or ''
                 if term and term not in terms:
                     terms.append(term)

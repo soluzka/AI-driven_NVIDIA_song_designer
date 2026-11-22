@@ -12,6 +12,7 @@ Genres are therefore inferred here, once, and shipped inside the JSON next to
 """
 
 import json
+import math
 import os
 import re
 import sqlite3
@@ -81,6 +82,187 @@ def shrink_refusal(live_count, snapshot_count):
             % (live_count, snapshot_count, round(MIN_KEEP * 100)))
 
 
+# --- readings from the library around a listing ------------------------------
+# Most rows say nothing a genre vocabulary can catch: "Untitled Video", a part number, a
+# workshop clip. Their own words cannot name a genre, but the library can speak for them -
+# if a title shares its rare words with rows that are labelled, those labels are evidence
+# about this one. It is written as a reading and the page prints it as one, and only when
+# the neighbours are clearly closer than the alternatives: at least two labelled neighbours,
+# a real share of the weight, and a margin over the next genre.
+NEIGHBOUR_STOP = {
+    'the', 'and', 'for', 'with', 'from', 'that', 'this', 'you', 'your', 'has', 'have',
+    'was', 'were', 'are', 'not', 'but', 'all', 'out', 'over', 'into', 'about', 'after',
+    'official', 'video', 'audio', 'lyrics', 'lyric', 'music', 'song', 'songs', 'full',
+    'new', 'hd', 'hq', 'feat', 'ft', 'prod', 'remix', 'edit', 'clip', 'mix', 'album',
+    'track', 'untitled', 'youtube', 'www', 'com', 'http', 'https',
+}
+
+# A neighbour has to be close on its own terms, not merely first among weak matches: a
+# title of one generic word ("Intro", "Keyboard shortcuts") matches something everywhere,
+# and taking that as evidence is how a reading turns into a guess. So the comparison is a
+# cosine over idf-weighted words, the query needs at least three words that are not the
+# same generic words, two of those words have to be shared with the winner, and the winner
+# has to hold a clear share with a margin over the next genre.
+NEIGHBOUR_NEIGHBOURS = 5
+NEIGHBOUR_MIN_COSINE = 0.55    # how close the best labelled row has to be
+NEIGHBOUR_MIN_SUPPORT_COSINE = 0.45
+NEIGHBOUR_MIN_SHARED_WORDS = 2
+NEIGHBOUR_MIN_QUERY_WORDS = 3
+NEIGHBOUR_MIN_COVERAGE = 0.55  # of this listing's own weight, matched by the neighbour
+NEIGHBOUR_MIN_SHARE = 0.68     # of the neighbour weight, against the next genre
+NEIGHBOUR_MIN_SUPPORT = 2      # distinct labelled rows agreeing
+NEIGHBOUR_MIN_MARGIN = 1.5     # times the runner-up's weight
+NEIGHBOUR_DISTINCTIVE_DF = 5   # a shared word may not be common in the labelled rows
+
+
+def _tokens(text: str):
+    return [word for word in re.findall(r"[a-z0-9']{3,}", str(text or '').lower())
+            if word not in NEIGHBOUR_STOP and not word.isdigit()]
+
+
+def _has_music_cue(text: str) -> bool:
+    """Whether a listing says it is music at all.
+
+    The library is mostly not music: pilates routines, race cards, cake clips. Those clusters
+    sit next to each other in the words and a nearest-neighbour pass will happily hand a
+    pilates guide the genre of another pilates guide that the vocabulary had mislabelled.
+    A listing that never says music, song, remix, album, beat or audio is not offered a
+    borrowed reading; the honest answer for it is still "unclassified".
+    """
+    return any(re.search(r'(?<![a-z0-9])' + re.escape(cue) + r's?(?![a-z0-9])', text)
+               for cue in MUSIC_LISTING_CUES)
+
+
+MUSIC_LISTING_CUES = ('music', 'song', 'remix', 'mix', 'album', 'single', 'ep', 'beat',
+                     'beats', 'instrumental', 'lyrics', 'concert', 'band', 'singer',
+                     'vocal', 'vocals', 'audio', 'ost', 'soundtrack', 'playlist', 'dj',
+                     'mixtape', 'bootleg', 'rework', 'live set')
+
+
+def neighbour_readings(videos, model):
+    """Give rows that name no genre a reading borrowed from labelled neighbours.
+
+    Returns (rows given a reading, rows with words to compare).
+    """
+    # Only labels worth borrowing: a confident genre, on a listing that reads as music.
+    # These 1,541 labels are what the vocabulary produced, and it is not always right about
+    # what a page is - a neighbour pass over its mistakes spreads them, so the pool is
+    # the rows that are both confident and plainly musical.
+    labelled = [row for row in videos
+                if (row.get('g') or {}).get('n')
+                and float((row.get('g') or {}).get('c') or 0) >= 0.6
+                and model.is_music_listing(row.get('t', ''), row.get('d', ''), row.get('tg', ''))
+                and _has_music_cue(('%s %s %s' % (row.get('t', ''), row.get('d', ''), row.get('tg', ''))).lower())]
+    if len(labelled) < 10:
+        return 0, 0
+    doc_tokens = [_tokens('%s %s' % (row.get('t', ''), row.get('tg', ''))) for row in labelled]
+
+    document_frequency = {}
+    for tokens in doc_tokens:
+        for token in set(tokens):
+            document_frequency[token] = document_frequency.get(token, 0) + 1
+    total = len(labelled)
+    idf = {token: math.log((total + 1) / (count + 1)) + 1.0
+           for token, count in document_frequency.items()}
+
+    vectors = []
+    for tokens in doc_tokens:
+        weights = {token: idf[token] for token in set(tokens)}
+        norm = math.sqrt(sum(value * value for value in weights.values())) or 1.0
+        vectors.append({token: value / norm for token, value in weights.items()})
+
+    index = {}
+    for position, tokens in enumerate(doc_tokens):
+        for token in set(tokens):
+            index.setdefault(token, []).append(position)
+
+    given = 0
+    considered = 0
+    for row in videos:
+        if (row.get('g') or {}).get('n') or row.get('w'):
+            continue
+        # The model's own refusal applies before neighbours are asked: a listing about
+        # horses, parts or prices is not a quiet music listing, and a shared word like
+        # "grand" or "national" must not be allowed to make it one.
+        if not model.is_music_listing(row.get('t', ''), row.get('d', ''), row.get('tg', '')):
+            continue
+        if not _has_music_cue(('%s %s %s' % (row.get('t', ''), row.get('d', ''), row.get('tg', ''))).lower()):
+            continue
+        words = set(_tokens('%s %s' % (row.get('t', ''), row.get('tg', ''))))
+        if not words:
+            continue
+        considered += 1
+        if len(words) < NEIGHBOUR_MIN_QUERY_WORDS:
+            continue
+
+        query = {token: idf.get(token, 1.0) for token in words}
+        norm = math.sqrt(sum(value * value for value in query.values())) or 1.0
+        similarity = {}
+        for token, weight in query.items():
+            for position in index.get(token, ()):
+                similarity[position] = similarity.get(position, 0.0) + (weight / norm) * vectors[position].get(token, 0.0)
+        if not similarity:
+            continue
+        best = sorted(similarity.items(), key=lambda item: item[1], reverse=True)[:NEIGHBOUR_NEIGHBOURS]
+        if best[0][1] < NEIGHBOUR_MIN_COSINE:
+            continue
+        # Two of this listing's own words have to be in the winning neighbour: one shared
+        # word is a coincidence, two is a subject. And one of them has to be distinctive -
+        # rare in the labelled rows and long enough to be a name - because words like
+        # "grand" or "national" are shared by a race card and a symphony and mean neither.
+        shared_with_best = words & set(doc_tokens[best[0][0]])
+        if len(shared_with_best) < NEIGHBOUR_MIN_SHARED_WORDS:
+            continue
+        if not any(document_frequency.get(token, 0) <= NEIGHBOUR_DISTINCTIVE_DF and len(token) >= 5
+                   for token in shared_with_best):
+            continue
+        # Almost all of what this listing says has to be in that neighbour. "ROBLOX animal
+        # hospital" sharing "hospital" with one labelled row is not a subject, it is the
+        # word hospital.
+        coverage = sum(query.get(token, 0.0) for token in shared_with_best)
+        total_query = sum(query.values()) or 1.0
+        if coverage / total_query < NEIGHBOUR_MIN_COVERAGE:
+            continue
+
+        weight = {}
+        support = {}
+        for position, closeness in best:
+            if closeness < NEIGHBOUR_MIN_SUPPORT_COSINE:
+                continue
+            genre = labelled[position]['g']['n']
+            weight[genre] = weight.get(genre, 0.0) + closeness
+            support.setdefault(genre, set()).add(position)
+        if not weight:
+            continue
+        ordered = sorted(weight.items(), key=lambda item: item[1], reverse=True)
+        top_genre, top_weight = ordered[0]
+        runner = ordered[1][1] if len(ordered) > 1 else 0.0
+        if len(support[top_genre]) < NEIGHBOUR_MIN_SUPPORT:
+            continue
+        share = top_weight / (top_weight + runner) if (top_weight + runner) else 0.0
+        # Clearly closer than the alternatives, not merely first.
+        if share < NEIGHBOUR_MIN_SHARE or (runner and top_weight < NEIGHBOUR_MIN_MARGIN * runner):
+            continue
+
+        terms = []
+        for position in support[top_genre]:
+            for token in words & set(doc_tokens[position]):
+                if token not in terms:
+                    terms.append(token)
+        terms.sort(key=lambda token: idf.get(token, 1.0), reverse=True)
+        reading = [[top_genre, round(min(0.9, share), 2), terms[:3]]]
+        # A second reading when another genre has its own support: the page shows two, and
+        # two readings that disagree are more honest than one that hides the disagreement.
+        if len(ordered) > 1:
+            other_genre, other_weight = ordered[1]
+            if len(support[other_genre]) >= NEIGHBOUR_MIN_SUPPORT:
+                other_share = other_weight / (top_weight + other_weight)
+                reading.append([other_genre, round(min(0.9, other_share), 2), terms[:3]])
+        row['w'] = reading
+        given += 1
+    return given, considered
+
+
 def main():
     os.makedirs(os.path.dirname(SNAPSHOT_DB), exist_ok=True)
     os.makedirs(os.path.dirname(STATIC_JSON), exist_ok=True)
@@ -134,9 +316,15 @@ def main():
             # three words each: this repeats thousands of times, and the file is already
             # three megabytes.
             weak = model.rank(video["t"], video["d"], video["tg"])
-            if weak:
+            # The same refusal the model applies: a workshop page that says "metal" is not
+            # heavy metal, and a reading on it is the page claiming a genre for a tutorial.
+            if weak and model.is_music_listing(video["t"], video["d"], video["tg"]):
                 readings += 1
-                video["w"] = [[item["genre"], item["score"], item["terms"]] for item in weak[:2]]
+                # One scale for both kinds of reading, and never 1.0: the number says how
+                # much of the words a genre accounts for, not how sure anyone is. A single
+                # candidate would otherwise print as a certainty.
+                video["w"] = [[item["genre"], round(min(0.9, item["score"] / (item["score"] + 2.0)), 2),
+                               item["terms"]] for item in weak[:2]]
             continue
         labelled += 1
         video["g"] = {
@@ -146,8 +334,9 @@ def main():
             "e": [[item["question"], item["answer"]] for item in guess["evidence"]],
             "a": guess["alternatives"][0]["genre"] if guess["alternatives"] else None,
         }
-    print("genres %d/%d in %.1fs, weak readings on %d more" % (
-        labelled, len(videos), time.time() - started, readings))
+    neighbours, compared = neighbour_readings(videos, model)
+    print("genres %d/%d in %.1fs, weak readings on %d more, neighbour readings on %d of %d" % (
+        labelled, len(videos), time.time() - started, readings, neighbours, compared))
     searches = snapshot.execute("SELECT COUNT(*) FROM search_history").fetchone()[0]
     clicks = snapshot.execute("SELECT SUM(click_count) FROM videos").fetchone()[0] or 0
     snapshot.close()

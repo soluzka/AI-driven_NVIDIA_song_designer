@@ -23,6 +23,9 @@
     The join key. Without it the script asks, hidden, once. The key is what lets a
     machine publish its address; it is not the model, and it is not an account.
 
+.PARAMETER NoWindow
+    Do not open the second console that follows the tunnel and the error logs.
+
 .PARAMETER Source
     The app archive. Defaults to the public repository zip.
 #>
@@ -31,7 +34,8 @@ param(
     [string]$Target = (Join-Path $env:LOCALAPPDATA 'internet-gpu'),
     [string]$Key = '',
     [string]$Source = 'https://codeload.github.com/soluzka/AI-driven_NVIDIA_song_designer/zip/refs/heads/main',
-    [switch]$Offline
+    [switch]$Offline,
+    [switch]$NoWindow
 )
 
 $ErrorActionPreference = 'Continue'
@@ -236,6 +240,32 @@ if ((Test-Path $marker) -and (Test-Path $weights)) {
     Say 'about 20 GB of disk. Every step is printed below; leave it running.'
     Say ''
     & (Join-Path $appDir 'install_all.ps1') -Start -Autostart
+}
+
+# --- the tunnel in a window of its own --------------------------------------
+# The tunnel is started hidden by tools\start_services.ps1 and its address only
+# ever exists in tunnel.log, so a join whose tunnel refused, or rotated to a new
+# address, looked exactly like a join that had done nothing. This opens the second
+# console: it follows the tunnel's log and the services' error logs, which is where
+# "it did not start" and "it started and then failed" look different. Closing the
+# window stops nothing - the tunnel and the services are separate processes.
+if (-not $NoWindow) {
+    $follow = @(
+        (Join-Path $appDir 'tunnel.log'),
+        (Join-Path $appDir 'run_web.err'),
+        (Join-Path $appDir 'build\downloader_err.log'),
+        (Join-Path $appDir 'song_service\logs\service_err.log'),
+        (Join-Path $appDir 'voice_service\logs\service_err.log')
+    ) | Where-Object { Test-Path -LiteralPath $_ }
+    if (@($follow).Count -gt 0) {
+        $following = (@($follow) | ForEach-Object {
+            "Get-Content -Path '$_' -Wait -Tail 8 -ErrorAction SilentlyContinue"
+        }) -join '; '
+        Start-Process -FilePath 'powershell' -ArgumentList @(
+            '-NoProfile', '-NoExit', '-Command', $following) | Out-Null
+        Say 'a second window is following the tunnel log and the error logs'
+        Say '  closing it stops nothing; the tunnel and the services keep running'
+    }
 }
 
 # --- 5. did it actually connect? ---------------------------------------------

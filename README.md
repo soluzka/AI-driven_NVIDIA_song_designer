@@ -708,28 +708,34 @@ makes that card the target; with nothing open it fits to a neutral A minor at
 All of it runs in the tab — no model, no upload, and the words are never read:
 only the sound is moved and shaped.
 
-1. **Pitch.** The median fundamental of the phrase is measured, then moved to the
-   nearest octave of the song's root, so a voice never has to jump an octave to
-   land in the key. Shifting is resample plus a correlate-and-overlap time
-   stretch, so the phrase keeps its length. The stretch lays four grains over
-   every sample (a quarter-grain hop): at half overlap the splice between grains
-   is left bare, and on a held note it flutters at the grain rate, which is the
-   rattle heard when a fitted phrase is played back. The position search that
-   keeps the grains continuous is bounded to an eighth of a hop: a grain allowed
-   to wander a whole hop (11.6 ms) lands a pitch period or more out of phase with
-   the three older grains still underneath it, and the four sum with a beat at the
-   hop rate - interference under the whole phrase. Bounded, the grains stay within
-   1.45 ms of each other, under a period even at 300 Hz.
+1. **Pitch.** The median fundamental of the phrase is measured, then moved onto
+   the nearest octave of the song's root, so a voice never has to jump an octave
+   to land in the key. Shifting is resample plus a phase-vocoder time stretch, so
+   the phrase keeps its length.
 
-   Measured on the service's own 2.5 s voice reference, the 86 Hz modulation a
-   shift adds falls from 20.9/19.0/11.7 dB over the clip's own level to
-   15.0/14.3/3.1 dB at +3/-3/+5 semitones. On 40 s of real singing, measured as
-   the median hop-rate modulation per 1.5 s window (the stabler of the two
-   measures, and the one that covers the ±7 limit), a shift leaves at most 2 dB
-   over the recording's own modulation at that rate: -0.3/4.2/2.9 dB at +3/+5/+7
-   against a 2.3 dB floor, 1.2/1.0/0.8 dB at -3/-5/-7. Two things this does not
-   settle: those 2 dB are inside the measurement's own spread, and the fix has
-   not been checked by ear.
+   The stretch matters more than it looks. It used to copy grains at a fixed hop
+   and search for the placement that best continued the previous grain, and that
+   search re-locks the waveform to the source's own period: resampling the phrase
+   and then stretching it back cancelled out, so the fitted voice kept the pitch it
+   was sung at and beat against the song while the panel reported a shift. Measured
+   on a 160 Hz tone, resampling moved it to 164.5 Hz and the stretch returned it to
+   160.0. Each bin now advances by its own measured frequency instead, so the pitch
+   is exactly what the resampled audio carries and there is no splice per hop to
+   flutter either.
+
+   Measured after that change: a tone shifted by +0.5, +1.5, +3, +5 and +7
+   semitones (and the same downwards) lands within a cent of the arithmetic
+   answer, with its level kept (0.212 before and after at 200 Hz). On 40 s of real
+   singing the hop-rate (86 Hz) modulation of a shifted phrase is at or under the
+   recording's own: 0.4/0.2/-1.0 dB at +3/+5/+7 and 2.9/0.6/0.7 dB at -3/-5/-7,
+   against 2.3 dB for the unshifted recording. The shift itself is fractional, not
+   whole semitones, and the pitch estimate is refined between samples, so a phrase
+   sung 44 cents flat is moved 44 cents rather than being left where it was.
+
+   What this cannot fix: the whole phrase is moved by one number, its median. A
+   sung melody wanders - the reference's frames span roughly 130-150 Hz - so its
+   median can sit between notes and individual notes still beat against a chord.
+   Per-note correction would be a different feature, and this panel does not do it.
 2. **Tone.** Per-genre filters, drive, room and a half-beat echo: `dub` and
    `ambient` are mostly space, `trap` and `riddim` almost none, `lo-fi` is a 4.2
    kHz ceiling, `trance` and `house` keep the top end. The profile table is

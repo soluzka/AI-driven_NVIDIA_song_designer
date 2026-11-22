@@ -8601,27 +8601,28 @@
         // sounding like a child, so an upward step is charged two semitones and has
         // to be clearly smaller than the downward one to win. Equal candidates go
         // to the lower one.
+        //
+        // The answer is fractional, not whole semitones. Singing sits anywhere on the
+        // grid: a phrase 44 cents flat of the root is a whole semitone away from both
+        // neighbours, so rounding to whole steps left it 44 cents off the song and
+        // beating against it - the "not tuned" sound. The exact shift to the octave
+        // is applied instead, so the phrase lands on the note.
         function fitSemitones(from, to) {
             if (!from || !to) return 0;
-            // A shift only counts if it actually lands on the note. Among those, the
-            // smallest move wins, and an upward one is charged two extra semitones so
-            // the downward answer takes a tie.
-            for (const tolerance of [0.06, 0.2, 1]) {
-                let best = null;
-                let bestScore = Infinity;
-                for (let step = -7; step <= 7; step++) {
-                    const steps = Math.log2((from * Math.pow(2, step / 12)) / to);
-                    const err = Math.abs(steps - Math.round(steps));
-                    if (err > tolerance) continue;
-                    const score = Math.abs(step) + (step > 0 ? 2 : 0);
-                    if (score < bestScore) {
-                        bestScore = score;
-                        best = step;
-                    }
+            const cents = 12 * Math.log2(to / from);
+            let best = null;
+            let bestScore = Infinity;
+            for (let octave = -1; octave <= 1; octave++) {
+                const shift = cents + 12 * octave;
+                if (Math.abs(shift) > 7) continue;
+                const score = Math.abs(shift) + (shift > 0 ? 2 : 0);
+                if (score < bestScore) {
+                    bestScore = score;
+                    best = shift;
                 }
-                if (best !== null) return best;
             }
-            return 0;
+            if (best === null) return 0;
+            return Math.round(best * 100) / 100;
         }
 
         // Median fundamental of the loudest frames: enough to place a phrase in a
@@ -8636,21 +8637,46 @@
                 let energy = 0;
                 for (let i = 0; i < frame; i++) energy += samples[start + i] * samples[start + i];
                 if (energy / frame < 1e-4) continue;
+                const acf = new Float32Array(maxLag + 2);
                 let best = 0;
                 let bestLag = 0;
-                for (let lag = minLag; lag <= maxLag; lag += 2) {
+                for (let lag = minLag; lag <= maxLag; lag++) {
+                    // Deliberately not normalised by the energies: a normalised sum is as
+                    // high at twice the period as at the period, and read a 220 Hz vowel as
+                    // 110. The raw sum falls with the lag, which keeps it on the shortest
+                    // period that matches - the pitch rather than a subharmonic.
                     let sum = 0;
                     for (let i = 0; i < frame - lag; i += 2) sum += samples[start + i] * samples[start + i + lag];
+                    acf[lag] = sum;
                     if (sum > best) {
                         best = sum;
                         bestLag = lag;
                     }
                 }
-                if (bestLag) frames.push(rate / bestLag);
+                if (!bestLag) continue;
+                // Refined between samples. One whole-sample lag is 8 cents at 150 Hz,
+                // and the shift is chosen to a hundredth of a semitone, so a peak
+                // rounded to the nearest sample would be the coarser of the two.
+                const left = acf[bestLag - 1] || 0;
+                const right = acf[bestLag + 1] || 0;
+                const curve = left - 2 * best + right;
+                const between = curve ? 0.5 * (left - right) / curve : 0;
+                const lag = bestLag + Math.max(-0.5, Math.min(0.5, between));
+                frames.push(rate / lag);
             }
             if (!frames.length) return 0;
             frames.sort((a, b) => a - b);
-            return frames[Math.floor(frames.length / 2)];
+            const middle = frames[Math.floor(frames.length / 2)];
+            // A phrase spans an octave or so, and a frame's octave error is the common
+            // way to read one. Folding every frame into the octave of the middle one
+            // before taking the median keeps one stray frame from moving the answer.
+            const folded = frames.map(f0 => {
+                let value = f0;
+                while (value < middle / Math.SQRT2) value *= 2;
+                while (value > middle * Math.SQRT2) value /= 2;
+                return value;
+            }).sort((a, b) => a - b);
+            return folded[Math.floor(folded.length / 2)];
         }
 
         function fitResample(samples, ratio) {
@@ -8665,53 +8691,112 @@
             return out;
         }
 
-        // Overlap-add that walks the source faster or slower than the output, with
-        // each grain placed where it best continues the one before. Without that
-        // search the grains fight each other and the original pitch survives.
-        //
-        // Four grains cover each sample, not two. At half overlap the splice between
-        // neighbours is left exposed, and on a held note that flutters at the grain
-        // rate - the rattle heard when a fitted phrase is played back. Measured on
-        // real speech, that flutter sat 8.6-13.6 dB above the neighbouring spectrum
-        // at half overlap and about 4 dB at a quarter-grain hop.
-        function fitStretch(samples, factor, targetLength) {
-            const grain = 2048;
-            const hop = grain >> 2;
-            // An eighth of a hop, not the whole hop. Four grains overlap, and one that
-            // wanders a whole hop away lands a pitch period or more out of phase with
-            // the three still underneath it, and they sum with a beat at the hop rate -
-            // an interference under the fitted phrase. At this bound the grains stay
-            // within 1.45 ms of each other, under a period even at 300 Hz.
-            const search = hop >> 3;
-            const out = new Float32Array(targetLength);
-            const win = new Float32Array(grain);
-            for (let i = 0; i < grain; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / grain);
-            let previous = -1;
-            for (let pos = 0; pos < targetLength; pos += hop) {
-                const ideal = Math.round(pos / factor);
-                let chosen = ideal;
-                if (pos > 0) {
-                    let bestScore = -Infinity;
-                    const from = Math.max(0, ideal - search);
-                    const to = Math.min(samples.length - grain - 1, ideal + search);
-                    for (let candidate = from; candidate <= to; candidate += 2) {
-                        let score = 0;
-                        for (let i = 0; i < hop; i += 4) score += samples[candidate + i] * samples[previous + hop + i];
-                        if (score > bestScore) {
-                            bestScore = score;
-                            chosen = candidate;
-                        }
+        // In-place iterative radix-2 FFT. Only the vocoder below calls it.
+        function fitFft(re, im, inverse) {
+            const n = re.length;
+            for (let i = 1, j = 0; i < n; i++) {
+                let bit = n >> 1;
+                for (; j & bit; bit >>= 1) j ^= bit;
+                j ^= bit;
+                if (i < j) {
+                    let swap = re[i]; re[i] = re[j]; re[j] = swap;
+                    swap = im[i]; im[i] = im[j]; im[j] = swap;
+                }
+            }
+            for (let size = 2; size <= n; size <<= 1) {
+                const angle = (inverse ? 2 : -2) * Math.PI / size;
+                const wr = Math.cos(angle), wi = Math.sin(angle);
+                const halfSize = size >> 1;
+                for (let i = 0; i < n; i += size) {
+                    let cr = 1, ci = 0;
+                    for (let k = 0; k < halfSize; k++) {
+                        const ar = re[i + k], ai = im[i + k];
+                        const br = re[i + k + halfSize], bi = im[i + k + halfSize];
+                        const tr = br * cr - bi * ci, ti = br * ci + bi * cr;
+                        re[i + k] = ar + tr; im[i + k] = ai + ti;
+                        re[i + k + halfSize] = ar - tr; im[i + k + halfSize] = ai - ti;
+                        const next = cr * wr - ci * wi;
+                        ci = cr * wi + ci * wr;
+                        cr = next;
                     }
                 }
-                for (let i = 0; i < grain; i++) {
-                    const at = chosen + i;
-                    if (at >= 0 && at < samples.length && pos + i < targetLength) out[pos + i] += samples[at] * win[i];
-                }
-                previous = chosen;
             }
-            // Four Hann windows at a quarter-grain hop add up to two, not one.
-            for (let i = 0; i < targetLength; i++) out[i] *= 0.5;
-            return out;
+            if (inverse) for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; }
+        }
+
+        // Phase-vocoder time stretch: the phrase keeps its pitch and changes length.
+        //
+        // This used to copy grains at a fixed hop and search for the placement that
+        // best continued the previous grain. That search re-locks the waveform to the
+        // source's own period, so resampling the phrase and then stretching it back
+        // cancelled out and the fitted voice kept the pitch it was sung at - it was
+        // never shifted into the song's key, which is the beat heard against the
+        // music. Copying grains also left a splice every hop, which fluttered on a
+        // held note. Each bin here advances by its own measured frequency instead, so
+        // the pitch is exactly what the resampled audio carries and there are no
+        // splices at all.
+        function fitStretch(samples, factor, targetLength) {
+            const frame = 2048;
+            const half = frame >> 1;
+            const analysisHop = 512;
+            if (samples.length < frame * 2 || targetLength < frame) {
+                // Too short to frame: hold the pitch, fit the length by repeating the
+                // samples there are, which is shorter than a syllable either way.
+                const out = new Float32Array(targetLength);
+                for (let i = 0; i < targetLength; i++) out[i] = samples[Math.min(samples.length - 1, Math.floor(i / factor))] || 0;
+                return out;
+            }
+            // Enough frames to cover the whole target. Driving the count from the source
+            // instead left the last hop short, and normalising that uncovered tail by its
+            // near-zero window weight spiked the end of the phrase by 40 dB.
+            const synthesisHop = Math.max(1, Math.round(analysisHop * targetLength / samples.length));
+            const frames = Math.max(2, Math.ceil((targetLength - frame) / synthesisHop) + 1);
+            const window = new Float32Array(frame);
+            for (let i = 0; i < frame; i++) window[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / frame);
+            const out = new Float32Array(targetLength + frame);
+            const weight = new Float32Array(targetLength + frame);
+            const re = new Float32Array(frame), im = new Float32Array(frame);
+            const lastPhase = new Float32Array(half + 1);
+            const sumPhase = new Float32Array(half + 1);
+            const expected = new Float32Array(half + 1);
+            for (let k = 0; k <= half; k++) expected[k] = 2 * Math.PI * k * analysisHop / frame;
+            const advance = synthesisHop / analysisHop;
+            let first = true;
+            for (let f = 0; f < frames; f++) {
+                const start = Math.min(f * analysisHop, Math.max(0, samples.length - frame));
+                for (let i = 0; i < frame; i++) {
+                    re[i] = (start + i < samples.length ? samples[start + i] : 0) * window[i];
+                    im[i] = 0;
+                }
+                fitFft(re, im, false);
+                for (let k = 0; k <= half; k++) {
+                    const magnitude = Math.hypot(re[k], im[k]);
+                    const phase = Math.atan2(im[k], re[k]);
+                    if (first) {
+                        sumPhase[k] = phase;
+                    } else {
+                        let delta = phase - lastPhase[k] - expected[k];
+                        delta -= 2 * Math.PI * Math.round(delta / (2 * Math.PI));
+                        sumPhase[k] += (expected[k] + delta) * advance;
+                    }
+                    lastPhase[k] = phase;
+                    const cos = Math.cos(sumPhase[k]), sin = Math.sin(sumPhase[k]);
+                    re[k] = magnitude * cos; im[k] = magnitude * sin;
+                    if (k > 0 && k < half) {
+                        re[frame - k] = magnitude * cos; im[frame - k] = -magnitude * sin;
+                    }
+                }
+                first = false;
+                fitFft(re, im, true);
+                const at = f * synthesisHop;
+                for (let i = 0; i < frame && at + i < out.length; i++) {
+                    out[at + i] += re[i] * window[i];
+                    weight[at + i] += window[i] * window[i];
+                }
+            }
+            const result = new Float32Array(targetLength);
+            for (let i = 0; i < targetLength; i++) result[i] = weight[i] > 1e-3 ? out[i] / weight[i] : 0;
+            return result;
         }
 
         // Pitch shift with the length kept: resampling does the pitch and the
@@ -9036,7 +9121,10 @@
                 if (play) play.disabled = false;
                 if (save) save.disabled = false;
                 if (mix) mix.disabled = false;
-                fitSay('Done: ' + (semitones === 0 ? 'kept at its own pitch' : (semitones > 0 ? '+' : '') + semitones + ' semitones') +
+                fitSay('Done: ' + (Math.abs(semitones) < 0.005 ? 'kept at its own pitch'
+                    : Math.abs(semitones) < 1
+                        ? (semitones > 0 ? '+' : '') + Math.round(semitones * 100) + ' cents'
+                        : (semitones > 0 ? '+' : '') + semitones.toFixed(1) + ' semitones') +
                     ', ' + Math.round(profile.lp) + ' Hz ceiling, ' + Math.round(profile.wet * 100) + '% room. Press Play, or Save WAV.');
                 fitPlayback();
             } catch (err) {

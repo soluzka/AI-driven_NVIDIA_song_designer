@@ -751,10 +751,11 @@ timing belong to the song it is singing over:
    divided back over it, so the same singer sounds higher or lower rather than
    thin;
 5. the shifted vocal is laid back over the same backing, matched to it and the bed
-   ducked lightly under it: `LEAD_DB` (0 dB) and `DUCK_UNDER_VOICE` (20%), which
-   measured leaves the voice about 4.6 dB over the music under a word. At 1.5 dB
-   over a 45% duck it measured 8.3 dB, and the song was hard to hear under the
-   lyric.
+   ducked lightly under it: `LEAD_DB` (0 dB) and `DUCK_UNDER_VOICE` (20%). Measured
+   on two real renders and their separated vocals, that leaves the voice 1.7-1.8
+   dB over the music under a word, the music dipping 1.7-1.8 dB; at 1.5 dB over a
+   45% duck the same two songs measured 3.2-3.3 dB with the music dipping 4.4-4.6
+   dB, and the song was hard to hear under the lyric.
 
 Your recording is only a measurement: its pitch sets the semitone shift, and the
 Fit voice panel's tone profile sets the low-pass ceiling and the room. Nothing you

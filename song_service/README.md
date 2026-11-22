@@ -210,9 +210,11 @@ rather than a WORLD resynthesis: WORLD held the formants (×1.019/×0.986/×0.99
 but measured +281% flatness, heard as a grain or grind. Nothing you said into the microphone is in the track and no voice is
 cloned: the vocal is ACE-Step's own, separated from the music, mapped, and mixed
 back with the bed ducked lightly under it (`DUCK_UNDER_VOICE`) and the voice
-`LEAD_DB` above it. Those two numbers are the balance: 0 dB and 20% measured
-leaves the voice about 4.6 dB over the music under a word, where 1.5 dB over a
-45% duck measured 8.3 dB and buried the song under the lyric.
+`LEAD_DB` above it. Those two numbers are the balance: 0 dB and 20% measured on two
+real renders and their separated vocals leaves the voice 1.7-1.8 dB over the
+music under a word, with the music dipping 1.7-1.8 dB; 1.5 dB over a 45% duck
+measured 3.2-3.3 dB with the music dipping 4.4-4.6 dB, which buried the song
+under the lyric.
 
 `demucs` is installed by this service's `install.py` — it is in `models.json`, so a
 fresh install covers it. The first separation downloads the htdemucs weights

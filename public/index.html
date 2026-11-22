@@ -8645,12 +8645,20 @@
                     bestLag = lag;
                 }
             }
-            if (!bestLag) return 0;
+            if (!bestLag) return { f0: 0, clarity: 0 };
             const left = acf[bestLag - 1] || 0;
             const right = acf[bestLag + 1] || 0;
             const curve = left - 2 * best + right;
             const between = curve ? 0.5 * (left - right) / curve : 0;
-            return rate / (bestLag + Math.max(-0.5, Math.min(0.5, between)));
+            const f0 = rate / (bestLag + Math.max(-0.5, Math.min(0.5, between)));
+            // How periodic the frame actually is: the correlation at the chosen lag
+            // against the energy it was compared with. A sung note is close to 1; room
+            // tone, breath and hiss land near 0, so this is the test for whether there
+            // is a tone here at all.
+            let denominator = 0;
+            for (let i = 0; i < frame - bestLag; i += 2) denominator += samples[start + i] * samples[start + i];
+            const clarity = denominator > 0 ? best / denominator : 0;
+            return { f0, clarity };
         }
 
         // The pitch classes a phrase sings, as a histogram at a tenth of a semitone,
@@ -8661,17 +8669,26 @@
             const frame = 2048;
             const hist = new Float32Array(120);
             const stride = Math.max(frame, Math.floor(samples.length / 40));
+            let considered = 0;
+            let voiced = 0;
             for (let start = 0; start + frame <= samples.length; start += stride) {
                 let energy = 0;
                 for (let i = 0; i < frame; i++) energy += samples[start + i] * samples[start + i];
                 const rms = Math.sqrt(energy / frame);
                 if (rms < 1e-3) continue;
-                const f0 = fitFramePitch(samples, start, frame, rate);
-                if (!f0) continue;
+                considered++;
+                const { f0, clarity } = fitFramePitch(samples, start, frame, rate);
+                // A frame that is not periodic has no pitch to report. Without this, the
+                // strongest lag of room tone, breath or hiss was taken as a note, the
+                // phrase was shifted to agree with it, and a take with no real tone in
+                // it came back as mid-band static that had been tuned to a phantom.
+                if (!f0 || clarity < 0.3) continue;
+                voiced++;
                 // Counted from C, which is where KEY_TABLE and the scales below count
                 // from; a histogram counted from A would slide every key by nine.
                 const cls = ((12 * Math.log2(f0 / 440) + 9) % 12 + 12) % 12;
-                hist[Math.round(cls * 10) % 120] += rms;
+                // A confident frame counts for more than a marginal one.
+                hist[Math.round(cls * 10) % 120] += rms * clarity;
             }
             // Smoothed, so a phrase sitting between two bins has one peak, not two.
             const smooth = new Float32Array(120);
@@ -8682,7 +8699,8 @@
                 }
                 smooth[i] = sum;
             }
-            return smooth;
+            const voicedShare = considered ? voiced / considered : 0;
+            return { hist: smooth, voicedShare, voiced, considered };
         }
 
         // The song's scale, as a weight per pitch class counted from its root. Used
@@ -8696,7 +8714,16 @@
             major: [1, 0.3, 1, 0.3, 1, 1, 0.3, 1, 0.3, 1, 0.3, 1],
         };
 
-        function fitSemitones(hist, key) {
+        function fitSemitones(histogram, key) {
+            const hist = histogram && histogram.hist ? histogram.hist : histogram;
+            let histTotal = 0;
+            for (let bin = 0; bin < hist.length; bin++) histTotal += hist[bin];
+            // Nothing in the phrase held a note: leave it exactly where it is. There is
+            // no key to move it to that would not be a guess, and moving unpitched
+            // material at all is what sounds like static.
+            if (!histTotal) return 0;
+            const voicedShare = histogram && histogram.hist ? histogram.voicedShare : 1;
+            if (voicedShare < 0.2) return 0;
             const name = String(key || 'A minor').toLowerCase();
             const letter = (name.match(/[a-g][#b]?/) || ['a'])[0];
             const root = KEY_TABLE[letter] !== undefined ? KEY_TABLE[letter] : 9;
@@ -8739,7 +8766,9 @@
         // Median fundamental of the loudest frames: enough to place a phrase in a
         // key. Twenty frames spread across the clip keeps this fast on a phone.
         function fitDetectPitch(samples, rate) {
-            const frame = 1024;
+            // The same window as the class histogram: a 1024-sample frame is under two
+            // periods of a low male voice, and its answer for an 80 Hz tone was 498 Hz.
+            const frame = 2048;
             const minLag = Math.floor(rate / 500);
             const maxLag = Math.floor(rate / 70);
             const frames = [];
@@ -8773,6 +8802,12 @@
                 const curve = left - 2 * best + right;
                 const between = curve ? 0.5 * (left - right) / curve : 0;
                 const lag = bestLag + Math.max(-0.5, Math.min(0.5, between));
+                // Same test as the class histogram: a frame that is not periodic has no
+                // frequency to report, and reporting one turns the panel's "143 Hz" into
+                // a number invented from room tone.
+                let denominator = 0;
+                for (let i = 0; i < frame - bestLag; i += 2) denominator += samples[start + i] * samples[start + i];
+                if (!denominator || best / denominator < 0.3) continue;
                 frames.push(rate / lag);
             }
             if (!frames.length) return 0;
@@ -9310,12 +9345,18 @@
                 // No genre means no style, and no style means the key is arbitrary:
                 // moving the phrase onto it would be tuning to a guess. It keeps its
                 // own pitch and only the tone is shaped.
-                const semitones = fitSong && fitSong.styleKnown
-                    ? fitSemitones(fitPitchClasses(mono, raw.sampleRate), fitSong.key)
-                    : 0;
-                fitSay('Shaping ' + (heard ? Math.round(heard) + ' Hz' : 'the phrase') +
-                    (fitSong && fitSong.styleKnown ? ' into ' + fitSong.key + ' with the ' + fitSong.genre + ' tone\u2026'
-                        : ' at its own pitch with a neutral tone: no genre was inferred and no key is given\u2026'));
+                const classes = fitSong && fitSong.styleKnown
+                    ? fitPitchClasses(mono, raw.sampleRate)
+                    : null;
+                const semitones = classes ? fitSemitones(classes, fitSong.key) : 0;
+                // Nothing periodic in the take: say so, rather than reporting a shift
+                // that was measured from noise.
+                const unpitched = classes ? classes.voicedShare < 0.2 : false;
+                fitSay(unpitched
+                    ? 'No clean tone was found in the take, so it keeps its own pitch and only the tone is shaped\u2026'
+                    : 'Shaping ' + (heard ? Math.round(heard) + ' Hz' : 'the phrase') +
+                        (classes ? ' into ' + fitSong.key + ' with the ' + fitSong.genre + ' tone\u2026'
+                            : ' at its own pitch with a neutral tone: no genre was inferred and no key is given\u2026'));
 
                 const rendered = await fitRender(raw, profile, semitones);
                 if (fit.url) URL.revokeObjectURL(fit.url);
@@ -9340,10 +9381,11 @@
                 if (play) play.disabled = false;
                 if (save) save.disabled = false;
                 if (mix) mix.disabled = false;
-                fitSay('Done: ' + (Math.abs(semitones) < 0.005 ? 'kept at its own pitch'
-                    : Math.abs(semitones) < 1
-                        ? (semitones > 0 ? '+' : '') + Math.round(semitones * 100) + ' cents'
-                        : (semitones > 0 ? '+' : '') + semitones.toFixed(1) + ' semitones') +
+                fitSay('Done: ' + (unpitched ? 'no tone found in the take, so it was left at its own pitch'
+                    : Math.abs(semitones) < 0.005 ? 'kept at its own pitch'
+                        : Math.abs(semitones) < 1
+                            ? (semitones > 0 ? '+' : '') + Math.round(semitones * 100) + ' cents'
+                            : (semitones > 0 ? '+' : '') + semitones.toFixed(1) + ' semitones') +
                     ', ' + Math.round(profile.lp) + ' Hz ceiling, ' + Math.round(profile.wet * 100) + '% room. Press Play, or Save WAV.');
                 fitPlayback();
             } catch (err) {

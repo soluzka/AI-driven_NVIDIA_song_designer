@@ -788,6 +788,21 @@ only the sound is moved and shaped.
    whole semitones, and the pitch estimate is refined between samples, so a phrase
    sung 44 cents flat is moved 44 cents rather than being left where it was.
 
+   None of that is worth anything if there is no note to find, and there was not a
+   test for that. The tracker took the strongest autocorrelation lag whatever it
+   was, so room tone, breath and hiss each got a frequency, and the phrase was then
+   shifted to agree with it — which is the grind of mid-band static heard when a
+   take holds no real tone. Every frame now has to be **periodic** before it counts:
+   the correlation at the chosen lag must reach 0.3 of that frame's energy, and a
+   histogram with less than a fifth of its frames voiced returns no shift at all. A
+   frame that fails is not an octave error to fold, it is not a note. Measured: the
+   voice reference has 33 of 40 frames voiced (82%) and still shifts −0.1 semitones
+   into D minor; white noise has 0 of 40 and room tone 2 of 40, and both return zero
+   for every key, with the panel saying no clean tone was found instead of printing a
+   frequency. The detector also reads low notes correctly now — 80 Hz and 110 Hz
+   tones come back as 81 and 110 Hz, where a 1024-sample frame (under two periods of
+   a low voice) called the 80 Hz tone 498 Hz.
+
    The low end needed its own work. A vocoder builds energy where the phrase has
    none — the lowest bins drift against each other and beat, which is heard as
    rumble — and the tone chain added to it. Measured on the voice reference at a

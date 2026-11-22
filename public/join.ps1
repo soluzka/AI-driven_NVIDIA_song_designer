@@ -288,21 +288,28 @@ if ((Test-Path $marker) -and (Test-Path $weights)) {
 # "it did not start" and "it started and then failed" look different. Closing the
 # window stops nothing - the tunnel and the services are separate processes.
 if (-not $NoWindow) {
+    # tunnel.log is cloudflared's whole diary - ICMP proxy source addresses, DNS
+    # prechecks, connection registrations - and printing it turns a window meant for
+    # errors into a wall of JSON. Only its error and warning lines are shown; the rest
+    # stays in the file.
     $follow = @(
-        (Join-Path $appDir 'tunnel.log'),
         (Join-Path $appDir 'run_web.err'),
         (Join-Path $appDir 'build\downloader_err.log'),
         (Join-Path $appDir 'song_service\logs\service_err.log'),
         (Join-Path $appDir 'voice_service\logs\service_err.log')
     ) | Where-Object { Test-Path -LiteralPath $_ }
-    if (@($follow).Count -gt 0) {
-        # The ICMP proxy lines cloudflared writes name this machine's LAN and IPv6
-        # addresses; they say nothing is routed to them, and they are dropped from
-        # what is shown here all the same.
-        $following = (@($follow) | ForEach-Object {
+    $tunnelLogPath = Join-Path $appDir 'tunnel.log'
+    if ((@($follow).Count -gt 0) -or (Test-Path -LiteralPath $tunnelLogPath)) {
+        $parts = @()
+        if (Test-Path -LiteralPath $tunnelLogPath) {
+            $parts += "Get-Content -Path '$tunnelLogPath' -Wait -Tail 4 -ErrorAction SilentlyContinue | " +
+                "Where-Object { `$_ -match 'error|warn|fatal' }"
+        }
+        $parts += @($follow) | ForEach-Object {
             "Get-Content -Path '$_' -Wait -Tail 8 -ErrorAction SilentlyContinue | " +
                 "Where-Object { `$_ -notmatch 'ICMP proxy' }"
-        }) -join '; '
+        }
+        $following = $parts -join '; '
         Start-Process -FilePath 'powershell' -ArgumentList @(
             '-NoProfile', '-NoExit', '-Command', $following) | Out-Null
         Say 'a second window is following the tunnel log and the error logs'

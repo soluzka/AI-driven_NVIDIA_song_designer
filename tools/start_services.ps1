@@ -113,12 +113,12 @@ if ($Restart) {
 # is also written to a file: "an error flashed up" is not diagnosable. A second
 # run cannot take the same transcript, so failure here is not fatal.
 try {
-    Start-Transcript -Path (Join-Path $root 'build/launcher_run.log') -Append | Out-Null
+    Start-Transcript -Path (Join-Path $root 'build\launcher_run.log') -Append | Out-Null
 } catch { }
 
 # A line per run, so "the site started it" can be checked instead of assumed.
 try {
-    Add-Content -Path (Join-Path $root 'build/launcher_trace.txt') `
+    Add-Content -Path (Join-Path $root 'build\launcher_trace.txt') `
         -Value ('{0:yyyy-MM-dd HH:mm:ss} launcher ran' -f (Get-Date))
 } catch { }
 
@@ -153,7 +153,7 @@ Ensure-Protocol
 
 function Trace([string]$text) {
     try {
-        Add-Content -Path (Join-Path $root 'build/launcher_trace.txt') `
+        Add-Content -Path (Join-Path $root 'build\launcher_trace.txt') `
             -Value ('{0:yyyy-MM-dd HH:mm:ss} {1}' -f (Get-Date), $text)
     } catch { }
 }
@@ -206,7 +206,7 @@ if (Answers $DownloadPort) {
     if (-not (Test-Path $python)) {
         Say 'downloader: creating its environment (a minute or two)'
         $venvDir = Join-Path $service '.venv'
-        $venvLog = Join-Path $root 'build/downloader_venv.log'
+        $venvLog = Join-Path $root 'build\downloader_venv.log'
         # `python` on PATH on this machine is the Microsoft Store stub, which only
         # prints "Python was not found". Building the venv by its bare name
         # therefore failed silently and left a service that never started, so try
@@ -256,8 +256,8 @@ if (Answers $DownloadPort) {
         $env:PORT = "$DownloadPort"
         Start-Process -FilePath $python -ArgumentList 'app.py', '--role', 'downloader' -WorkingDirectory $service `
             -WindowStyle Hidden `
-            -RedirectStandardOutput (Join-Path $root 'build/downloader_out.log') `
-            -RedirectStandardError (Join-Path $root 'build/downloader_err.log') | Out-Null
+            -RedirectStandardOutput (Join-Path $root 'build\downloader_out.log') `
+            -RedirectStandardError (Join-Path $root 'build\downloader_err.log') | Out-Null
         Say "downloader starting on 127.0.0.1:$DownloadPort (log: build\downloader_err.log)"
     }
 }
@@ -438,52 +438,6 @@ function Stop-EmptyTunnelWindows {
     } catch { }
 }
 
-# --- keeping the Workers in step with this PC's key ---------------------------
-# A refused join used to be a hint and nothing else. This PC's build\song_endpoint.key is
-# the source of truth for the pool, so when the Workers answer "Wrong join key" the
-# launcher sets them from that file - the same three secrets tools\reset_join_key.ps1
-# writes - and the join is tried again. Only the deploy checkout can do this: it is the
-# one carrying build\wrangler-tool and a Cloudflare login. Anywhere else this returns
-# $false and the hint is printed, so an install never pretends to have fixed it.
-# The key is piped to wrangler on stdin from the file, so it never appears in an argument
-# list, in this script's output, or in a log.
-function Sync-JoinKey([string]$keyFile) {
-    $wranglerJs = Join-Path $root 'build/wrangler-tool\node_modules\wrangler\bin\wrangler.js'
-    $nodeExe = Join-Path $root 'tools\node\node.exe'
-    # A working checkout, not merely a folder with a wrangler copy in it: the installed app
-    # carries build\wrangler-tool too, and pushing secrets from a machine that is being
-    # managed by hand is not this launcher's business. Deployment happens where the repo is.
-    $isCheckout = Test-Path (Join-Path $root '.git')
-    if (-not $isCheckout -or -not (Test-Path $wranglerJs) -or -not (Test-Path $nodeExe) -or -not (Test-Path $keyFile)) {
-        return $false
-    }
-    $keyText = Get-Content -Path $keyFile -Raw
-    if (-not $keyText) { return $false }
-    $pushes = @(
-        @{ Name = 'JOIN_KEY'; Config = @('--config', 'wrangler.pool.jsonc') },
-        @{ Name = 'POOL_JOIN_KEY'; Config = @() },
-        @{ Name = 'SONG_ENDPOINT_KEY'; Config = @() }
-    )
-    $allOk = $true
-    foreach ($push in $pushes) {
-        $wranglerArgs = @($wranglerJs, 'secret', 'put', $push.Name) + $push.Config
-        $output = $keyText | & $nodeExe @wranglerArgs 2>&1
-        $code = $LASTEXITCODE
-        $text = (@($output) -join ' ')
-        if ($text -match '(?i)not logged in|unauthori[sz]ed|authentication error|please run.*wrangler login') {
-            Say 'tunnel: wrangler is not signed in here, so the Worker key was not changed'
-            return $false
-        }
-        if ($code -eq 0) {
-            Say "tunnel: set $($push.Name) on the Worker from this PC's key file"
-        } else {
-            Say "tunnel: could not set $($push.Name) on the Worker (exit $code)"
-            $allOk = $false
-        }
-    }
-    return $allOk
-}
-
 $cloudflaredVersion = '2026.10.7'
 $cloudflaredUrl = "https://github.com/cloudflare/cloudflared/releases/download/$cloudflaredVersion/cloudflared-windows-amd64.exe"
 
@@ -567,7 +521,7 @@ if ($NoTunnel) {
     # is how a dead address came to be published next to the live one. While an address
     # answers it is reused and nothing is rotated, so restarting a service - or running
     # this script again - never changes the name a phone or the pool is holding.
-    $recordedFile = Join-Path $root 'build/tunnel_url.txt'
+    $recordedFile = Join-Path $root 'build\tunnel_url.txt'
     $recorded = ''
     if (Test-Path $recordedFile) { $recorded = ((Get-Content -Raw -Path $recordedFile) -as [string]).Trim().TrimEnd('/') }
     $reuse = $false
@@ -674,7 +628,7 @@ if ($NoTunnel) {
         # build\tunnel_url.txt would point the page and the pool at nothing.
         Say "tunnel: no quick tunnel of this machine answers through Cloudflare yet ($tunnelUrl was the newest); the address on file is unchanged"
     } else {
-        try { Set-Content -Path (Join-Path $root 'build/tunnel_url.txt') -Value $tunnelUrl -Encoding ascii } catch { }
+        try { Set-Content -Path (Join-Path $root 'build\tunnel_url.txt') -Value $tunnelUrl -Encoding ascii } catch { }
         try { Set-Clipboard -Value $tunnelUrl } catch { }
         Say "tunnel: $tunnelUrl"
 
@@ -684,7 +638,7 @@ if ($NoTunnel) {
         # which meant a machine that was running the model perfectly well sat outside the
         # pool and the site kept saying no GPUs were connected until somebody opened the
         # page. Holding the key is the whole condition now: with it, this PC joins itself.
-        $keyFile = Join-Path $root 'build/song_endpoint.key'
+        $keyFile = Join-Path $root 'build\song_endpoint.key'
         if (-not (Test-Path $keyFile)) {
             Say 'tunnel: build\song_endpoint.key is missing, so the site was not told the address'
         } else {
@@ -696,12 +650,12 @@ if ($NoTunnel) {
                 # This machine's id, so the card this run adds can be recognised and the
                 # address it replaces dropped by the same id rather than left listed.
                 $machineId = ''
-                $idFile = Join-Path $root 'build/machine_id.txt'
+                $idFile = Join-Path $root 'build\machine_id.txt'
                 if (Test-Path $idFile) { $machineId = ((Get-Content -Raw -Path $idFile) -as [string]).Trim() }
-                $payload = Join-Path $root 'build/tunnel_publish.json'
-                $statePayload = Join-Path $root 'build/tunnel_state.json'
-                $sitePayload = Join-Path $root 'build/tunnel_site.json'
-                $removePayload = Join-Path $root 'build/tunnel_site_remove.json'
+                $payload = Join-Path $root 'build\tunnel_publish.json'
+                $statePayload = Join-Path $root 'build\tunnel_state.json'
+                $sitePayload = Join-Path $root 'build\tunnel_site.json'
+                $removePayload = Join-Path $root 'build\tunnel_site_remove.json'
                 try {
                     # The join carries this PC's id, and the pool drops every row with the same
                     # note as it saves the new one: a rotated address replaces this machine's
@@ -728,24 +682,6 @@ if ($NoTunnel) {
                         -H 'Content-Type: application/json' -H "x-join-key: $key" `
                         --data-binary "@$payload"
                     Say "tunnel: joined the pool: $poolAnswer"
-                    if ("$poolAnswer" -match 'Wrong join key') {
-                        # This PC's key file is the source of truth. Set the Workers from it,
-                        # then try the same join again.
-                        if (Sync-JoinKey $keyFile) {
-                            Say "tunnel: joining again with this PC's key"
-                            $stateAnswer = & curl.exe -s --max-time 15 -X POST "https://song-pool.bpiersing.workers.dev/state/site:endpoint" `
-                                -H 'Content-Type: application/json' -H "x-join-key: $key" `
-                                --data-binary "@$statePayload"
-                            Say "tunnel: named on the site: $stateAnswer"
-                            $poolAnswer = & curl.exe -s --max-time 20 -X POST $poolUrl `
-                                -H 'Content-Type: application/json' -H "x-join-key: $key" `
-                                --data-binary "@$payload"
-                            Say "tunnel: joined the pool: $poolAnswer"
-                        } else {
-                            Say 'tunnel: the Workers hold a different key, so this PC was not listed.'
-                            Say 'tunnel: run tools\reset_join_key.ps1 once (it sets the pool and the site too).'
-                        }
-                    }
 
                     # The site keeps its own copy of the list, signed with SONG_ENDPOINT_KEY
                     # (the same value), so it is told the same address. Without this the two
@@ -782,125 +718,12 @@ if ($NoTunnel) {
 $songHealth = & curl.exe -s --max-time 20 "http://127.0.0.1:$SongPort/health"
 if ($songHealth) { Say "song now: $songHealth" } else { Say 'song: still loading, check again in a minute' }
 
-# --- the address that answers, once more -------------------------------------
-# A quick tunnel Cloudflare has not started routing yet answers 530 while the block
-# above looks at it, and the pool then keeps an address whose tunnel was just pruned -
-# which is the page reporting the pool offline while all four services are up. Half a
-# minute later the same name usually routes, so the sweep is repeated here and whatever
-# answers now is what goes into the lists.
-if (-not $NoTunnel) {
-    $publishedAddress = ''
-    $urlFile = Join-Path $root 'build/unnel_url.txt'
-    if (Test-Path $urlFile) { $publishedAddress = ((Get-Content -Raw -Path $urlFile) -as [string]).Trim() }
-    if ($publishedAddress -and -not (Test-TunnelHealth $publishedAddress 1)) {
-        $late = @()
-        if (Test-Path $tunnelLog) {
-            $late = @(Select-String -Path $tunnelLog -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' |
-                ForEach-Object { $_.Matches[0].Value } | Select-Object -Unique | Select-Object -Last 4)
-            [array]::Reverse($late)
-        }
-        $foundLate = ''
-        for ($sweepLate = 0; $sweepLate -lt 4 -and -not $foundLate; $sweepLate++) {
-            if ($sweepLate) { Start-Sleep -Seconds 15 }
-            foreach ($candidateLate in $late) {
-                if (Test-TunnelHealth $candidateLate 1) { $foundLate = $candidateLate; break }
-            }
-        }
-        if (-not $foundLate) {
-            Say 'tunnel: still nothing answers through Cloudflare; the next start tries again'
-        } else {
-            Set-Content -Path $urlFile -Value $foundLate -Encoding ascii
-            Say "tunnel: $foundLate answers now; publishing it"
-            $lateKeyFile = Join-Path $root 'build/song_endpoint.key'
-            $lateKey = if (Test-Path $lateKeyFile) { (Get-Content $lateKeyFile -Raw).Trim() } else { '' }
-            if ($lateKey) {
-                $lateIdFile = Join-Path $root 'build/machine_id.txt'
-                $lateId = if (Test-Path $lateIdFile) { ((Get-Content -Raw -Path $lateIdFile) -as [string]).Trim() } else { '' }
-                $lateJoin = Join-Path $root 'build/unnel_late.json'
-                $lateState = Join-Path $root 'build/unnel_late_state.json'
-                $lateSite = Join-Path $root 'build/unnel_late_site.json'
-                try {
-                    Set-Content -Path $lateJoin -Encoding ascii -Value ('{"url":"' + $foundLate + '","note":"' + $lateId + '"}')
-                    Set-Content -Path $lateState -Encoding ascii -Value ('{"value":"' + $foundLate + '"}')
-                    Set-Content -Path $lateSite -Encoding ascii -Value ('{"url":"' + $foundLate + '"}')
-                    $null = & curl.exe -s --max-time 15 -X POST 'https://song-pool.bpiersing.workers.dev/join' `
-                        -H 'Content-Type: application/json' -H "x-join-key: $lateKey" --data-binary "@$lateJoin"
-                    $null = & curl.exe -s --max-time 15 -X POST 'https://song-pool.bpiersing.workers.dev/state/site:endpoint' `
-                        -H 'Content-Type: application/json' -H "x-join-key: $lateKey" --data-binary "@$lateState"
-                    $lateAnswer = & curl.exe -s --max-time 15 -X POST 'https://browser.bpiersing.workers.dev/api/song/endpoint' `
-                        -H 'Content-Type: application/json' -H "x-song-key: $lateKey" --data-binary "@$lateSite"
-                    Say "tunnel: named in the site's list: $lateAnswer"
-                } finally {
-                    Remove-Item $lateJoin, $lateState, $lateSite -ErrorAction SilentlyContinue
-                }
-            }
-        }
-    }
-}
-
-# --- publishing whatever answers --------------------------------------------
-# A quick tunnel's process can be running while its name has stopped answering - Cloudflare
-# retires one and every request to it turns 530 - and the pool then names a machine nobody
-# can reach, which is the page's "pool offline". The watchdog calls this each cycle: if the
-# address on file does not answer, the newest address in tunnel.log that does is written
-# down, named in the site's endpoint record and list, and joined to the pool.
-function Publish-AnsweringTunnel {
-    $urlFile = Join-Path $root 'build/unnel_url.txt'
-    $current = if (Test-Path $urlFile) { ((Get-Content -Raw -Path $urlFile) -as [string]).Trim() } else { '' }
-    if ($current -and (Test-TunnelHealth $current 1)) { return }
-    $candidates = @()
-    if (Test-Path $tunnelLog) {
-        $candidates = @(Select-String -Path $tunnelLog -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' |
-            ForEach-Object { $_.Matches[0].Value } | Select-Object -Unique | Select-Object -Last 4)
-        [array]::Reverse($candidates)
-    }
-    $live = ''
-    foreach ($candidate in $candidates) {
-        if (Test-TunnelHealth $candidate 1) { $live = $candidate; break }
-    }
-    if (-not $live) { return }
-    $keyFile = Join-Path $root 'build/song_endpoint.key'
-    if (-not (Test-Path $keyFile)) { return }
-    $key = (Get-Content $keyFile -Raw).Trim()
-    if (-not $key) { return }
-    $idFile = Join-Path $root 'build/machine_id.txt'
-    $machineId = if (Test-Path $idFile) { ((Get-Content -Raw -Path $idFile) -as [string]).Trim() } else { '' }
-    Set-Content -Path $urlFile -Value $live -Encoding ascii
-    $joinFile = Join-Path $root 'build/watch_join.json'
-    $stateFile = Join-Path $root 'build/watch_state.json'
-    $siteFile = Join-Path $root 'build/watch_site.json'
-    try {
-        Set-Content -Path $joinFile -Encoding ascii -Value ('{"url":"' + $live + '","note":"' + $machineId + '"}')
-        Set-Content -Path $stateFile -Encoding ascii -Value ('{"value":"' + $live + '"}')
-        Set-Content -Path $siteFile -Encoding ascii -Value ('{"url":"' + $live + '"}')
-        $null = & curl.exe -s --max-time 15 -X POST 'https://song-pool.bpiersing.workers.dev/join' `
-            -H 'Content-Type: application/json' -H "x-join-key: $key" --data-binary "@$joinFile"
-        $null = & curl.exe -s --max-time 15 -X POST 'https://song-pool.bpiersing.workers.dev/state/site:endpoint' `
-            -H 'Content-Type: application/json' -H "x-join-key: $key" --data-binary "@$stateFile"
-        $null = & curl.exe -s --max-time 15 -X POST 'https://browser.bpiersing.workers.dev/api/song/endpoint' `
-            -H 'Content-Type: application/json' -H "x-song-key: $key" --data-binary "@$siteFile"
-        Say "watchdog: the address on file had stopped answering; published $live"
-    } finally {
-        Remove-Item $joinFile, $stateFile, $siteFile -ErrorAction SilentlyContinue
-    }
-}
-
 # --- watchdog ------------------------------------------------------------
 # Only one watchdog should exist: two would fight over the same 8090 and each
 # would restart a service the other had just started.
 function Watchers {
-    # Matching the two words anywhere on a command line found any shell that merely
-    # mentioned them - a monitor, an editor, the launcher's own parent - so a real watchdog
-    # could be refused as "already running" while none existed, and none was ever left
-    # watching. The file argument and its -Watch switch have to be adjacent, which is how
-    # this script is actually started, and anything carrying -like/-match is a search, not
-    # a watchdog.
     Get-CimInstance Win32_Process -Filter "Name like '%powershell%'" -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.ProcessId -ne $PID -and
-            $_.CommandLine -match 'start_services\.ps1"?\s+-Watch\b' -and
-            $_.CommandLine -notmatch '-like|-match'
-        }
+        Where-Object { $_.CommandLine -like '*start_services.ps1*' -and $_.CommandLine -like '*-Watch*' -and $_.ProcessId -ne $PID }
 }
 
 if ($Watch) {
@@ -916,10 +739,6 @@ if ($Watch) {
 
     while ($true) {
         Start-Sleep -Seconds 120
-
-        # The tunnel can be alive while its address no longer answers; the pool is then
-        # naming a machine nobody can reach. Whichever address does answer is published.
-        if (-not $NoTunnel) { Publish-AnsweringTunnel }
 
         # A service that is answering needs nothing. One whose process exists but
         # is not answering is still importing torch or waiting on the model, so

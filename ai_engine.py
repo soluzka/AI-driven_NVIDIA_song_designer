@@ -59,16 +59,65 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'video_index.db'))
 
-# A one-file bundle runs from a temp folder, so on a machine that has never
-# scraped the live index would start empty. Seed it from the snapshot the build
-# ships, so a fresh EXE opens with a library instead of nothing.
-if getattr(sys, 'frozen', False) and not os.path.exists(DB_PATH):
-    _seed_db = os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(DB_PATH)), 'data', 'video_index.db')
-    if os.path.exists(_seed_db):
+def count_videos(db_path: str) -> int:
+    """Videos stored in a database, or 0 when it is missing or has no table."""
+    if not os.path.exists(db_path):
+        return 0
+    try:
+        conn = sqlite3.connect(db_path, timeout=5)
+    except sqlite3.Error:
+        return 0
+    try:
+        return conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0]
+    except sqlite3.Error:
+        return 0
+    finally:
+        conn.close()
+
+
+def snapshot_paths(db_path: str) -> List[str]:
+    """Where the snapshot that ships with the code can be."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    return [
+        os.path.join(getattr(sys, '_MEIPASS', '') or '', 'data', 'video_index.db'),
+        os.path.join(here, 'data', 'video_index.db'),
+        os.path.join(os.path.dirname(os.path.abspath(db_path)), 'data', 'video_index.db'),
+    ]
+
+
+def seed_from_snapshot(db_path: str = None) -> Optional[str]:
+    """Fill an empty live index from the snapshot that ships with the code.
+
+    The live database beside the app is the one discovery writes to; the snapshot
+    under data/ is the library that ships, 8,724 videos. Seeding used to happen
+    only in a frozen build, and only when the file was missing - so a source run,
+    or any run after a reset that left an empty file behind, opened with an empty
+    library while that library sat next to it. Returns the snapshot used, or None.
+    """
+    target = os.path.abspath(db_path or DB_PATH)
+    if count_videos(target):
+        return None
+    for snapshot in snapshot_paths(target):
+        if not snapshot:
+            continue
+        snapshot = os.path.abspath(snapshot)
+        if snapshot == target or not os.path.exists(snapshot) or not count_videos(snapshot):
+            continue
+        # A write-ahead log left beside the empty target belongs to that database
+        # and would be replayed over the copy.
+        for suffix in ('-wal', '-shm'):
+            try:
+                os.remove(target + suffix)
+            except OSError:
+                pass
         try:
-            shutil.copy2(_seed_db, DB_PATH)
-        except OSError:
-            pass
+            shutil.copy2(snapshot, target)
+        except OSError as exc:
+            logger.warning('Could not seed the index from %s: %s', snapshot, exc)
+            continue
+        logger.info('Index seeded from %s (%d videos)', snapshot, count_videos(target))
+        return snapshot
+    return None
 
 # Discovery writes while searches read and log. SQLite's default 5 s lock wait
 # was too short, so a busy database surfaced as "Search Error: database is
@@ -158,7 +207,8 @@ class MLDatabase:
         self._rebuild_index()
 
     def _init_db(self):
-        """Initialize the SQLite database."""
+        """Initialize the SQLite database, seeding an empty one from the snapshot."""
+        seed_from_snapshot(self.db_path)
         conn = connect_db(self.db_path)
         try:
             # WAL lets searches read while discovery is writing, and keeps

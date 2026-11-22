@@ -141,7 +141,14 @@ opens on the same port; it does **not** bundle the song models, which stay in
   source sites for that query, stores new videos and reports how many were
   added. One worker keeps a burst of searches from saturating the machine.
 - **The index grows by itself.** The live database is `../video_index.db`, next
-  to the project folder; `data/video_index.db` is the committed snapshot.
+  to the project folder; `data/video_index.db` is the committed snapshot. A live
+  database with no videos in it is seeded from that snapshot on startup: the copy
+  takes about 20 ms and a populated database is left alone. Before this, seeding
+  happened only in a frozen build and only when the file was missing, so a source
+  run - or any run after a reset that left an empty file behind - opened with an
+  empty library while the 8,724-row snapshot sat next to it. The index build then
+  costs 0.7 s instead of nothing, and the genre model's fit over the same 8,724
+  documents (11.8 s) runs on a daemon thread, so it does not delay the window.
 
 ### Genres
 

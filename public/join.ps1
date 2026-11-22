@@ -149,8 +149,14 @@ if ($Offline) {
     $added = 0
     $same = 0
     $copied = @()
+    $failed = @()
     foreach ($file in (Get-ChildItem -LiteralPath $source -Recurse -File)) {
         $dest = Join-Path $destRoot $file.FullName.Substring($source.Length).TrimStart('\')
+        # cloudflared.exe is running whenever the tunnel is, so it can never be written
+        # while the services are up - and it is the one file that does not need to be:
+        # the launcher fetches it when it is missing. Skipping it is what stops one
+        # locked binary from deciding whether the rest of the update lands.
+        if (@('.exe', '.dll') -contains $file.Extension) { continue }
         if (Test-Path -LiteralPath $dest) {
             if ((Get-FileHash -LiteralPath $file.FullName).Hash -eq (Get-FileHash -LiteralPath $dest).Hash) {
                 $same++
@@ -161,7 +167,15 @@ if ($Offline) {
             $added++
         }
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dest) | Out-Null
-        Copy-Item -LiteralPath $file.FullName -Destination $dest -Force
+        # A file another process has open - cloudflared.exe while the tunnel runs, a
+        # module Python has loaded - cannot be overwritten. One such file must not stop
+        # the ones after it, so it is counted and named at the end instead.
+        try {
+            Copy-Item -LiteralPath $file.FullName -Destination $dest -Force -ErrorAction Stop
+        } catch {
+            $failed += $file.Name
+            continue
+        }
         # Copy-Item carries the archive's timestamp across, so a file written now still
         # showed the date of the archive it came from - which is why a folder that had
         # just been replaced looked untouched. The files that were copied are stamped
@@ -173,6 +187,12 @@ if ($Offline) {
     Say ("app:   {0} files updated, {1} added, {2} already current" -f $updated, $added, $same)
     foreach ($key in @('ai_engine.py', 'app.py', 'genre_model.py')) {
         Say ('app:   {0,-15} {1}' -f $key, $(if ($copied -contains $key) { 'updated' } else { 'already current' }))
+    }
+    if (@($failed).Count) {
+        # Named, not swallowed: these are the files a running process held open, and
+        # they are the ones that come back as "did not update" on the next look.
+        Say ("app:   {0} could not be written (in use): {1}" -f @($failed).Count, (@($failed) -join ', '))
+        Say 'app:   stop the services and run it again to replace them'
     }
     if ($downloaded -and -not (Test-Path (Join-Path $appDir 'install_all.ps1'))) {
         # A zip whose root folder is named differently (a release, a branch rename).

@@ -508,18 +508,18 @@ if ($NoTunnel) {
             # launcher's own lines - the stock output ends on the prune messages either
             # way. The window closes when the tunnel does; tunnel.log still gets the same
             # lines, so nothing depends on someone watching it.
-            # cloudflared prints "ICMP proxy will use 192.168.x.x as source for IPv4"
-            # (and this machine's IPv6 address) at info level on every start. The proxy
-            # only picks a source address for its own ICMP echo; it routes nothing to
-            # those addresses and hands nobody this machine's network. It is still this
-            # network's addressing written into a window on the desktop, so the window
-            # runs cloudflared's output through a filter that drops those lines. The
-            # tunnel's own logfile is untouched: the address published to the site is
-            # parsed out of it.
+            # cloudflared prints its whole info log on the console it runs in:
+            # "ICMP proxy will use 192.168.x.x as source for IPv4", this machine's IPv6
+            # address, DNS prechecks, connection registrations. None of it is anything a
+            # person needs on a desktop window, and the addresses in it are this network's
+            # own layout. The window keeps only what matters - the address a visitor uses
+            # and any error - and everything else stays in tunnel.log, which is where the
+            # published address is parsed from.
             $tunnelRun = "& '$cloudflared' tunnel --config 'tools\bin\quick-tunnel.yml' " +
                 "--url 'http://127.0.0.1:$SongPort' --no-autoupdate " +
                 "--logfile 'tunnel.log' --loglevel info 2>&1 | " +
-                "Where-Object { `$_ -notmatch 'ICMP proxy' }"
+                "Select-String -Pattern 'trycloudflare\.com|`"level`":`"(error|warn|fatal)`"' | " +
+                "ForEach-Object { `$_.Line }"
             Start-Process -FilePath 'powershell' -WorkingDirectory $root `
                 -ArgumentList @('-NoProfile', '-Command', $tunnelRun) `
                 -WindowStyle Normal | Out-Null

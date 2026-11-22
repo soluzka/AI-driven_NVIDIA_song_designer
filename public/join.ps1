@@ -59,7 +59,9 @@ $appDir = Join-Path $Target 'AI-driven_NVIDIA_song_designer-main'
 # copy from an older commit kept reinstalling itself forever, so a corrected
 # dependency pin never arrived and the same pip error came back on every attempt.
 # -Offline uses whatever is already on disk.
-if (-not $Offline) {
+if ($Offline) {
+    Say "app:   -Offline: using the files already in $appDir, which are not updated by this run"
+} else {
     Say "app:   fetching the current sources to $Target"
     New-Item -ItemType Directory -Force -Path $Target | Out-Null
     $zip = Join-Path $Target 'internet.zip'
@@ -72,11 +74,17 @@ if (-not $Offline) {
     } catch {
         Say "app:   could not download the archive ($($_.Exception.Message))"
         Remove-Item $zip -ErrorAction SilentlyContinue
-        if (-not (Test-Path (Join-Path $appDir 'install_all.ps1'))) {
+        # Falling back to the copy on disk looks exactly like an update that worked:
+        # the folder keeps the files it already had and nothing says they are stale.
+        # Stop instead; -Offline is the deliberate way to use what is already here.
+        if (Test-Path (Join-Path $appDir 'install_all.ps1')) {
+            Say '       the files already here were NOT updated - run it again for the current ones,'
+            Say '       or pass -Offline on purpose to use this copy as it is'
+        } else {
+            Say '       nothing was downloaded and nothing is installed here yet'
             Say '       ask for the project folder and run install.cmd inside it'
-            exit 1
         }
-        Say '       using the copy already on disk instead'
+        exit 1
     }
     if ($downloaded -and -not (Test-Path (Join-Path $appDir 'install_all.ps1'))) {
         # A zip whose root folder is named differently (a release, a branch rename).

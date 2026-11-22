@@ -17,6 +17,7 @@ import os
 import re
 import sqlite3
 import sys
+from urllib.parse import parse_qs, urlsplit
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -36,6 +37,47 @@ STATIC_JSON = os.path.join(ROOT, "public", "data", "videos.json")
 MIN_KEEP = 0.9
 
 _ESCAPED = re.compile(r'\\u([0-9a-fA-F]{4})')
+
+
+def video_key(link: str) -> str:
+    """The identity the Worker uses, so a link this index ships is recognised there.
+
+    One video is watch?v=, youtu.be/, /shorts/ and /embed/; a Dailymotion one is /video/
+    or /embed/video/. Both sides have to agree, or "the library already has this" is a
+    guess and the count of what the database adds is wrong.
+    """
+    text = (link or "").strip()
+    if not text:
+        return ""
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return text.lower()
+    host = (parts.hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    path = parts.path or ""
+    if host == "youtu.be":
+        vid = path.strip("/").split("/")[0]
+        if vid:
+            return "y:" + vid
+    elif host.endswith("youtube.com"):
+        if path == "/watch":
+            vid = (parse_qs(parts.query).get("v") or [""])[0]
+        else:
+            match = re.match(r"^/(?:shorts|embed|live)/([A-Za-z0-9_-]{11})", path)
+            vid = match.group(1) if match else ""
+        if vid:
+            return "y:" + vid
+    elif host.endswith("dailymotion.com"):
+        match = re.search(r"/(?:embed/)?video/([A-Za-z0-9]+)", path)
+        if match:
+            return "d:" + match.group(1)
+    elif host.endswith("vimeo.com"):
+        match = re.search(r"(\d{6,})", path)
+        if match:
+            return "v:" + match.group(1)
+    return "u:" + (host + path).rstrip("/").lower()
 
 
 def plain_text(value) -> str:
@@ -364,6 +406,15 @@ def main():
             "genres": sum(1 for video in videos if video.get("g")),
             "readings": sum(1 for video in videos if video.get("w")),
         }, handle, separators=(",", ":"))
+
+    # The keys of every row this export ships, about a hundred kilobytes. The Worker reads
+    # it once per isolate to tell a video the library already has from one it is adding,
+    # so an ingest skips the first without fetching the 3 MB index on every search, and the
+    # total counts a video once.
+    keys = sorted({video_key(video["u"]) for video in videos if video.get("u")})
+    with open(os.path.join(ROOT, "public", "data", "seen.json"), "w", encoding="utf-8") as handle:
+        json.dump({"generated": payload["generated"], "count": len(keys), "keys": keys},
+                  handle, separators=(",", ":"))
 
     print("videos %d | sources %d | searches %d | clicks %d"
           % (len(videos), len({v["s"] for v in videos}), searches, clicks))

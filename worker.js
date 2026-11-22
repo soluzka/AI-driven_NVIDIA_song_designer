@@ -1120,6 +1120,64 @@ function isVideoUrl(link) {
   return VIDEO_URL_PATTERNS.some((pattern) => lowered.includes(pattern));
 }
 
+// A video's identity in both the shipped index and the database. The same link has to key
+// the same way on both sides, or "the library already has this" is a guess: the same
+// YouTube video is watch?v=, youtu.be/, /shorts/ and /embed/, and a Dailymotion one is
+// /video/ or /embed/video/.
+function videoKey(link) {
+  const text = String(link || '').trim();
+  if (!text) return '';
+  let url;
+  try { url = new URL(text); } catch (err) { return text.toLowerCase(); }
+  const host = url.hostname.replace(/^www\./, '').toLowerCase();
+  const path = url.pathname || '';
+  if (host === 'youtu.be' || /(^|\.)youtube\.com$/.test(host)) {
+    let id = '';
+    if (host === 'youtu.be') {
+      id = path.replace(/^\/+/, '').split('/')[0] || '';
+    } else if (path === '/watch') {
+      id = url.searchParams.get('v') || '';
+    } else {
+      const match = path.match(/^\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{11})/);
+      id = match ? match[1] : '';
+    }
+    if (id) return 'y:' + id;
+  }
+  if (/(^|\.)dailymotion\.com$/.test(host)) {
+    const match = path.match(/\/(?:embed\/)?video\/([A-Za-z0-9]+)/);
+    if (match) return 'd:' + match[1];
+  }
+  if (/(^|\.)vimeo\.com$/.test(host)) {
+    const match = path.match(/(\d{6,})/);
+    if (match) return 'v:' + match[1];
+  }
+  return 'u:' + (host + path).replace(/\/+$/, '').toLowerCase();
+}
+
+// The shipped index's keys. Read once per isolate from a small asset, never the 3 MB
+// index itself, so an ingest can tell an old video from a new one without fetching the
+// whole library on every search.
+let shippedKeys = { set: null, at: 0 };
+
+async function shippedUrlKeys(env) {
+  if (shippedKeys.set && Date.now() - shippedKeys.at < 10 * 60 * 1000) {
+    return shippedKeys.set;
+  }
+  if (!env.ASSETS) return shippedKeys.set || new Set();
+  try {
+    const response = await env.ASSETS.fetch(new Request('https://library.local/data/seen.json'));
+    if (response.ok) {
+      const entry = await response.json();
+      const list = Array.isArray(entry && entry.keys) ? entry.keys : [];
+      if (list.length) {
+        shippedKeys = { set: new Set(list), at: Date.now() };
+        return shippedKeys.set;
+      }
+    }
+  } catch (err) { /* an ingest without the list still stores what it is given */ }
+  return shippedKeys.set || new Set();
+}
+
 function videoHostClause() {
   return '(' + VIDEO_URL_PATTERNS.map((p) => `url LIKE '%${p}%'`).join(' OR ') + ')';
 }
@@ -1307,10 +1365,14 @@ async function discoverVideos(env, query, limit = 20) {
 
   const statements = [];
   const seen = new Set();
+  // A video the shipped index already lists is already in the library. Storing it again
+  // would count it twice in the total, which is what made the figure 8,882 against 8,804.
+  const shipped = await shippedUrlKeys(env);
   for (const row of found) {
     const link = String(row.url || '').trim();
     const title = String(row.title || '').trim();
     if (!link || !title || seen.has(link)) continue;
+    if (shipped.has(videoKey(link))) continue;
     seen.add(link);
     statements.push(
       env.DB.prepare(
@@ -1457,6 +1519,7 @@ async function ingestVideos(env, request) {
 
   const statements = [];
   const seen = new Set();
+  const shipped = await shippedUrlKeys(env);
   for (const video of list) {
     const link = String((video && video.url) || '').trim();
     const title = String((video && video.title) || '').trim();
@@ -1465,6 +1528,9 @@ async function ingestVideos(env, request) {
     // dictionaries and restaurant menus because anything with a URL was stored;
     // nothing that is not on a video host gets in again.
     if (!isVideoUrl(link)) continue;
+    // Already shipped in the index: it is in the library, so storing it again would
+    // count one video twice.
+    if (shipped.has(videoKey(link))) continue;
     seen.add(link);
     const source = String((video.source) || 'YouTube').slice(0, 40);
     statements.push(
@@ -1704,6 +1770,51 @@ async function rebaseVideoTotal(env, count) {
   } catch (err) { /* the page falls back to the shipped count */ }
 }
 
+// The library is what the index ships plus what the database holds that the index does
+// not. Counting the overlap twice was invisible while the two grew apart; now that a
+// discovery is counted as it happens, the overlap has to be measured. It is measured once
+// per export - the rows the database holds are compared against the shipped keys - and
+// after that the ingest path keeps new rows out of the overlap by refusing them.
+// The marker remembers which export was reconciled, so a new export reconciles again.
+const RECONCILE_VERSION = 2;
+
+async function exactVideoTotal(env, shipped) {
+  if (!env.DB || !shipped) return 0;
+  const marker = String(shipped) + ':' + RECONCILE_VERSION;
+  let reconciled = '';
+  try { reconciled = env.STATS ? (await env.STATS.get('reconciled')) || '' : ''; } catch (err) {}
+  if (reconciled === marker) return 0;
+  const keys = await shippedUrlKeys(env);
+  if (!keys.size) return 0;
+  try {
+    // Read the database in pages: a single answer is not guaranteed to carry every row,
+    // and a total measured from half the table would be worse than the estimate it
+    // replaces.
+    let extra = 0;
+    for (let offset = 0; offset < 200000; offset += 500) {
+      const page = await env.DB.prepare('SELECT url FROM videos ORDER BY id LIMIT 500 OFFSET ?')
+        .bind(offset).all();
+      const rows = (page && page.results) || [];
+      for (const row of rows) {
+        if (!keys.has(videoKey(row.url))) extra += 1;
+      }
+      if (rows.length < 500) break;
+    }
+    const total = shipped + extra;
+    await env.DB.batch([
+      env.DB.prepare(
+        'INSERT OR IGNORE INTO library_stats (id, total_videos, total_searches, total_clicks) '
+        + 'VALUES (1, 0, 0, 0)'
+      ),
+      env.DB.prepare('UPDATE library_stats SET total_videos = ? WHERE id = 1').bind(total),
+    ]);
+    if (env.STATS) await env.STATS.put('reconciled', marker);
+    return total;
+  } catch (err) {
+    return 0;
+  }
+}
+
 // First use after this change: the database still holds the real totals, so they
 // are copied across once and KV answers from then on. If D1 cannot be read either,
 // the answer is zeroes and the page keeps showing what it already knows.
@@ -1718,7 +1829,9 @@ async function readStats(env) {
     }
   }
   const shipped = await shippedCount(env);
-  const stored = await d1Videos(env);
+  let stored = await d1Videos(env);
+  const exact = await exactVideoTotal(env, shipped);
+  if (exact) stored = exact;
   if (shipped > stored) {
     await rebaseVideoTotal(env, shipped);
   }

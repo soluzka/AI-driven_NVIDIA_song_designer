@@ -438,6 +438,48 @@ function Stop-EmptyTunnelWindows {
     } catch { }
 }
 
+# --- keeping the Workers in step with this PC's key ---------------------------
+# A refused join used to be a hint and nothing else. This PC's build\song_endpoint.key is
+# the source of truth for the pool, so when the Workers answer "Wrong join key" the
+# launcher sets them from that file - the same three secrets tools\reset_join_key.ps1
+# writes - and the join is tried again. Only the deploy checkout can do this: it is the
+# one carrying build\wrangler-tool and a Cloudflare login. Anywhere else this returns
+# $false and the hint is printed, so an install never pretends to have fixed it.
+# The key is piped to wrangler on stdin from the file, so it never appears in an argument
+# list, in this script's output, or in a log.
+function Sync-JoinKey([string]$keyFile) {
+    $wranglerJs = Join-Path $root 'build\wrangler-tool\node_modules\wrangler\bin\wrangler.js'
+    $nodeExe = Join-Path $root 'tools\node\node.exe'
+    if (-not (Test-Path $wranglerJs) -or -not (Test-Path $nodeExe) -or -not (Test-Path $keyFile)) {
+        return $false
+    }
+    $keyText = Get-Content -Path $keyFile -Raw
+    if (-not $keyText) { return $false }
+    $pushes = @(
+        @{ Name = 'JOIN_KEY'; Config = @('--config', 'wrangler.pool.jsonc') },
+        @{ Name = 'POOL_JOIN_KEY'; Config = @() },
+        @{ Name = 'SONG_ENDPOINT_KEY'; Config = @() }
+    )
+    $allOk = $true
+    foreach ($push in $pushes) {
+        $wranglerArgs = @($wranglerJs, 'secret', 'put', $push.Name) + $push.Config
+        $output = $keyText | & $nodeExe @wranglerArgs 2>&1
+        $code = $LASTEXITCODE
+        $text = (@($output) -join ' ')
+        if ($text -match '(?i)not logged in|unauthori[sz]ed|authentication error|please run.*wrangler login') {
+            Say 'tunnel: wrangler is not signed in here, so the Worker key was not changed'
+            return $false
+        }
+        if ($code -eq 0) {
+            Say "tunnel: set $($push.Name) on the Worker from this PC's key file"
+        } else {
+            Say "tunnel: could not set $($push.Name) on the Worker (exit $code)"
+            $allOk = $false
+        }
+    }
+    return $allOk
+}
+
 $cloudflaredVersion = '2026.10.7'
 $cloudflaredUrl = "https://github.com/cloudflare/cloudflared/releases/download/$cloudflaredVersion/cloudflared-windows-amd64.exe"
 
@@ -683,11 +725,22 @@ if ($NoTunnel) {
                         --data-binary "@$payload"
                     Say "tunnel: joined the pool: $poolAnswer"
                     if ("$poolAnswer" -match 'Wrong join key') {
-                        # The one failure a person cannot diagnose from here: this PC's key file
-                        # and the Workers' secrets disagree. Said as the thing to run, because
-                        # the pool stays empty until they are the same value.
-                        Say 'tunnel: the Workers hold a different key, so this PC was not listed.'
-                        Say 'tunnel: run tools\reset_join_key.ps1 once (it sets the pool and the site too).'
+                        # This PC's key file is the source of truth. Set the Workers from it,
+                        # then try the same join again.
+                        if (Sync-JoinKey $keyFile) {
+                            Say "tunnel: joining again with this PC's key"
+                            $stateAnswer = & curl.exe -s --max-time 15 -X POST "https://song-pool.bpiersing.workers.dev/state/site:endpoint" `
+                                -H 'Content-Type: application/json' -H "x-join-key: $key" `
+                                --data-binary "@$statePayload"
+                            Say "tunnel: named on the site: $stateAnswer"
+                            $poolAnswer = & curl.exe -s --max-time 20 -X POST $poolUrl `
+                                -H 'Content-Type: application/json' -H "x-join-key: $key" `
+                                --data-binary "@$payload"
+                            Say "tunnel: joined the pool: $poolAnswer"
+                        } else {
+                            Say 'tunnel: the Workers hold a different key, so this PC was not listed.'
+                            Say 'tunnel: run tools\reset_join_key.ps1 once (it sets the pool and the site too).'
+                        }
                     }
 
                     # The site keeps its own copy of the list, signed with SONG_ENDPOINT_KEY

@@ -118,24 +118,27 @@ if ($Key) {
 }
 
 # --- 4. install, or update what is already here, then start ------------------
-# install_all.ps1 writes .venv\all_services.json once the environments and the
-# weights are in place. When it is there this is an update, not an install: the
-# files above are already the current ones, the wheels and models are the same
-# ones, and what the new files need is a restart so those are the files that run.
-# Running the installer again would spend 20-60 minutes arriving at the same
-# place. A PC that has never installed here takes the full path below.
+# The update path is for a PC where everything really is here: the environments
+# (install_all.ps1's .venv\all_services.json) and the ACE-Step weights. Then the
+# files fetched above are already the current ones and only a restart is needed,
+# where running the installer again would spend 20-60 minutes arriving at the same
+# place. Anything missing - no install, no weights, a half-finished one - takes the
+# full install below, which puts back whatever is not there.
 $marker = Join-Path $appDir '.venv\all_services.json'
-if (Test-Path $marker) {
+$weights = Join-Path $appDir 'song_service\models\ACE-Step-v1-3.5B'
+if ((Test-Path $marker) -and (Test-Path $weights)) {
     Say ''
     Say 'update: this PC is already installed here, so its environments and models stay.'
+    Say 'update: nothing is reinstalled; only the files above changed.'
     Say 'update: restarting the services so the files just fetched are what runs.'
     Say ''
     & (Join-Path $appDir 'tools\start_services.ps1') -Restart
 } else {
     Say ''
-    Say 'installing: the whole application in one environment - the site, the downloader,'
-    Say 'the song service, the CUDA wheels and about 10 GB of models. This takes 20-60'
-    Say 'minutes and about 20 GB of disk. Every step is printed below; leave it running.'
+    Say 'installing: this PC does not have the whole application here yet, so it is put'
+    Say 'in one environment - the site, the downloader, the song service, the CUDA wheels'
+    Say 'and whatever of the ~10 GB of models is missing. This takes 20-60 minutes and'
+    Say 'about 20 GB of disk. Every step is printed below; leave it running.'
     Say ''
     & (Join-Path $appDir 'install_all.ps1') -Start -Autostart
 }

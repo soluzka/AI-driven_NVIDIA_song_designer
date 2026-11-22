@@ -1607,7 +1607,7 @@ and registers the logon entry.
 | double-click | `join.cmd` fetches `join.ps1` from the Worker |
 | fetch | the repository zip (~40 MB) is unpacked into `%LOCALAPPDATA%\internet-gpu` |
 | install | `install_all.ps1`: portable uv and git if missing, Python 3.11, torch cu126, every package, ~10 GB of weights |
-| update | on a PC whose `.venv\all_services.json` is already there, the fetch above has refreshed the files, so this becomes a restart of the services instead of an install |
+| update | on a PC that already has the environments (`.venv\all_services.json`) **and** the models (`song_service\models\ACE-Step-v1-3.5B`), the fetch above has refreshed the files, so this becomes a restart of the services instead of an install |
 | start | the site, the downloader, the song service with `SONG_WARM=1`, and a Quick Tunnel |
 | announce | the tunnel address goes to the site and to the pool with the join key |
 | return | the logon entry brings it all back after a reboot |
@@ -1616,8 +1616,10 @@ It takes 20–60 minutes and about 20 GB of disk on a normal connection, and the
 window prints each step, so a slow download looks slow rather than broken. Running
 it again on a PC that already joined is an update: `install_all.ps1` writes
 `.venv\all_services.json` when the environments and the weights are in place, and
-when that marker is there `join.ps1` keeps both and restarts the services on the
-freshly fetched files — the models are not downloaded twice. The
+when that marker and the ACE-Step models are both there `join.ps1` keeps them and
+restarts the services on the freshly fetched files — the models are not downloaded
+twice. If either is missing it installs, which is also how a half-finished install
+is repaired. The
 only thing it cannot supply is an NVIDIA card: without one the same models run on
 the processor, which is free and correct, just slow.
 

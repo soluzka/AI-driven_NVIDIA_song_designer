@@ -2531,6 +2531,37 @@
             src.stop(time + 0.3);
         }
 
+        // A bit-crush: the amplitude quantised to a fixed number of steps, which
+        // is the lo-fi grit on the guitars. It is a shaper curve, so it costs
+        // nothing per sample and behaves the same in the offline render; the
+        // stages are counted across the full scale, so the crush is a property of
+        // the curve and not of how loud the part happens to arrive.
+        const GUITAR_CRUSH_BITS = 4;
+        const GUITAR_CRUSH_DRIVE = 4;
+        // The crushed guitar keeps its own level (measured: 0.0080 -> 0.0084 RMS on
+        // a held note), but its peaks are sharper, so the master compressor pulls
+        // the bounce down around it. This puts back what that costs.
+        const GUITAR_CRUSH_MAKEUP = 1.19;
+
+        function crushCurve(bits) {
+            const size = 4096;
+            const stages = Math.pow(2, Math.max(2, bits) - 1);
+            const curve = new Float32Array(size);
+            for (let i = 0; i < size; i++) {
+                const x = (i / (size - 1)) * 2 - 1;
+                curve[i] = Math.round(x * stages) / stages;
+            }
+            return curve;
+        }
+
+        function isGuitar(name) {
+            const text = String(name || '');
+            // The clean steel-string parts stay out of it: crushing an acoustic
+            // strum in a country or reggae arrangement is grit the genre did not
+            // ask for, and those voices already carry their own top end.
+            return /guitar/i.test(text) && !/acoustic/i.test(text);
+        }
+
         // A soft-clipping curve whose amount sets how hard the band is pushed:
         // a little for pop, a lot for industrial.
         function distortionCurve(amount) {
@@ -3524,6 +3555,23 @@
                 musicBus.connect(master);
             }
 
+            // The guitars get their own path through the crush before joining the
+            // band, so the grit lands on the six-string parts only: the bass and
+            // the drums are on `master`, and the rest of the band is on `musicBus`.
+            // In and out gains put the crusher at a fixed level, since a shaper
+            // quantises whatever amplitude it is handed and the parts arrive at
+            // around 0.15.
+            const guitarBus = offline.createGain();
+            const crushIn = offline.createGain();
+            crushIn.gain.value = GUITAR_CRUSH_DRIVE;
+            const crusher = offline.createWaveShaper();
+            crusher.curve = crushCurve(GUITAR_CRUSH_BITS);
+            // No oversampling: 2x would smooth the steps straight back out.
+            crusher.oversample = 'none';
+            const crushOut = offline.createGain();
+            crushOut.gain.value = GUITAR_CRUSH_MAKEUP / GUITAR_CRUSH_DRIVE;
+            guitarBus.connect(crushIn).connect(crusher).connect(crushOut).connect(musicBus);
+
             const reverb = offline.createConvolver();
             reverb.buffer = roomImpulse(offline, 1.5, 2.6);
             const reverbReturn = offline.createGain();
@@ -3620,9 +3668,11 @@
                             const leadFreq = root * 4 * Math.pow(2, motif / 12);
                             const leadVoice = bank[band.lead] || bank.acoustic_grand_piano;
                             const leadDur = leadMode === 1 ? barSeconds * 0.45 : 0.46;
-                            const plucked = playSample(offline, musicBus, leadVoice,
+                            // A guitar lead goes through the crush with the chords.
+                            const leadDest = isGuitar(band.lead) ? guitarBus : musicBus;
+                            const plucked = playSample(offline, leadDest, leadVoice,
                                 midiOf(leadFreq), time, leadDur, 0.19, { attack: 0.004, lowpass: 5200 });
-                            if (!plucked) voiceLead(offline, musicBus, time, leadFreq, leadDur * 0.55);
+                            if (!plucked) voiceLead(offline, leadDest, time, leadFreq, leadDur * 0.55);
                         }
                         // A fill at the end of every fourth bar, so the sections turn over.
                         if (bar % 4 === 3 && fills[bar % 64] !== -1 && section.energy > 0.6) {
@@ -3635,9 +3685,10 @@
                     const comp = bank[band.comp] || bank.acoustic_grand_piano;
                     // Heavy families voice chords as fifths, not triads.
                     const compOffsets = (fx.drive || 0) > 0.35 ? [0, 5] : [0, 3];
+                    const compDest = isGuitar(band.comp) ? guitarBus : musicBus;
                     compOffsets.forEach((offset, index) => {
                         const chordFreq = root * 2 * Math.pow(2, (degree + offset) / 12);
-                        playSample(offline, musicBus, comp, midiOf(chordFreq),
+                        playSample(offline, compDest, comp, midiOf(chordFreq),
                             barTime + index * barSeconds * 0.5, barSeconds * 0.62, 0.15,
                             { attack: 0.01, lowpass: (fx.drive || 0) > 0.35 ? 3000 : 3600 });
                     });

@@ -7401,8 +7401,11 @@
                         return;
                     }
                     // The database's own numbers win whenever it can supply them; a
-                    // zero here means it could not be read, not that it is empty.
-                    if (!doc.library) return;
+                    // zero here means it could not be read, not that it is empty. They
+                    // were being dropped here, so a click that the database counted
+                    // (239, say) left the header on its old figure until the next
+                    // search.
+                    if (doc.library) applyLibraryStats(doc.library);
                 })
                 .catch(() => queueClick(entry));
         }

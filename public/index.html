@@ -4343,6 +4343,19 @@
             });
         }
 
+        // A fitted phrase used to be written into the library. Nothing writes one
+        // now, so this only clears what earlier copies of the page left behind:
+        // those entries were never songs, and they are deleted on load rather than
+        // hidden, so no count, sync or export ever sees them again.
+        async function savedDropFits() {
+            try {
+                const fitted = (await savedList()).filter(item => String((item && item.id) || '').indexOf('fit-') === 0);
+                if (!fitted.length) return;
+                await savedWrite('readwrite', store => fitted.forEach(item => store.delete(item.id)));
+            } catch (err) {}
+        }
+        savedDropFits();
+
         // Gives an existing entry its video, so the saved song is the video: one card,
         // one file, instead of a song and a separate clip beside it.
         async function savedAttachVideo(id, videoBlob) {
@@ -4858,8 +4871,11 @@
             // alone: the library is a search result too, and it stays until another
             // search replaces it.
             window._savedViewOpen = true;
-            const songs = (await savedList()).sort((a, b) =>
-                String(b.createdAt).localeCompare(String(a.createdAt)));
+            // Belt and braces: the stored ones are deleted on load, and this keeps a
+            // fitted phrase out of the count even if that has not run yet.
+            const songs = (await savedList())
+                .filter(item => String((item && item.id) || '').indexOf('fit-') !== 0)
+                .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
             const container = document.getElementById('resultsContainer');
             if (!container) return;
             container.innerHTML = '';
@@ -9004,15 +9020,11 @@
                 // the job or the sung vocal lands in no relation to the song.
                 fit.map = { semitones: semitones, lowpass: profile.lp, room: profile.wet };
                 fit.url = URL.createObjectURL(fitWav(rendered));
-                // A fitted phrase is finished audio as well, so it goes into the same
-                // library under its own id. It is not a song the model sang, and the
-                // title says so, so the two are never confused later.
-                saveSongToLibrary(fitWav(rendered), {
-                    id: 'fit-' + Date.now(),
-                    title: 'Voice fit · ' + ((fitSong && fitSong.key) || 'A minor')
-                        + ((fitSong && fitSong.genre) ? ' · ' + fitSong.genre : ''),
-                    model: 'your voice, fitted'
-                });
+                // The fitted phrase is a step in this panel, not a song: it is heard
+                // here, and Save WAV writes it wherever you ask. It used to be put
+                // into the library as "Voice fit · A minor", which catalogued a
+                // warm-up as a finished track and made it something to recognise the
+                // library by.
                 const play = document.getElementById('fitPlay');
                 const save = document.getElementById('fitSave');
                 const mix = document.getElementById('fitMix');

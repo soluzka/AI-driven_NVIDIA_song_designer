@@ -450,7 +450,11 @@ function Stop-EmptyTunnelWindows {
 function Sync-JoinKey([string]$keyFile) {
     $wranglerJs = Join-Path $root 'build\wrangler-tool\node_modules\wrangler\bin\wrangler.js'
     $nodeExe = Join-Path $root 'tools\node\node.exe'
-    if (-not (Test-Path $wranglerJs) -or -not (Test-Path $nodeExe) -or -not (Test-Path $keyFile)) {
+    # A working checkout, not merely a folder with a wrangler copy in it: the installed app
+    # carries build\wrangler-tool too, and pushing secrets from a machine that is being
+    # managed by hand is not this launcher's business. Deployment happens where the repo is.
+    $isCheckout = Test-Path (Join-Path $root '.git')
+    if (-not $isCheckout -or -not (Test-Path $wranglerJs) -or -not (Test-Path $nodeExe) -or -not (Test-Path $keyFile)) {
         return $false
     }
     $keyText = Get-Content -Path $keyFile -Raw

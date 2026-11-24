@@ -1417,6 +1417,7 @@ async function appendDiscoveredRows(env, existing) {
   let withGenre = existing.genre !== false;
   let lastId = Number(existing.lastId) || 0;
   let added = 0;
+  const addedUrls = [];
   for (;;) {
     let batch;
     try {
@@ -1447,12 +1448,13 @@ async function appendDiscoveredRows(env, existing) {
       if (have.has(shaped[0])) continue;   // the same link under a second id is one video
       have.add(shaped[0]);
       rows.push(shaped);
+      addedUrls.push(shaped[0]);
       added += 1;
     }
     if (batch.length < SNAPSHOT_CHUNK) break;
     if (rows.length > 40000) break;   // a runaway table must not exhaust the isolate
   }
-  return { rows, lastId, added, withGenre };
+  return { rows, lastId, added, withGenre, addedUrls };
 }
 
 async function buildIndexSnapshot(env, options = {}) {
@@ -1472,6 +1474,7 @@ async function buildIndexSnapshot(env, options = {}) {
       console.log('[index] snapshot already current at id', grown.lastId);
       return { at: Date.now(), count: grown.rows.length, added: 0, bytes: 0, incremental: true };
     }
+    await dropClickBoosts(env, grown.addedUrls);
     const merged = withRecentRows(grown.rows, await readRecentRows(env));
     const doc = {
       at: Date.now(),
@@ -1547,16 +1550,116 @@ async function buildIndexSnapshot(env, options = {}) {
   }
   await env.STATS.put(SNAPSHOT_KEY, text);
   await clearRecentRows(env);
+  // The full pass read click_count as it stands, so the overlay has nothing left to say.
+  await clearClickBoosts(env);
   await noteSearchableTotal(env, rebuilt.length);
   console.log('[index] snapshot rebuilt in full:', rebuilt.length, 'rows,', text.length, 'bytes');
   return { at: doc.at, count: rebuilt.length, added: rebuilt.length, bytes: text.length, incremental: false };
 }
 
-function searchSnapshot(snapshot, terms, limit, offset) {
+// Clicks recorded since the snapshot was built, as [url, extra] pairs. The snapshot
+// itself is never re-sorted for them: a search lifts the clicked rows into the place
+// their new count earns, and the rest of the order is left exactly as it was.
+const CLICK_KEY = 'index_clicks';
+const CLICK_BOOST_MAX = 500;
+
+async function readClickBoosts(env) {
+  if (!env.STATS) return [];
+  try {
+    const doc = await env.STATS.get(CLICK_KEY, 'json');
+    if (!doc || !Array.isArray(doc.rows)) return [];
+    if (Date.now() - Number(doc.at || 0) > SNAPSHOT_MAX_AGE_MS) return [];
+    return doc.rows;
+  } catch (err) {
+    return [];
+  }
+}
+
+async function noteClickBoost(env, url) {
+  if (!env.STATS || !url) return;
+  try {
+    const rows = await readClickBoosts(env);
+    const found = rows.find((entry) => String(entry[0]).toLowerCase() === String(url).toLowerCase());
+    if (found) found[1] = (Number(found[1]) || 0) + 1;
+    else rows.push([url, 1]);
+    await env.STATS.put(CLICK_KEY, JSON.stringify({ at: Date.now(), rows: rows.slice(-CLICK_BOOST_MAX) }));
+  } catch (err) {
+    // The click is still counted; the daily full rebuild reads the count from D1.
+  }
+}
+
+async function clearClickBoosts(env) {
+  try {
+    if (env.STATS) await env.STATS.delete(CLICK_KEY);
+  } catch (err) {
+    // Harmless: a stale boost expires with the snapshot.
+  }
+}
+
+// An appended row was read with its click_count as it stands, so any boost already
+// recorded for it would be counted twice.
+async function dropClickBoosts(env, urls) {
+  if (!env.STATS || !urls || !urls.length) return;
+  const gone = new Set(urls.map((url) => String(url).toLowerCase()));
+  try {
+    const rows = await readClickBoosts(env);
+    const kept = rows.filter((entry) => !gone.has(String(entry[0]).toLowerCase()));
+    if (kept.length === rows.length) return;
+    if (!kept.length) await clearClickBoosts(env);
+    else await env.STATS.put(CLICK_KEY, JSON.stringify({ at: Date.now(), rows: kept }));
+  } catch (err) {
+    // A few extra clicks on a row are corrected by the next full pass.
+  }
+}
+
+function boostMap(boosts) {
+  const map = new Map();
+  for (const entry of boosts || []) {
+    if (!entry || !entry[0]) continue;
+    map.set(String(entry[0]).toLowerCase(), Number(entry[1]) || 0);
+  }
+  return map;
+}
+
+// Inserts each lifted row where its new click count belongs, by binary search over a
+// list that is already ordered by clicks. No sort of the whole index, and no rewrite.
+function orderWithBoosts(rows, boosts) {
+  const map = boostMap(boosts);
+  if (!map.size) return rows;
+  const key = (row) => String(row[0] || '').toLowerCase();
+  const clicksOf = (row) => (Number(row[4]) || 0) + (map.get(key(row)) || 0);
+  const rest = [];
+  const lifted = [];
+  for (const row of rows) {
+    if (map.has(key(row))) lifted.push(row);
+    else rest.push(row);
+  }
+  if (!lifted.length) return rows;
+  for (const row of lifted) {
+    const clicks = clicksOf(row);
+    let lo = 0;
+    let hi = rest.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (clicksOf(rest[mid]) >= clicks) lo = mid + 1;
+      else hi = mid;
+    }
+    rest.splice(lo, 0, row);
+  }
+  return rest;
+}
+
+function searchSnapshot(snapshot, terms, limit, offset, boosts) {
   const rows = snapshot.rows || [];
-  const page = [];
+  const want = Math.min(offset + limit, 1000);
+  const window = [];
+  const lifted = [];
   let total = 0;
   const cap = 1000;   // the same ceiling the SQL count puts on its inner scan
+  const boosted = new Set();
+  for (const entry of boosts || []) {
+    if (entry && entry[0]) boosted.add(String(entry[0]).toLowerCase());
+  }
   for (const row of rows) {
     const hay = row[3] || '';
     let ok = true;
@@ -1565,13 +1668,22 @@ function searchSnapshot(snapshot, terms, limit, offset) {
     }
     if (!ok) continue;
     total = Math.min(total + 1, cap);
-    if (page.length < limit && total > offset) page.push(row);
-    if (total >= cap && page.length >= limit) break;
+    if (window.length < want) window.push(row);
+    // A clicked video far down the list still has to be able to reach the page, so
+    // boosted matches are kept even once the page window is full.
+    else if (boosted.has(String(row[0]).toLowerCase())) lifted.push(row);
+    if (!boosted.size && total >= cap && window.length >= want) break;
   }
+  const ordered = orderWithBoosts(lifted.length ? window.concat(lifted) : window, boosts);
+  const page = ordered.slice(offset, offset + limit);
+  const map = boostMap(boosts);
   return {
     total,
     videos: page.map((row) => ({
-      u: row[0], t: row[1], d: row[2], th: row[5], du: row[6], s: row[7], c: row[4], g: row[8], tg: row[9] || '',
+      u: row[0], t: row[1], d: row[2], th: row[5], du: row[6], s: row[7],
+      // The count shown is the one the order was decided by.
+      c: (Number(row[4]) || 0) + (map.get(String(row[0]).toLowerCase()) || 0),
+      g: row[8], tg: row[9] || '',
     })),
   };
 }
@@ -1670,7 +1782,8 @@ async function searchIndex(env, url, ctx) {
     if ((await readSearchableTotal(env)) !== rows.length) {
       await noteSearchableTotal(env, rows.length);
     }
-    const answer = searchSnapshot({ rows }, terms, limit, offset);
+    // Clicks since the last build, so a video people are clicking is where it belongs.
+    const answer = searchSnapshot({ rows }, terms, limit, offset, await readClickBoosts(env));
     if (logging) {
       try {
         await env.DB.prepare(
@@ -2086,6 +2199,11 @@ async function recordClick(env, request) {
     // Nothing was counted: the page keeps the click and sends it again.
     return json({ ok: false, queued: true, library: null });
   }
+
+  // The snapshot is ordered by clicks; waiting for the daily full pass would leave a
+  // video people are clicking where it was for up to a day. This is one small KV
+  // read-modify-write, and nothing in the index is re-sorted or rewritten.
+  await noteClickBoost(env, videoUrl);
 
   // What the click teaches the library is secondary, and it is the part that needs
   // D1. A failure here no longer loses the click or holds the counter back.

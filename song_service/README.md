@@ -231,6 +231,21 @@ pair they replaced, and exits nonzero if `_mix_separated` no longer matches the
 arithmetic it checks - which is the signal that the balance has changed and the
 table is no longer describing the service.
 
+The same write path treats the **sub**. It is close to a sine and it held most of the
+song: on a 180 s render the bass pitch was 63 Hz with its second harmonic **13.6 dB**
+down, and **20-120 Hz carried 60% of the power** - heard as a low held tone under the
+track rather than as a note. `_fix_low_end` high-passes at **40 Hz** (4 poles: 35 Hz down
+5.8 dB, 60 Hz untouched) and then holds 20-120 Hz to a share of the song's own power
+(**-4.5 dB**, about 35%), the difference taken off with a shelf at 160 Hz and limited to
+6.5 dB. The share is measured on each render and logged as `sub check: 20-120 Hz held
+... shelf ... dB under 160 Hz`; a render that is not sub-heavy is left alone. The
+measurement that decided this: nothing under 6 kHz is a fixed tone - the stillest
+1/24-octave band swings **19.7 dB** across the song - so there is nothing to notch, and
+the sub is the bass itself, near-sine and 13.6 dB above its own second harmonic.
+`build/measure/test_sub_fix.py` at the repository root runs the shipped helper over
+renders on disk and prints every band before and after; `hum_scan.py`, `hum_persist.py`
+and `sub_check.py` are the measurements above.
+
 The write path also closes a **gated tail**. The model does not always fill the length
 it was asked for: six 59.9 s requests truly ended at 55.3-59.9 s, and four of them
 ended in a burst pattern (10-120 ms of level, 10-120 ms at about -60 dB) rather than

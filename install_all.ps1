@@ -387,10 +387,14 @@ if ($Start) {
     # loaded at start-up, so it is stopped and started again. Installing new
     # packages without this is how a fix looks applied and behaves old.
     Say 'starting the services (restarting any that are already running)'
-    # No -NewTunnel here: step 7 opens the new tunnel beside the running one and closes
-    # the old one only after the new address answers, so nothing is disconnected in
-    # between. Stopping a tunnel first is a disconnection, not a change of address.
-    & (Join-Path $root 'tools\start_services.ps1') -Restart
+    # -NoTunnel: step 7 opens THE tunnel for this PC, through the same implementation
+    # the reset command uses, which names the address on the site and joins the card to
+    # the pool. Starting one here as well is what a join left behind on 24 Nov: two
+    # cloudflared.exe processes and two addresses (the launcher's, and the reset's WMI
+    # one), with the one the page read depending on which finished last. The services
+    # do not need a tunnel to answer - it is only how another device reaches them - so
+    # they are started without one and step 7 provides exactly one.
+    & (Join-Path $root 'tools\start_services.ps1') -Restart -NoTunnel
 }
 
 # --- 7. the header says this PC, and the pool lists it -----------------------

@@ -309,6 +309,16 @@ keep their weight. It does not lower or raise the music's pitch: the renders sit
 because their bass is written low, which is a question for the prompt and key, not
 for a filter.
 
+The same write path treats the model's **sub**, which was heard as "a hum like a low
+tuned guitar". It is close to a sine and held most of the song: on a 180 s render the
+bass pitch was 63 Hz with its second harmonic 13.6 dB down, and 20-120 Hz carried 60% of
+the power. Nothing under 6 kHz is a fixed tone - the stillest 1/24-octave band swings
+19.7 dB - so there is nothing to notch; the sub is the bass itself. `_fix_low_end` now
+high-passes at 40 Hz (4 poles) and holds 20-120 Hz to a share of the song (-4.5 dB,
+about 35%) with a shelf at 160 Hz, measured on every render and logged as `sub check:`.
+
+#### The tail
+
 The same write path closes the model's **gated tail**. ACE-Step does not always fill
 the length it was asked for: across six 59.9 s requests the audio truly ended at
 **55.3, 57.9, 58.2, 59.84, 59.85 and 59.9 s**, and in four of them the last half

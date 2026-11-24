@@ -815,10 +815,74 @@ def _release_lyricist():
     print('released the lyric model to free VRAM', flush=True)
 
 
-# Where the sub-bass filter sits in _write_samples. A 4-pole corner at 32 Hz is the
-# usual mastering one: below a low C, where the renders' rumble was and no instrument
-# of theirs sits.
-SUB_HP_HZ = 32.0
+# Where the low end is treated, in _write_samples.
+#
+# The model's sub is close to a sine and it holds most of the song: on a 180 s render
+# the bass pitch was 63 Hz with its second harmonic 13.6 dB down, and 20-120 Hz
+# carried 60% of the power. That is heard not as a bass note but as a low, held tone
+# under the whole track - "a hum like a low tuned guitar". Four poles at 40 Hz take
+# 35 Hz down 5.8 dB and leave 60 Hz alone, and the sub band is then kept to a share
+# of the song's power with a shelf at 160 Hz. Measured on that render through the
+# chain below: 20-120 Hz from -2.2 dB (60% of the power) to -4.1 dB (39%), with
+# 120-250 Hz losing 1.9 dB and 250 Hz-2 kHz 2.0 dB.
+SUB_HP_HZ = 40.0
+SUB_SHARE_MAX_DB = -6.0      # the most of the song the sub band may hold (25%)
+SUB_SHELF_HZ = 160.0
+SUB_TRIM_LIMIT_DB = 8.0
+
+
+def _sub_share_db(frames, sample_rate):
+    """How much of the song's power sits under 120 Hz, in dB."""
+    import numpy as np
+    from scipy.signal import welch
+
+    mono = frames.mean(axis=1) if frames.ndim > 1 else frames
+    freqs, power = welch(mono, fs=sample_rate, nperseg=65536, noverlap=32768,
+                         window='hann', detrend=False, scaling='density')
+    total = power[(freqs >= 20) & (freqs <= 20000)].sum()
+    if total <= 0:
+        return -120.0
+    return float(10 * np.log10(power[(freqs >= 20) & (freqs <= 120)].sum() / total + 1e-30))
+
+
+def _fix_low_end(frames, sample_rate):
+    """High-pass the sub, then keep it to a share of the song's own power.
+
+    The share is measured on the render itself, so a track that is not sub-heavy is
+    left alone instead of being thinned. The shelf is stepped and re-measured rather
+    than trusted: a shelf at 160 Hz does not deliver its full depth at 60-120 Hz, and
+    on the first render tried one pass of -2.4 dB moved the share only 1.4 dB.
+    """
+    from scipy.signal import butter, sosfilt
+
+    sos = butter(4, SUB_HP_HZ / (sample_rate / 2.0), btype='high', output='sos')
+    frames = sosfilt(sos, frames, axis=0).astype('float32')
+    print(f'sub-bass under {SUB_HP_HZ:.0f} Hz removed (4 poles)', flush=True)
+
+    share = _sub_share_db(frames, sample_rate)
+    before = share
+    if share <= SUB_SHARE_MAX_DB:
+        print(f'sub check: 20-120 Hz holds {share:+.1f} dB of the song, under the cap, '
+              f'left alone', flush=True)
+        return frames
+
+    shelf = butter(2, SUB_SHELF_HZ / (sample_rate / 2.0), btype='low', output='sos')
+    trimmed = 0.0
+    passes = 0
+    while share > SUB_SHARE_MAX_DB and trimmed > -SUB_TRIM_LIMIT_DB and passes < 4:
+        step = max(SUB_SHARE_MAX_DB - share, -3.0)
+        step = max(step, -SUB_TRIM_LIMIT_DB - trimmed)
+        low = sosfilt(shelf, frames, axis=0)
+        frames = (frames + low * ((10 ** (step / 20.0)) - 1.0)).astype('float32')
+        trimmed += step
+        passes += 1
+        share = _sub_share_db(frames, sample_rate)
+
+    print(f'sub check: 20-120 Hz held {before:+.1f} dB of the song '
+          f'({100 * 10 ** (before / 10):.0f}%), now {share:+.1f} dB '
+          f'({100 * 10 ** (share / 10):.0f}%) after {trimmed:+.1f} dB under '
+          f'{SUB_SHELF_HZ:.0f} Hz', flush=True)
+    return frames
 
 
 def _write_samples(target_wav, out_path, sample_rate):
@@ -862,19 +926,13 @@ def _write_samples(target_wav, out_path, sample_rate):
     # wave module cannot fail that way.
     import wave
 
-    # The model hands back a thump under the bass: 20-40 Hz carried 6-32% of the power on
-    # six renders, peaked at 34-40 Hz with no harmonics above them - a swell, not a note.
-    # Four poles at 32 Hz take that share to 3-20% and leave 40-120 Hz where it was, so
-    # kick and bass keep their weight and only the inaudible part goes. Filtered before
-    # the normalisation, so the peak reference is what will be written.
+    # The low end, treated before the normalisation so the peak that is lifted is
+    # the peak of what is actually written. A render without scipy loses the
+    # treatment, never the song.
     try:
-        from scipy.signal import butter, sosfilt
-
-        sos = butter(4, SUB_HP_HZ / (sample_rate / 2.0), btype='high', output='sos')
-        frames = sosfilt(sos, frames, axis=0).astype('float32')
-        print(f'sub-bass under {SUB_HP_HZ:.0f} Hz removed', flush=True)
+        frames = _fix_low_end(frames, sample_rate)
     except Exception as exc:  # noqa: BLE001 - a missing scipy must not lose the render
-        print(f'could not filter the sub-bass: {exc}', flush=True)
+        print(f'could not treat the sub-bass: {exc}', flush=True)
 
     # The model does not always fill the length it was asked for, and what is left
     # at the end is a burst pattern rather than a fade: across six renders the audio

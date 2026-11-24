@@ -1572,13 +1572,19 @@ async function buildIndexSnapshot(env, options = {}) {
   const base = SNAPSHOT_COLUMNS;
   const tail = ' FROM videos WHERE id > ? AND id <= ? AND ' + videoHostClause()
     + ' ORDER BY id LIMIT ' + SNAPSHOT_CHUNK;
+  // Where the table ends, asked once. Guessing it from empty ranges was not safe:
+  // two empty 2,000-id ranges can be a hole in the ids, not the end of the library,
+  // and the snapshot built from that stopped short without saying so. If this
+  // cannot be read, the rebuild fails and the last good snapshot stays.
+  const top = await env.DB.prepare('SELECT MAX(id) AS top FROM videos').first();
+  const maxId = Number(top && top.top) || 0;
+  if (!maxId) return null;
+
   let lastId = 0;
   // genre_json is the one column a database older than the genre model does not
   // have; without this the whole rebuild would fail on such a table.
   let withGenre = true;
-  let from = 0;
-  let quiet = 0;          // consecutive ranges with no rows: ids are not dense
-  while (from < 2000000) {
+  for (let from = 0; from <= maxId; from += SNAPSHOT_CHUNK) {
     const to = from + SNAPSHOT_CHUNK;
     let batch;
     try {
@@ -1591,13 +1597,7 @@ async function buildIndexSnapshot(env, options = {}) {
       const answer = await env.DB.prepare('SELECT ' + base + tail).bind(from, to).all();
       batch = answer.results || [];
     }
-    from = to;
-    if (!batch.length) {
-      quiet += 1;
-      if (quiet >= 2) break;   // two empty ranges in a row is the end of the table
-      continue;
-    }
-    quiet = 0;
+    if (!batch.length) continue;
     for (const row of batch) {
       const id = Number(row.id) || 0;
       if (id > lastId) lastId = id;
@@ -1626,6 +1626,9 @@ async function buildIndexSnapshot(env, options = {}) {
   // The order the SQL used to produce: most clicked first, then relevance, then newest.
   collected.sort((a, b) => (b[0] - a[0]) || (b[1] - a[1]) || (b[2] - a[2]));
   const rows = collected.map((entry) => entry[3]);
+  // Not the highest id collected: rows inserted while this pass was reading belong
+  // to the next incremental, which looks for anything above this.
+  lastId = maxId;
   // Anything discovered while the database was still being read belongs in this
   // snapshot too, or clearing the overlay would hide it until the next rebuild.
   const rebuilt = withRecentRows(rows, await readRecentRows(env));

@@ -2258,7 +2258,7 @@ async function recordClick(env, request) {
   // dependence on D1 being able to answer. The ids of the clicks already counted
   // travel in the same document, so sending the same click again finds its id and
   // writes nothing.
-  const doc = await readStatsDoc(env);
+  const doc = await readCounters(env);
   if (!doc.v && !doc.s && !doc.c) {
     const seeded = await indexTotals(env);
     doc.v = seeded.total_videos;
@@ -2272,7 +2272,7 @@ async function recordClick(env, request) {
 
   doc.c += 1;
   doc.ids.push(eventId);
-  const stored = await writeStatsDoc(env, doc);
+  const stored = await writeCounters(env, doc);
   if (!stored) {
     // Nothing was counted: the page keeps the click and sends it again.
     return json({ ok: false, queued: true, library: null });
@@ -2328,24 +2328,43 @@ function statsFromDoc(doc) {
   };
 }
 
-async function readStatsDoc(env) {
-  if (!env.STATS) return { v: 0, s: 0, c: 0, ids: [] };
+// Every counter in one document: the live totals the page shows, the ids of the
+// clicks already counted, and the last totals a search actually read - the floor
+// that keeps a smaller figure from ever replacing a larger one. The floor used to be
+// a second key, so every search read both.
+function emptyCounters() {
+  return { v: 0, s: 0, c: 0, ids: [], at: 0, snap: null };
+}
+
+async function readCounters(env) {
+  if (!env.STATS) return emptyCounters();
   try {
     const text = await env.STATS.get(STATS_KEY);
-    if (!text) return { v: 0, s: 0, c: 0, ids: [] };
-    const doc = JSON.parse(text);
-    return {
-      v: Number(doc.v) || 0,
-      s: Number(doc.s) || 0,
-      c: Number(doc.c) || 0,
-      ids: Array.isArray(doc.ids) ? doc.ids.slice(-SEEN_CLICK_LIMIT) : [],
-    };
+    if (text) {
+      const doc = JSON.parse(text);
+      return {
+        v: Number(doc.v) || 0,
+        s: Number(doc.s) || 0,
+        c: Number(doc.c) || 0,
+        ids: Array.isArray(doc.ids) ? doc.ids.slice(-SEEN_CLICK_LIMIT) : [],
+        at: Number(doc.at) || 0,
+        snap: doc.snap && Number(doc.snap.v) ? doc.snap : null,
+      };
+    }
+    // Migration: the totals document that used to sit beside this one. Read once,
+    // then written back inside this document.
+    const legacy = await env.STATS.get(LIBRARY_KEY);
+    if (legacy) {
+      const snap = JSON.parse(legacy);
+      if (snap && Number(snap.v)) return { ...emptyCounters(), snap };
+    }
+    return emptyCounters();
   } catch (err) {
-    return { v: 0, s: 0, c: 0, ids: [] };
+    return emptyCounters();
   }
 }
 
-async function writeStatsDoc(env, doc) {
+async function writeCounters(env, doc) {
   if (!env.STATS) return false;
   try {
     await env.STATS.put(STATS_KEY, JSON.stringify({
@@ -2354,6 +2373,7 @@ async function writeStatsDoc(env, doc) {
       c: Number(doc.c) || 0,
       ids: (doc.ids || []).slice(-SEEN_CLICK_LIMIT),
       at: Date.now(),
+      snap: doc.snap && Number(doc.snap.v) ? doc.snap : null,
     }));
     return true;
   } catch (err) {
@@ -2499,13 +2519,13 @@ async function exactVideoTotal(env, shipped) {
 // First use after this change: the database still holds the real totals, so they
 // are copied across once and KV answers from then on. If D1 cannot be read either,
 // the answer is zeroes and the page keeps showing what it already knows.
-async function readStatsUnsafe(env) {
-  const doc = await readStatsDoc(env);
+async function readStatsUnsafe(env, counters) {
+  const doc = counters || await readCounters(env);
   if (!doc.v && !doc.s && !doc.c) {
     const seeded = await indexTotals(env);
     if (seeded.total_videos || seeded.total_searches || seeded.total_clicks) {
-      await writeStatsDoc(env, {
-        v: seeded.total_videos, s: seeded.total_searches, c: seeded.total_clicks, ids: [],
+      await writeCounters(env, {
+        ...doc, v: seeded.total_videos, s: seeded.total_searches, c: seeded.total_clicks,
       });
     }
   }
@@ -2533,31 +2553,26 @@ async function readStatsUnsafe(env) {
 // write every five minutes, not one per search: KV allows 1,000 a day.
 const LIBRARY_KEY = 'library_snapshot';
 
-async function readLibrarySnapshot(env) {
-  if (!env.STATS) return null;
-  try {
-    const raw = await env.STATS.get(LIBRARY_KEY);
-    const doc = raw ? JSON.parse(raw) : null;
-    return doc && Number(doc.v) ? doc : null;
-  } catch (err) {
-    return null;
-  }
-}
 
-async function saveLibrarySnapshot(env, library, known) {
+
+async function saveLibrarySnapshot(env, library, counters) {
   if (!env.STATS || !library || !Number(library.total_videos)) return;
   try {
-    // The caller usually read this document a moment ago to answer with; reading it
-    // twice was one of the reads a search paid for.
-    const existing = known !== undefined ? known : await readLibrarySnapshot(env);
+    // The caller already read this document to answer with; reading it again here was
+    // one of the reads a search paid for.
+    const current = counters || await readCounters(env);
+    const existing = current.snap || null;
     // Never write a smaller total over a larger one: a read that fell back to the
     // export's 8,724 used to clobber a snapshot holding 11,854, and the page then
     // showed the smaller figure as if it were the library.
     if (existing && Number(existing.v) > Number(library.total_videos)) return;
     if (existing && Date.now() - Number(existing.at || 0) < 5 * 60 * 1000) return;
-    await env.STATS.put(LIBRARY_KEY, JSON.stringify({
-      v: library.total_videos, s: library.total_searches, c: library.total_clicks, at: Date.now(),
-    }));
+    await writeCounters(env, {
+      ...current,
+      snap: {
+        v: library.total_videos, s: library.total_searches, c: library.total_clicks, at: Date.now(),
+      },
+    });
   } catch (err) {
     // Counters are decoration: a refused KV write must not fail a search.
   }
@@ -2636,13 +2651,16 @@ async function libraryUnreadable(env) {
 
 async function readStats(env, meta) {
   const index = meta || await readIndexMeta(env);
+  let counters = null;
   try {
-    const live = await readStatsUnsafe(env);
-    const stored = await readLibrarySnapshot(env);
+    // One read for the live totals and the floor they are merged with.
+    counters = await readCounters(env);
+    const live = await readStatsUnsafe(env, counters);
+    const stored = counters.snap;
     const fromSnapshot = snapshotAsLibrary(stored);
     if (!fromSnapshot) {
       statsLookBehind = false;
-      if (Number(live.total_videos)) await saveLibrarySnapshot(env, live, stored);
+      if (Number(live.total_videos)) await saveLibrarySnapshot(env, live, counters);
       return await withSearchableTotal(env, live, index);
     }
     const behind = (Number(live.total_videos) || 0) < fromSnapshot.total_videos;
@@ -2658,7 +2676,7 @@ async function readStats(env, meta) {
       console.error('[stats] live total is behind the last snapshot:', live.total_videos,
         'vs', fromSnapshot.total_videos, '- answering with the snapshot');
     } else {
-      await saveLibrarySnapshot(env, merged, stored);
+      await saveLibrarySnapshot(env, merged, counters);
     }
     return await withSearchableTotal(env, merged, index);
   } catch (err) {
@@ -2666,7 +2684,7 @@ async function readStats(env, meta) {
     statsLookBehind = true;
     // With no totals at all the snapshot count is still a true answer: it is
     // exactly what a search can return.
-    const fromSnapshot = snapshotAsLibrary(await readLibrarySnapshot(env));
+    const fromSnapshot = snapshotAsLibrary(counters && counters.snap);
     const searchable = searchableFromMeta(index);
     if (fromSnapshot) return await withSearchableTotal(env, fromSnapshot, index);
     return { total_videos: searchable, total_searches: 0, total_clicks: 0 };
@@ -2692,7 +2710,7 @@ async function indexTotals(env) {
 
 // One read and one write in KV, whatever is being counted.
 async function bumpStats(env, field, amount) {
-  const doc = await readStatsDoc(env);
+  const doc = await readCounters(env);
   if (!doc.v && !doc.s && !doc.c) {
     const seeded = await indexTotals(env);
     doc.v = seeded.total_videos;
@@ -2702,7 +2720,7 @@ async function bumpStats(env, field, amount) {
   if (field === 'total_videos') doc.v += amount;
   else if (field === 'total_searches') doc.s += amount;
   else if (field === 'total_clicks') doc.c += amount;
-  await writeStatsDoc(env, doc);
+  await writeCounters(env, doc);
   return statsFromDoc(doc);
 }
 

@@ -85,3 +85,6 @@ build/kaggle_pack/
 
 # Written by tools\kaggle_pack.ps1 next to the models for the weights dataset.
 song_service/models/dataset-metadata.json
+
+# before/after audio kept for listening (hum_after.py); regenerated, never committed
+build/measure/hum/

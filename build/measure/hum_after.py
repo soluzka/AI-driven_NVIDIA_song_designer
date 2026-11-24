@@ -6,7 +6,11 @@ on the audio that actually ships rather than on its input.
 output. Nothing else is applied - no room, no mix - which is what isolates the question
 "is the low band still one held pitch?" from everything else in the chain.
 
-Usage: hum_after.py <wav> [...]      (writes build/measure/after_<name>.wav)
+Usage: hum_after.py <wav> [...]      (writes build/measure/hum/after_<name>.wav)
+
+The output is kept rather than thrown away, because the point of it is to be listened
+to next to the render it came from. It keeps the render's own bit depth, so a switch
+between the two files is the treatment and nothing else.
 """
 import os
 import sys
@@ -28,9 +32,11 @@ def main():
         data, rate = sf.read(path, always_2d=True, dtype='float32')
         after = namespace['_fix_low_end'](data.copy(), rate)
         name = os.path.basename(path).replace('.wav', '')
-        out = os.path.join(HERE, 'after_%s.wav' % name)
-        sf.write(out, after, rate, subtype='PCM_24')
-        print('%s -> %s' % (os.path.basename(path), os.path.basename(out)))
+        folder = os.path.join(HERE, 'hum')
+        os.makedirs(folder, exist_ok=True)
+        out = os.path.join(folder, 'after_%s.wav' % name)
+        sf.write(out, after, rate, subtype=sf.info(path).subtype)
+        print('%s -> %s' % (path, out))
 
 
 if __name__ == '__main__':

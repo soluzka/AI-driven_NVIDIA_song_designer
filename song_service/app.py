@@ -904,15 +904,15 @@ def _release_lyricist():
 
 # Where the low end is treated, in _write_samples.
 #
-# The model's sub is close to a sine and it can hold most of the song: on
-# song_service/logs/song_e75dff81 the bass pitch had a median of about 42 Hz with its
-# second harmonic 7.2 dB down, and 20-120 Hz carried 60% of the power. That is heard
+# The model's sub is close to a sine and it can hold much of the song: on the 3:00
+# render song_fc863e1b the bass pitch had a mode of 52.7 Hz, held within 6 dB of itself
+# on 36% of the song, and stood 12.9 dB above the whole 20-120 Hz band. That is heard
 # not as a bass note but as a low, held tone under the whole track - "a hum like a low
 # tuned guitar". Four poles at 40 Hz take 35 Hz down 5.8 dB and leave 60 Hz alone, and
-# the sub band is then kept to a quarter of the song's power (-6.0 dB) with a shelf at
-# 160 Hz, stepped and re-measured. Measured with the chain below on the three renders
-# in song_service/logs: 20-120 Hz went from 39/60/35% of the power to 25/26/25%, with
-# 80-120 Hz moving at most 0.3 dB either way.
+# the sub band is then kept to -6.0 dB of the song's power with a shelf at 160 Hz,
+# stepped and re-measured. Measured with the chain below on that render: 20-120 Hz went
+# from 25.5% of the power to 20.3%, 20-32 Hz fell 10.4 dB, and 80-120 Hz moved 0.3 dB.
+# build/measure/new_render_3min.txt is the transcript.
 SUB_HP_HZ = 40.0
 SUB_SHARE_MAX_DB = -6.0      # the most of the song the sub band may hold (25%)
 SUB_SHELF_HZ = 160.0

@@ -301,11 +301,8 @@ The page asks two things of `song_service/`, which runs on your own machine:
 Every render is written by the service itself instead of torchaudio (the installed
 torchaudio dropped the soundfile backend, so generation died after the whole
 diffusion had run), and that write path masters as well: four poles of highpass at
-**32 Hz**. The model's low end was mostly a swell under the bass - measured on six
-renders, 20-40 Hz carried 6-32% of the power, peaked at 34-40 Hz in a cluster with
-no harmonics above them, which is the same rumble the fit chain was fixed for. The
-filter takes that band to 3-20% and leaves 60-120 Hz where it was, so kick and bass
-keep their weight. It does not lower or raise the music's pitch: the renders sit low
+**40 Hz**. The filter sits above the swell the model used to leave under the bass, and
+it leaves 60-120 Hz where it was, so kick and bass keep their weight. It does not lower or raise the music's pitch: the renders sit low
 because their bass is written low, which is a question for the prompt and key, not
 for a filter.
 
@@ -319,22 +316,25 @@ cancelling (0.26 wet left 46 dips, 0.15 left 9, 0.08 left 0; `ROOM_SEND` 0.30 ma
 page's 0..1 room into that range).
 
 The same write path treats the model's **sub**, which was heard as "a hum like a low
-tuned guitar". It is close to a sine and can hold most of the song: on
-`song_service/logs/song_e75dff81...` the bass pitch had a median of about 42 Hz with its
-second harmonic 7.2 dB down, and 20-120 Hz carried 60% of the power. Nothing under 6 kHz
-is a fixed tone - the stillest 1/24-octave band under 6 kHz swings 17.6 dB across a
-render, against the under 6 dB of a true hum - so there is nothing to notch; the sub is
-the bass itself. `_fix_low_end` now high-passes at 40 Hz (4 poles) and holds 20-120 Hz to
-**-6.0 dB** of the song, a quarter of its power, with a shelf at 160 Hz that is stepped
-and re-measured (a shelf at 160 Hz does not reach its full depth at 60-120 Hz, and one
-pass of -2.4 dB moved the share only 1.4 dB). Measured across the whole spectrum, one
-method (`build/measure/test_sub_fix.py`), on three renders in the repository: the sub
-goes **38.8% to 25.4%**, **60.1% to 25.8%** and **35.4% to 25.4%** of the power, while
-nothing above the shelf's corner is filtered - 80-120 Hz moves at most 0.3 dB, 120-250 Hz
-and 250 Hz-2 kHz rise only as shares, and 5-16 kHz reads 0.5-2.5 dB louder against the
-track. The full band table (20 Hz-16 kHz, before and after, per render) is in
-`song_service/README.md`. Every render logs it as `sub check: 20-120 Hz held ... now ...
-after ... dB under 160 Hz`.
+tuned guitar". It is close to a sine and can hold much of the song: on the render
+`build/measure/hum/new_render_3min.wav` (3:00, 24 steps, token `fc863e1b...`) the bass
+pitch has a mode of **52.7 Hz**, it holds within 6 dB of itself on **36%** of the song's
+0.68 s frames, and it stands **12.9 dB** above the whole 20-120 Hz band. Nothing under
+6 kHz is a fixed tone - the stillest 1/24-octave band there swings **28.5 dB** across that
+song, against the under 6 dB of a true hum - so there is nothing to notch; the sub is the
+bass itself. `_fix_low_end` high-passes at **40 Hz** (4 poles) and holds 20-120 Hz to
+**-6.0 dB** of the song, with a shelf at 160 Hz that is stepped and re-measured (a shelf
+at 160 Hz does not reach its full depth at 60-120 Hz, and one pass of -2.4 dB moved the
+share only 1.4 dB). Measured across the whole spectrum, one method
+(`build/measure/test_sub_fix.py`), on that render: **20-120 Hz goes from 25.5% of the
+power to 20.3%**, the 20-32 Hz band drops **10.4 dB** (-24.7 to -35.1) and 32-45 Hz
+2.3 dB, while **60-120 Hz moves 0.2 dB** and 45-60 Hz 0.5 dB - the band the kick and bass
+live in is left alone. Nothing above the shelf's corner is filtered either: 120-250 Hz,
+250 Hz-2 kHz and 5-16 kHz each move 0.3 dB, and that rise is a share, because the sub
+fell. The full band table (20 Hz-16 kHz, before and after) and the rest of the song's
+measurements - mono fold, flicker, rattle, tail - are in `song_service/README.md`, and
+every render logs the low end as `sub check: 20-120 Hz held ... now ... after ... dB under
+160 Hz`.
 
 #### The tail
 

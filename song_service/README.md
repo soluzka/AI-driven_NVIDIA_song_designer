@@ -261,58 +261,64 @@ chorus. Adding that tail over the song leaves dips below the render by wet:
 So the dry voice is never attenuated by the room, and the page's 0..1 room is read as a
 fraction of that send (`ROOM_SEND` 0.30: 0.26 becomes 0.078).
 
-The same write path treats the **sub**. It is close to a sine and it can hold most of
-the song: on `song_service/logs/song_e75dff81...` the bass pitch had a median of about
-42 Hz (10th-90th 32-82 Hz) with its second harmonic **7.2 dB** down, and **20-120 Hz
-carried 60% of the power** - heard as a low held tone under the track rather than as a
-note. `_fix_low_end` high-passes at **40 Hz** (4 poles: 35 Hz down 5.8 dB, 60 Hz
-untouched) and then holds 20-120 Hz to **-6.0 dB**, a quarter of the song's power, with
-a shelf at 160 Hz. The shelf is stepped and **re-measured** rather than trusted: a shelf
-at 160 Hz does not deliver its full depth at 60-120 Hz, and the first pass of -2.4 dB
-moved the share only 1.4 dB. The trim is limited to 8 dB, and a render that is not
-sub-heavy is left alone.
+The same write path treats the **sub**. It is close to a sine and it can hold much of
+the song: on the 3:00 render measured below (`build/measure/hum/new_render_3min.wav`,
+token `fc863e1b...`) the bass pitch has a mode of **52.7 Hz**, holds within 6 dB of
+itself on **36%** of the song's 0.68 s frames, and stands **12.9 dB** above the whole
+20-120 Hz band - heard as a low held tone under the track rather than as a note.
+`_fix_low_end` high-passes at **40 Hz** (4 poles: 35 Hz down 5.8 dB, 60 Hz untouched)
+and then holds 20-120 Hz to **-6.0 dB** with a shelf at 160 Hz. The shelf is stepped and
+**re-measured** rather than trusted: a shelf at 160 Hz does not deliver its full depth at
+60-120 Hz, and the first pass of -2.4 dB moved the share only 1.4 dB. The trim is
+limited to 8 dB, and a render that is not sub-heavy is left alone.
 
 Measured with the shipped helper (`build/measure/test_sub_fix.py`), one method for every
-band, on three renders that are in the repository - `song_service/logs/`
-`song_750b4372...`, `song_e75dff81...`, `song_433da495...`. dB as a share of the song's
-own power:
+band, on that render. dB as a share of the song's own power:
 
-| band | 750b | after | e75d | after | 433d | after |
-| --- | --- | --- | --- | --- | --- | --- |
-| 20-32 Hz | -11.7 | -25.1 | -13.8 | -27.1 | -16.8 | -29.3 |
-| 32-45 Hz | -10.9 | -15.9 | -4.5 | -10.8 | -10.8 | -15.7 |
-| 45-60 Hz | -14.9 | -16.0 | -13.5 | -15.8 | -13.8 | -15.1 |
-| 60-120 Hz | -6.9 | -7.0 | -8.0 | -8.3 | -6.8 | -7.1 |
-| 80-120 Hz | -8.7 | -8.7 | -10.6 | -10.3 | -8.4 | -8.6 |
-| 20-120 Hz | -4.1 | -6.0 | -2.2 | -5.9 | -4.5 | -6.0 |
-| 120-250 Hz | -8.8 | -8.0 | -12.5 | -10.1 | -10.0 | -9.3 |
-| 250 Hz-2 kHz | -3.8 | -3.0 | -5.8 | -3.0 | -3.5 | -2.8 |
-| 2-5 kHz | -12.6 | -11.8 | -12.8 | -10.3 | -12.3 | -11.8 |
-| 5-16 kHz | -18.8 | -18.0 | -15.9 | -13.4 | -14.3 | -13.8 |
+| band | render | after |
+| --- | --- | --- |
+| 20-32 Hz | -24.7 | -35.1 |
+| 32-45 Hz | -9.5 | -11.8 |
+| 45-60 Hz | -11.5 | -12.0 |
+| 60-120 Hz | -11.6 | -11.4 |
+| 80-120 Hz | -15.6 | -15.3 |
+| 20-120 Hz | -5.9 | -6.9 |
+| 120-250 Hz | -8.8 | -8.5 |
+| 250 Hz-2 kHz | -2.6 | -2.3 |
+| 2-5 kHz | -14.6 | -14.3 |
+| 5-16 kHz | -16.1 | -15.8 |
 
-The sub band goes from **38.8% to 25.4%**, **60.1% to 25.8%** and **35.4% to 25.4%** of
-the power, with the shelf at -1.5, -4.9 and -1.5 dB under 160 Hz - the 8 dB limit was
-never reached, and 45-60 Hz barely moves (the shelf sits above it). Nothing above the
-shelf's corner is filtered - those rows rise only because the sub fell and the shares
-are relative - so the top is not dulled by this: 5-16 kHz moves up 0.8, 2.5 and 0.5 dB
-as a share, and 80-120 Hz moves at most 0.3 dB either way.
+The sub band goes from **25.5% to 20.3%** of the power. The high-pass takes 20-32 Hz
+down **10.4 dB** and 32-45 Hz 2.3 dB; 45-60 Hz moves 0.5 dB and **60-120 Hz 0.2 dB**, so
+the band the kick and bass live in is not filtered. Nothing above the shelf's corner is
+either - 120-250 Hz, 250 Hz-2 kHz and 5-16 kHz each move 0.3 dB, and that rise is a
+share, because the sub fell and the shares are relative.
 
-Every render logs the numbers it measured - `sub check: 20-120 Hz held -3.5 dB of the
-song (45%), now -5.9 dB (26%) after -4.9 dB under 160 Hz` is the e75d render. The
-measurement that decided this: nothing under 6 kHz is a fixed tone - in `song_750b4372`
-the stillest 1/24-octave band under 6 kHz swings **17.6 dB** across the song, against the
-under 6 dB of a true hum - so there is nothing to notch, and the sub is the bass itself,
-near-sine and 7.2 dB above its own second harmonic.
-`build/measure/test_sub_fix.py` at the repository root runs the shipped helper over
-renders on disk and prints every band before and after; `hum_scan.py`, `hum_persist.py`
-and `sub_check.py` are the measurements above. `hum_after.py` writes what the shipped
-`_fix_low_end` makes of a render to a file - no room, no mix - so the hum can be
-measured on the audio that ships rather than on its input; the run on three renders is
-saved as `build/measure/hum_before_after.txt`. Measured there, the excess is gone: the
-dominant low pitch holds 75% of the song before the treatment and 65% after, 20-32 Hz
-falls 13.4 dB, DC goes from +0.00238 to 0.00000, and the stillest 1/24-octave band in
-20-120 Hz still swings 33.8 dB - the low end is a steady bass note, not a hum (a hum
-holds within 6 dB).
+Every render logs the numbers it measured - this one logged `sub check: 20-120 Hz held
+-3.0 dB of the song (50%), now -5.9 dB (26%) after -5.3 dB under 160 Hz`. The
+measurement that decided this: nothing under 6 kHz is a fixed tone - the stillest
+1/24-octave band there swings **28.5 dB** across the song (10th percentile 6.8 dB,
+median 24.5 dB), against the under 6 dB of a true hum - so there is nothing to notch,
+and the sub is the bass itself.
+
+The rest of the song was measured on the same file, not on its low end alone:
+
+| what | measured |
+| --- | --- |
+| length, format | 179.91 s, 48 kHz, stereo, PCM_16, peak 0.950, RMS 0.1105 |
+| pitch content | mode 52.7 Hz, dominant on 9% of frames, held 6%, longest run 0.5 s |
+| mono fold | median -2.0 dB, 10th -5.0, 1st -9.0, worst -17.2 (at 70.57 s) |
+| flicker | 611 dips, 4.0 Hz, median depth 7.4 dB, deepest 53.0 dB, longest 195 ms |
+| rattle | 1900 sample jumps, worst 9.5 dB under the peak; 5 flickers, longest 6 ms |
+| tail | audio ends 177.85 s, then 2.06 s below -47.7 dB; no burst before the stop |
+
+`build/measure/new_render_3min.txt` is the transcript of all of it, from `hum_scan.py`,
+`hum_persist.py`, `hum_track.py`, `test_sub_fix.py`, `mono_loss.py`, `flicker_scan.py`,
+`rattle_scan.py` and `tail_check.py` in `build/measure/`; run
+`song_service/logs/song_fc863e1b6164474fab4729bcddebb3e6.wav` through them to reproduce
+the table. `hum_after.py` writes what the shipped `_fix_low_end` makes of a render to a
+file - no room, no mix - so the low end can be measured on the audio that ships rather
+than on its input.
 
 The write path also closes a **gated tail**. The model does not always fill the length
 it was asked for: six 59.9 s requests truly ended at 55.3-59.9 s, and four of them

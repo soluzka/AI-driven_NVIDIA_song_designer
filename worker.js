@@ -145,6 +145,11 @@ export default {
       const pool = await readPool(env);
       return json({
         count: pool.length,
+        // Passed through from the pool Worker: a register that could not be read
+        // is not an empty pool, and the page needs to be able to tell the two
+        // apart instead of claiming no GPU has joined.
+        degraded: Boolean(lastPoolNote),
+        error: lastPoolNote || undefined,
         machines: pool.map((entry) => ({ url: entry.url, seen: entry.seen })),
       });
     }
@@ -496,6 +501,9 @@ const POOL_TTL_MS = 7 * 24 * 60 * 60 * 1000;           // forgotten after a week
 // Which list the last /pool answer came from, reported by /api/song/pool: with two
 // stores and one page, guessing which one was read wasted an afternoon.
 let lastPoolSource = 'none';
+// Why the pool list may be short: the register answered but could not be read, or
+// the pool base did not answer at all. /api/song/pool reports it.
+let lastPoolNote = '';
 
 // The one way to reach the pool's Worker. Cloudflare refuses a Worker's fetch to
 // another Worker on the same zone (error 1042), and both live on
@@ -522,6 +530,8 @@ async function readPool(env) {
   const remote = String(env.POOL_API || '').trim().replace(/\/+$/, '').replace(/\/pool$/, '');
   let baseList = null;   // null: the pool base did not answer at all
   let remoteNote = '';   // why it did not answer, when it did not
+  let baseNote = '';     // the pool base answered, but could not read its register
+  lastPoolNote = '';
   if (remote || (env.POOL && typeof env.POOL.fetch === 'function')) {
     try {
       const answer = await poolRequest(env, '/pool');
@@ -529,6 +539,8 @@ async function readPool(env) {
         + ' body ' + (await answer.text()).slice(0, 160);
       if (answer.ok) {
         const info = await answer.json();
+        // The pool Worker says so itself when its register could not be read.
+        if (info.degraded) baseNote = String(info.error || 'the pool register could not be read');
         baseList = (info.machines || [])
           .map((machine) => ({
             url: String(machine.url || '').replace(/\/+$/, ''),
@@ -544,7 +556,13 @@ async function readPool(env) {
   // An empty answer is the pool base saying "nobody is online", and that is the
   // truth: falling through to this Worker's own KV here resurrected a tunnel the
   // pool had just pruned, and the site kept routing to it.
-  if (baseList && !baseList.length) { lastPoolSource = 'pool-empty'; return []; }
+  // An empty answer means nobody is online - unless the register could not be read,
+  // in which case the KV copy below may still hold a card that is serving.
+  if (baseList && !baseList.length && !baseNote) { lastPoolSource = 'pool-empty'; return []; }
+  if (baseNote) lastPoolNote = baseNote;
+  // A pool base that does not answer at all is the same problem from the page's
+  // point of view: the list is short for a reason worth showing.
+  else if (remoteNote) lastPoolNote = remoteNote;
   if (!env.STATS) {
     lastPoolSource = baseList ? 'pool' : 'none';
     return baseList ? livePool(baseList) : [];

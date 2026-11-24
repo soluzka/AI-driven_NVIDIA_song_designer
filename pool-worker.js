@@ -70,13 +70,17 @@ async function readPool(env) {
       const { results } = await env.REGISTER
         .prepare('SELECT url, seen, joined, note FROM machines WHERE seen > ? ORDER BY seen DESC')
         .bind(cutoff).all();
+      lastReadError = '';
       return (results || []).map((row) => ({
         url: row.url, seen: Number(row.seen) || 0,
         joined: Number(row.joined) || 0, note: row.note || '',
       }));
     } catch (err) {
-      lastWriteError = String((err && err.message) || err);
-      return [];
+      // An unreadable register is not an empty one. A spent daily read allowance
+      // used to return [] here, so a card that was joined and serving vanished
+      // from the pool with no explanation. Record why, then fall through to the
+      // KV copy: it may be a join or two behind, which still beats hiding a GPU.
+      lastReadError = String((err && err.message) || err);
     }
   }
   if (!env.POOL) return [];
@@ -134,6 +138,9 @@ async function writePool(env, pool) {
 // allowance and a broken binding look identical from "the join said ok and the pool is
 // still empty".
 let lastWriteError = '';
+// Why the register could not be read, when it could not. /pool reports it, so the
+// page can say the register is unreadable instead of showing an empty pool.
+let lastReadError = '';
 
 // A tunnel dies with the session that opened it, but the register only knew time:
 // a machine was dropped after a week of silence, so yesterday's dead tunnel kept
@@ -268,7 +275,10 @@ async function readState(env, key) {
     try {
       const row = await env.REGISTER.prepare('SELECT value FROM state WHERE key = ?').bind(key).first();
       if (row) return String(row.value);
-    } catch (err) {}
+    } catch (err) {
+      // Same as the register: a read that failed must not be reported as "no value".
+      lastReadError = String((err && err.message) || err);
+    }
   }
   try {
     return await env.POOL.get(key);
@@ -447,6 +457,11 @@ export default {
       const pool = await livingPool(env);
       return json({
         count: pool.length,
+        // `degraded` says the list may be short because the register could not be
+        // read, not because nobody joined. Without it a spent D1 allowance and an
+        // empty pool are the same answer, which is how a joined GPU went missing.
+        degraded: Boolean(lastReadError),
+        error: lastReadError || undefined,
         machines: pool.map((entry) => ({
           url: entry.url,
           seen: entry.seen,

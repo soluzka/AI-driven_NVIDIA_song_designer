@@ -1277,6 +1277,43 @@ async function loadIndexSnapshot(env) {
   }
 }
 
+// How many videos the search can actually return. It is a separate key from the
+// big snapshot so the page's counter poll does not have to read 3 MB to learn one
+// number, and it is what the counter shows: a page that claims 11,858 videos while
+// a search can only reach 6,507 is lying to whoever reads "331 matches".
+const SEARCHABLE_KEY = 'index_snapshot_count';
+
+async function readSearchableTotal(env) {
+  if (!env.STATS) return 0;
+  try {
+    const doc = await env.STATS.get(SEARCHABLE_KEY, 'json');
+    if (!doc || !Number(doc.q)) return 0;
+    // Past the age at which the snapshot itself is not trusted, neither is its count.
+    if (Date.now() - Number(doc.at || 0) > SNAPSHOT_MAX_AGE_MS) return 0;
+    return Number(doc.q);
+  } catch (err) {
+    return 0;
+  }
+}
+
+async function noteSearchableTotal(env, count) {
+  if (!env.STATS || !Number(count)) return;
+  try {
+    await env.STATS.put(SEARCHABLE_KEY, JSON.stringify({ q: Number(count), at: Date.now() }));
+  } catch (err) {
+    // The counter falls back to the totals it had; never fail a search over it.
+  }
+}
+
+// The searchable count wins when there is one, because it is the only total a
+// search can honour. Without a snapshot the totals are D1's, as before.
+async function withSearchableTotal(env, library) {
+  if (!library) return library;
+  const searchable = await readSearchableTotal(env);
+  if (searchable) library.total_videos = searchable;
+  return library;
+}
+
 async function buildIndexSnapshot(env) {
   if (!env.DB || !env.STATS) return null;
   const rows = [];
@@ -1325,6 +1362,7 @@ async function buildIndexSnapshot(env) {
     return null;
   }
   await env.STATS.put(SNAPSHOT_KEY, text);
+  await noteSearchableTotal(env, rows.length);
   console.log('[index] snapshot rebuilt:', rows.length, 'rows,', text.length, 'bytes');
   return { at: doc.at, count: rows.length, bytes: text.length };
 }
@@ -1377,10 +1415,19 @@ async function searchIndex(env, url, ctx) {
     // page treats "readable" as advice and only a successful search as proof.
     const why = unreadable
       || (statsLookBehind ? 'the library total is behind the last one read' : '');
+    // The banner is about one thing: can a search be answered? A usable snapshot
+    // answers it with the database refusing every read, so this must not report the
+    // database's health on its own - it reported "cannot be read" while searches
+    // were returning results, and the banner then covered a working page.
+    const searchable = await readSearchableTotal(env);
     return json({
       query: '', total: 0, library, discovered: 0, videos: [],
-      readable: !why,
-      error: why || undefined,
+      readable: Boolean(searchable) || !why,
+      source: searchable ? 'snapshot' : 'database',
+      warning: searchable && why
+        ? 'the database cannot be read; searches are answered from the last snapshot'
+        : undefined,
+      error: (!searchable && why) || undefined,
     });
   }
 
@@ -1423,6 +1470,11 @@ async function searchIndex(env, url, ctx) {
       ctx.waitUntil(buildIndexSnapshot(env).catch((err) => {
         console.error('[index] snapshot refresh failed:', (err && err.message) || err);
       }));
+    }
+    // Keep the counter equal to what this path can return, even when the snapshot
+    // was written by something that did not record its size.
+    if ((await readSearchableTotal(env)) !== snapshot.rows.length) {
+      await noteSearchableTotal(env, snapshot.rows.length);
     }
     const answer = searchSnapshot(snapshot, terms, limit, offset);
     if (logging) {
@@ -2176,7 +2228,7 @@ async function readStats(env) {
     if (!fromSnapshot) {
       statsLookBehind = false;
       if (Number(live.total_videos)) await saveLibrarySnapshot(env, live);
-      return live;
+      return await withSearchableTotal(env, live);
     }
     const behind = (Number(live.total_videos) || 0) < fromSnapshot.total_videos;
     statsLookBehind = behind;
@@ -2193,12 +2245,16 @@ async function readStats(env) {
     } else {
       await saveLibrarySnapshot(env, merged);
     }
-    return merged;
+    return await withSearchableTotal(env, merged);
   } catch (err) {
     console.error('[stats] readStats failed:', (err && (err.stack || err.message)) || err);
     statsLookBehind = true;
+    // With no totals at all the snapshot count is still a true answer: it is
+    // exactly what a search can return.
     const fromSnapshot = snapshotAsLibrary(await readLibrarySnapshot(env));
-    return fromSnapshot || { total_videos: 0, total_searches: 0, total_clicks: 0 };
+    const searchable = await readSearchableTotal(env);
+    if (fromSnapshot) return await withSearchableTotal(env, fromSnapshot);
+    return { total_videos: searchable, total_searches: 0, total_clicks: 0 };
   }
 }
 

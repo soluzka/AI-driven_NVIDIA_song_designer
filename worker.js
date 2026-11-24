@@ -1224,7 +1224,14 @@ async function cachedSearch(env, request, url, ctx) {
   if (!plain) return searchIndex(env, url, ctx);
 
   const cache = caches.default;
-  const key = new Request('https://search-cache.internal' + url.pathname + url.search, { method: 'GET' });
+  // One small KV read, no D1: the revision is what a click changes. Without it a
+  // bare search URL kept serving the order from before the click for a minute.
+  let rev = 0;
+  try {
+    rev = await readClickRev(env);
+  } catch (err) { /* a cache that cannot key on clicks is still better than none */ }
+  const search = url.search ? url.search + '&clicks=' + rev : '?clicks=' + rev;
+  const key = new Request('https://search-cache.internal' + url.pathname + search, { method: 'GET' });
   // A cache that cannot be read is a cache miss, not a failed search: this sat
   // outside every guard, so an error here reached the route's catch as a 500.
   let hit = null;
@@ -1563,16 +1570,41 @@ async function buildIndexSnapshot(env, options = {}) {
 const CLICK_KEY = 'index_clicks';
 const CLICK_BOOST_MAX = 500;
 
-async function readClickBoosts(env) {
-  if (!env.STATS) return [];
+async function readClickDoc(env) {
+  if (!env.STATS) return null;
   try {
     const doc = await env.STATS.get(CLICK_KEY, 'json');
-    if (!doc || !Array.isArray(doc.rows)) return [];
-    if (Date.now() - Number(doc.at || 0) > SNAPSHOT_MAX_AGE_MS) return [];
-    return doc.rows;
+    return doc && typeof doc === 'object' ? doc : null;
   } catch (err) {
-    return [];
+    return null;
   }
+}
+
+async function readClickBoosts(env) {
+  const doc = await readClickDoc(env);
+  if (!doc || !Array.isArray(doc.rows)) return [];
+  if (Date.now() - Number(doc.at || 0) > SNAPSHOT_MAX_AGE_MS) return [];
+  return doc.rows;
+}
+
+// The cache key for a plain search carries this, so a click makes every cached copy
+// of every query stale at once instead of waiting out the minute. It counts writes,
+// not clicks, so it also moves when the map is trimmed or cleared.
+async function readClickRev(env) {
+  const doc = await readClickDoc(env);
+  if (!doc) return 0;
+  const rev = Number(doc.rev) || 0;
+  if (rev) return rev;
+  return Number(doc.at) || 0;   // documents written before this counter existed
+}
+
+async function writeClickDoc(env, rows) {
+  const current = await readClickDoc(env);
+  const rev = (Number(current && current.rev) || 0) + 1;
+  await env.STATS.put(CLICK_KEY, JSON.stringify({
+    at: Date.now(), rev, rows: rows.slice(-CLICK_BOOST_MAX),
+  }));
+  return rev;
 }
 
 async function noteClickBoost(env, url) {
@@ -1582,7 +1614,7 @@ async function noteClickBoost(env, url) {
     const found = rows.find((entry) => String(entry[0]).toLowerCase() === String(url).toLowerCase());
     if (found) found[1] = (Number(found[1]) || 0) + 1;
     else rows.push([url, 1]);
-    await env.STATS.put(CLICK_KEY, JSON.stringify({ at: Date.now(), rows: rows.slice(-CLICK_BOOST_MAX) }));
+    await writeClickDoc(env, rows);
   } catch (err) {
     // The click is still counted; the daily full rebuild reads the count from D1.
   }
@@ -1590,7 +1622,9 @@ async function noteClickBoost(env, url) {
 
 async function clearClickBoosts(env) {
   try {
-    if (env.STATS) await env.STATS.delete(CLICK_KEY);
+    // Written empty rather than deleted: the revision has to keep climbing, or a
+    // cached copy under the old key would look current again.
+    if (env.STATS) await writeClickDoc(env, []);
   } catch (err) {
     // Harmless: a stale boost expires with the snapshot.
   }
@@ -1605,8 +1639,7 @@ async function dropClickBoosts(env, urls) {
     const rows = await readClickBoosts(env);
     const kept = rows.filter((entry) => !gone.has(String(entry[0]).toLowerCase()));
     if (kept.length === rows.length) return;
-    if (!kept.length) await clearClickBoosts(env);
-    else await env.STATS.put(CLICK_KEY, JSON.stringify({ at: Date.now(), rows: kept }));
+    await writeClickDoc(env, kept);
   } catch (err) {
     // A few extra clicks on a row are corrected by the next full pass.
   }

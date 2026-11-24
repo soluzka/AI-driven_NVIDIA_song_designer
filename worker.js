@@ -180,6 +180,8 @@ export default {
         rows: doc ? doc.rows.length : 0,
         at: doc ? doc.at : null,
         age_minutes: doc ? Math.round((Date.now() - Number(doc.at || 0)) / 60000) : null,
+        stale: doc ? Boolean(doc.stale) : null,
+        fresh_after_minutes: SNAPSHOT_FRESH_MS / 60000,
         max_age_minutes: SNAPSHOT_MAX_AGE_MS / 60000,
       });
     }
@@ -1252,7 +1254,11 @@ async function cachedSearch(env, request, url, ctx) {
 // table, which is what spends D1's free daily row allowance; D1 stays the source of
 // truth and is still what answers when this is missing, stale or refused.
 const SNAPSHOT_KEY = 'index_snapshot';
-const SNAPSHOT_MAX_AGE_MS = 30 * 60 * 1000;
+// Two ages, not one: past 30 minutes the snapshot is rebuilt in the background but
+// still answers, because a database that is refusing reads (a spent daily
+// allowance) cannot produce a fresh one. Past a day it is not trusted at all.
+const SNAPSHOT_FRESH_MS = 30 * 60 * 1000;
+const SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const SNAPSHOT_MAX_BYTES = 20 * 1024 * 1024;
 const SNAPSHOT_CHUNK = 2000;
 
@@ -1261,7 +1267,9 @@ async function loadIndexSnapshot(env) {
   try {
     const doc = await env.STATS.get(SNAPSHOT_KEY, 'json');
     if (!doc || !Array.isArray(doc.rows) || !doc.rows.length) return null;
-    if (Date.now() - Number(doc.at || 0) > SNAPSHOT_MAX_AGE_MS) return null;   // stale
+    const age = Date.now() - Number(doc.at || 0);
+    if (age > SNAPSHOT_MAX_AGE_MS) return null;     // too old to trust
+    doc.stale = age > SNAPSHOT_FRESH_MS;            // usable, worth rebuilding
     return doc;
   } catch (err) {
     console.error('[index] snapshot unreadable:', (err && err.message) || err);
@@ -1410,6 +1418,11 @@ async function searchIndex(env, url, ctx) {
   // and the rebuild runs after the response so the next search is cheap.
   const snapshot = await loadIndexSnapshot(env);
   if (snapshot) {
+    if (snapshot.stale && ctx && typeof ctx.waitUntil === 'function') {
+      ctx.waitUntil(buildIndexSnapshot(env).catch((err) => {
+        console.error('[index] snapshot refresh failed:', (err && err.message) || err);
+      }));
+    }
     const answer = searchSnapshot(snapshot, terms, limit, offset);
     if (logging) {
       try {

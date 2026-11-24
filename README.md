@@ -319,18 +319,20 @@ cancelling (0.26 wet left 46 dips, 0.15 left 9, 0.08 left 0; `ROOM_SEND` 0.30 ma
 page's 0..1 room into that range).
 
 The same write path treats the model's **sub**, which was heard as "a hum like a low
-tuned guitar". It is close to a sine and held most of the song: on a 180 s render the
-bass pitch was 63 Hz with its second harmonic 13.6 dB down, and 20-120 Hz carried 60% of
-the power. Nothing under 6 kHz is a fixed tone - the stillest 1/24-octave band swings
-19.7 dB - so there is nothing to notch; the sub is the bass itself. `_fix_low_end` now
-high-passes at 40 Hz (4 poles) and holds 20-120 Hz to **-6.0 dB** of the song, a quarter
-of its power, with a shelf at 160 Hz that is stepped and re-measured (a shelf at 160 Hz
-does not reach its full depth at 60-120 Hz, and one pass of -2.4 dB moved the share only
-1.4 dB). Measured across the whole spectrum, one method (`build/measure/test_sub_fix.py`): the
-sub goes **68.6% of the power to 26.9%** on the render and **52.5% to 25.5%** on its mix,
-while nothing above the shelf's corner is filtered - 80-120 Hz moves 0.5 dB, 120-250 Hz
-and 250 Hz-2 kHz rise only as shares, and 5-16 kHz reads **3.1 dB louder** against the
-track. The full band table (20 Hz-16 kHz, before and after) is in
+tuned guitar". It is close to a sine and can hold most of the song: on
+`song_service/logs/song_e75dff81...` the bass pitch had a median of about 42 Hz with its
+second harmonic 7.2 dB down, and 20-120 Hz carried 60% of the power. Nothing under 6 kHz
+is a fixed tone - the stillest 1/24-octave band under 6 kHz swings 17.6 dB across a
+render, against the under 6 dB of a true hum - so there is nothing to notch; the sub is
+the bass itself. `_fix_low_end` now high-passes at 40 Hz (4 poles) and holds 20-120 Hz to
+**-6.0 dB** of the song, a quarter of its power, with a shelf at 160 Hz that is stepped
+and re-measured (a shelf at 160 Hz does not reach its full depth at 60-120 Hz, and one
+pass of -2.4 dB moved the share only 1.4 dB). Measured across the whole spectrum, one
+method (`build/measure/test_sub_fix.py`), on three renders in the repository: the sub
+goes **38.8% to 25.4%**, **60.1% to 25.8%** and **35.4% to 25.4%** of the power, while
+nothing above the shelf's corner is filtered - 80-120 Hz moves at most 0.3 dB, 120-250 Hz
+and 250 Hz-2 kHz rise only as shares, and 5-16 kHz reads 0.5-2.5 dB louder against the
+track. The full band table (20 Hz-16 kHz, before and after, per render) is in
 `song_service/README.md`. Every render logs it as `sub check: 20-120 Hz held ... now ...
 after ... dB under 160 Hz`.
 

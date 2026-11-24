@@ -261,43 +261,48 @@ chorus. Adding that tail over the song leaves dips below the render by wet:
 So the dry voice is never attenuated by the room, and the page's 0..1 room is read as a
 fraction of that send (`ROOM_SEND` 0.30: 0.26 becomes 0.078).
 
-The same write path treats the **sub**. It is close to a sine and it held most of the
-song: on a 180 s render the bass pitch was 63 Hz with its second harmonic **13.6 dB**
-down, and **20-120 Hz carried 60% of the power** - heard as a low held tone under the
-track rather than as a note. `_fix_low_end` high-passes at **40 Hz** (4 poles: 35 Hz down
-5.8 dB, 60 Hz untouched, which took 20-32 Hz from -16.2 dB of the song to -31.6) and
-then holds 20-120 Hz to **-6.0 dB**, a quarter of the song's power, with a shelf at
-160 Hz. The shelf is stepped and **re-measured** rather than trusted: a shelf at 160 Hz
-does not deliver its full depth at 60-120 Hz, and the first pass of -2.4 dB moved the
-share only 1.4 dB. The trim is limited to 8 dB, and a render that is not sub-heavy is
-left alone. Measured with the shipped helper (`build/measure/test_sub_fix.py`), one method for
-every band, on the newest render and on its mix. The figures are dB as a share of the
-song's own power:
+The same write path treats the **sub**. It is close to a sine and it can hold most of
+the song: on `song_service/logs/song_e75dff81...` the bass pitch had a median of about
+42 Hz (10th-90th 32-82 Hz) with its second harmonic **7.2 dB** down, and **20-120 Hz
+carried 60% of the power** - heard as a low held tone under the track rather than as a
+note. `_fix_low_end` high-passes at **40 Hz** (4 poles: 35 Hz down 5.8 dB, 60 Hz
+untouched) and then holds 20-120 Hz to **-6.0 dB**, a quarter of the song's power, with
+a shelf at 160 Hz. The shelf is stepped and **re-measured** rather than trusted: a shelf
+at 160 Hz does not deliver its full depth at 60-120 Hz, and the first pass of -2.4 dB
+moved the share only 1.4 dB. The trim is limited to 8 dB, and a render that is not
+sub-heavy is left alone.
 
-| band | render before | render after | mix before | mix after |
-| --- | --- | --- | --- | --- |
-| 20-32 Hz | -16.2 | -31.6 | -17.2 | -30.7 |
-| 32-45 Hz | -5.7 | -13.3 | -6.9 | -12.9 |
-| 45-60 Hz | -9.4 | -13.5 | -10.3 | -12.9 |
-| 60-120 Hz | -5.5 | -7.5 | -6.8 | -8.2 |
-| 80-120 Hz | -11.1 | -11.6 | -12.2 | -12.7 |
-| 20-120 Hz | -1.6 | -5.7 | -2.8 | -5.9 |
-| 120-250 Hz | -11.2 | -7.4 | -10.1 | -8.1 |
-| 250 Hz-2 kHz | -7.0 | -3.2 | -4.9 | -2.9 |
-| 2-5 kHz | -17.8 | -14.6 | -15.8 | -14.2 |
-| 5-16 kHz | -17.1 | -14.0 | -15.4 | -13.8 |
+Measured with the shipped helper (`build/measure/test_sub_fix.py`), one method for every
+band, on three renders that are in the repository - `song_service/logs/`
+`song_750b4372...`, `song_e75dff81...`, `song_433da495...`. dB as a share of the song's
+own power:
 
-The sub band went from **68.6% of the power to 26.9%** on the render (shelf -8.0 dB,
-the limit) and from **52.5% to 25.5%** on its mix (-4.4 dB). Nothing above the shelf's
-corner is filtered - those rows rise only because the sub fell and the shares are
-relative - so the top is not dulled by this: 5-16 kHz moves from -17.1 to -14.0 dB as a
-share, 3.1 dB louder against the track it sits in.
+| band | 750b | after | e75d | after | 433d | after |
+| --- | --- | --- | --- | --- | --- | --- |
+| 20-32 Hz | -11.7 | -25.1 | -13.8 | -27.1 | -16.8 | -29.3 |
+| 32-45 Hz | -10.9 | -15.9 | -4.5 | -10.8 | -10.8 | -15.7 |
+| 45-60 Hz | -14.9 | -16.0 | -13.5 | -15.8 | -13.8 | -15.1 |
+| 60-120 Hz | -6.9 | -7.0 | -8.0 | -8.3 | -6.8 | -7.1 |
+| 80-120 Hz | -8.7 | -8.7 | -10.6 | -10.3 | -8.4 | -8.6 |
+| 20-120 Hz | -4.1 | -6.0 | -2.2 | -5.9 | -4.5 | -6.0 |
+| 120-250 Hz | -8.8 | -8.0 | -12.5 | -10.1 | -10.0 | -9.3 |
+| 250 Hz-2 kHz | -3.8 | -3.0 | -5.8 | -3.0 | -3.5 | -2.8 |
+| 2-5 kHz | -12.6 | -11.8 | -12.8 | -10.3 | -12.3 | -11.8 |
+| 5-16 kHz | -18.8 | -18.0 | -15.9 | -13.4 | -14.3 | -13.8 |
 
-Every render logs the numbers it measured - `sub check: 20-120 Hz held -2.1 dB of the
-song (61%), now -5.7 dB (27%) after -8.0 dB under 160 Hz`. The
-measurement that decided this: nothing under 6 kHz is a fixed tone - the stillest
-1/24-octave band swings **19.7 dB** across the song - so there is nothing to notch, and
-the sub is the bass itself, near-sine and 13.6 dB above its own second harmonic.
+The sub band goes from **38.8% to 25.4%**, **60.1% to 25.8%** and **35.4% to 25.4%** of
+the power, with the shelf at -1.5, -4.9 and -1.5 dB under 160 Hz - the 8 dB limit was
+never reached, and 45-60 Hz barely moves (the shelf sits above it). Nothing above the
+shelf's corner is filtered - those rows rise only because the sub fell and the shares
+are relative - so the top is not dulled by this: 5-16 kHz moves up 0.8, 2.5 and 0.5 dB
+as a share, and 80-120 Hz moves at most 0.3 dB either way.
+
+Every render logs the numbers it measured - `sub check: 20-120 Hz held -3.5 dB of the
+song (45%), now -5.9 dB (26%) after -4.9 dB under 160 Hz` is the e75d render. The
+measurement that decided this: nothing under 6 kHz is a fixed tone - in `song_750b4372`
+the stillest 1/24-octave band under 6 kHz swings **17.6 dB** across the song, against the
+under 6 dB of a true hum - so there is nothing to notch, and the sub is the bass itself,
+near-sine and 7.2 dB above its own second harmonic.
 `build/measure/test_sub_fix.py` at the repository root runs the shipped helper over
 renders on disk and prints every band before and after; `hum_scan.py`, `hum_persist.py`
 and `sub_check.py` are the measurements above.

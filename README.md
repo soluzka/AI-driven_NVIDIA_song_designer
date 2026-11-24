@@ -1460,6 +1460,14 @@ honest about it; the GPU install is unchanged and still uses `install.py`,
 `vercel.json` at all — it keeps serving `worker.js` and `public/`, and the two
 deployments are independent.
 
+Vercel finds each service's Flask app through `[tool.vercel] entrypoint =
+"app:app"` in `pyproject.toml`. The object to serve is `app` in `app.py`, which
+imports `setup_routes` from `ai_engine.py`; `ai_engine` is the engine — scraper,
+ML ranking, discovery, downloads — and takes the Flask app as an argument rather
+than owning one, so naming it as the entrypoint cannot resolve. The original
+`vercel.json` built `ai_engine.py` and routed every request to `/app.py`, one
+file built and another served, which is why nothing was ever served from it.
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).

@@ -1233,7 +1233,15 @@ async function searchIndex(env, url) {
   }
 
   if (!query) {
-    return json({ query: '', total: 0, library: await readStats(env), discovered: 0, videos: [] });
+    // The empty query is the page's counter poll: it says whether the database can
+    // be read as well as what the totals are, so the page can explain itself
+    // instead of silently serving the export's older figures.
+    const problem = await d1Problem(env);
+    return json({
+      query: '', total: 0, library: await readStats(env), discovered: 0, videos: [],
+      readable: !problem,
+      error: problem || undefined,
+    });
   }
 
   // A search is also how the library grows. Before counting, this asks
@@ -1314,6 +1322,9 @@ async function searchIndex(env, url) {
       detail: String((err && err.message) || err).slice(0, 200),
       query,
       total: 0,
+      // The page reads this: it may say the library is unreadable, but it must not
+      // replace the totals on screen with the bundled export's older ones.
+      readable: false,
       library,
       discovered,
       videos: [],
@@ -1877,12 +1888,82 @@ async function readStatsUnsafe(env) {
 // One such 500 was seen on the live site (the next two identical calls answered
 // 200) and could not be reproduced, so the failure is made harmless and loud
 // rather than hunted in the dark: the search answers, the log says what broke.
-async function readStats(env) {
+// The last totals a search actually saw, kept in KV so a database that cannot be
+// read does not make the page fall back to the bundled export's old numbers. One
+// write every five minutes, not one per search: KV allows 1,000 a day.
+const LIBRARY_KEY = 'library_snapshot';
+
+async function readLibrarySnapshot(env) {
+  if (!env.STATS) return null;
   try {
-    return await readStatsUnsafe(env);
+    const raw = await env.STATS.get(LIBRARY_KEY);
+    const doc = raw ? JSON.parse(raw) : null;
+    return doc && Number(doc.v) ? doc : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+async function saveLibrarySnapshot(env, library) {
+  if (!env.STATS || !library || !Number(library.total_videos)) return;
+  try {
+    const existing = await readLibrarySnapshot(env);
+    if (existing && Date.now() - Number(existing.at || 0) < 5 * 60 * 1000) return;
+    await env.STATS.put(LIBRARY_KEY, JSON.stringify({
+      v: library.total_videos, s: library.total_searches, c: library.total_clicks, at: Date.now(),
+    }));
+  } catch (err) {
+    // Counters are decoration: a refused KV write must not fail a search.
+  }
+}
+
+function snapshotAsLibrary(snapshot) {
+  if (!snapshot) return null;
+  return {
+    total_videos: Number(snapshot.v) || 0,
+    total_searches: Number(snapshot.s) || 0,
+    total_clicks: Number(snapshot.c) || 0,
+  };
+}
+
+// One row, not zero: `SELECT 1` costs nothing to read, so a spent daily row
+// allowance answers it happily and the probe lies. Asking for a real row fails
+// exactly when a search would.
+async function d1Problem(env) {
+  if (!env.DB) return 'no database is bound';
+  try {
+    await env.DB.prepare('SELECT 1 AS x FROM videos LIMIT 1').first();
+    return '';
+  } catch (err) {
+    return String((err && err.message) || err).slice(0, 200);
+  }
+}
+
+async function readStats(env) {
+  // Asked first, because the helpers below swallow a failed read and happily
+  // answer with the export's 8,724: that is how the page lost the real totals.
+  const problem = await d1Problem(env);
+  try {
+    const live = await readStatsUnsafe(env);
+    if (!problem && Number(live.total_videos)) {
+      await saveLibrarySnapshot(env, live);
+      return live;
+    }
+    const fromSnapshot = snapshotAsLibrary(await readLibrarySnapshot(env));
+    if (fromSnapshot) {
+      console.error('[stats] database unreadable, answering from the last snapshot:', problem || 'no live totals');
+      // Never lower a number the page may already be showing.
+      return {
+        total_videos: Math.max(fromSnapshot.total_videos, Number(live.total_videos) || 0),
+        total_searches: Math.max(fromSnapshot.total_searches, Number(live.total_searches) || 0),
+        total_clicks: Math.max(fromSnapshot.total_clicks, Number(live.total_clicks) || 0),
+      };
+    }
+    return live;
   } catch (err) {
     console.error('[stats] readStats failed:', (err && (err.stack || err.message)) || err);
-    return { total_videos: 0, total_searches: 0, total_clicks: 0 };
+    const fromSnapshot = snapshotAsLibrary(await readLibrarySnapshot(env));
+    return fromSnapshot || { total_videos: 0, total_searches: 0, total_clicks: 0 };
   }
 }
 

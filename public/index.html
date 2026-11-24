@@ -1003,6 +1003,13 @@
         <span id="offlineText">You are offline. Search, downloads and the pool need a connection;
             a song can still render on this PC's model.</span>
     </div>
+    <!-- Shown when the database refuses a read (a spent daily allowance is the usual
+         reason). The totals on screen stay the last ones that were read, rather than
+         dropping to the older figures in the bundled export. -->
+    <div class="offline-banner" id="libraryBanner" hidden>
+        <span class="dot"></span>
+        <span id="libraryText">The library and counters cannot be read right now.</span>
+    </div>
     <!-- Header -->
     <div class="header">
         <div class="logo">
@@ -1310,6 +1317,39 @@
             try { statsFromSession = false; } catch (err) { /* declared later */ }
             updateStats(indexStats);
             return true;
+        }
+
+        // The database said it could not be read. Say so where the totals are,
+        // instead of letting the export's older numbers stand in silently.
+        function showLibraryUnreadable(reason) {
+            const banner = document.getElementById('libraryBanner');
+            const text = document.getElementById('libraryText');
+            if (!banner || !text) return;
+            const why = String(reason || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+            text.textContent = 'The library and counters cannot be read right now'
+                + (why ? ' (' + why + ')' : '')
+                + '. The totals below are the last ones read; search answers from the bundled export meanwhile.';
+            banner.hidden = false;
+        }
+
+        function hideLibraryUnreadable() {
+            const banner = document.getElementById('libraryBanner');
+            if (banner) banner.hidden = true;
+        }
+
+        // One empty search: the counters, and whether the database can answer at all.
+        async function refreshLibraryStatus() {
+            try {
+                const answer = await fetchBounded('api/search?q=', { cache: 'no-store' }, 8000);
+                const doc = await answer.json().catch(() => null);
+                if (!doc) return null;
+                applyLibraryStats(doc.library);
+                if (doc.readable === false) showLibraryUnreadable(doc.error);
+                else if (doc.readable === true) hideLibraryUnreadable();
+                return doc;
+            } catch (err) {
+                return null;
+            }
         }
 
         function loadIndex() {
@@ -1925,7 +1965,10 @@
                     .catch(() => ({ added: 0, videos: [] }))
                     .then(extra => apiSearchAll(query)
                         .then(found => ({ found: found, extra: extra }))
-                        .catch(() => loadIndex()
+                        // Ask why before falling back, so the banner appears and the
+                        // totals stay the last ones read instead of the export's.
+                        .catch(() => refreshLibraryStatus()
+                            .then(() => loadIndex())
                             .then(() => ({ found: localSearch(query), extra: extra }))))
                     .then(pair => {
                         const found = pair.found;
@@ -8490,6 +8533,8 @@
                     // The counters answer: send anything that piled up.
                     flushClicks();
                 }
+                if (doc && doc.readable === false) showLibraryUnreadable(doc.error);
+                else if (doc && doc.readable === true) hideLibraryUnreadable();
             } catch (err) { /* fall through to the bundled index */ }
 
             // A restored search already brought its counters with it; the snapshot

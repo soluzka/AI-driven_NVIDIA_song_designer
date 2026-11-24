@@ -240,12 +240,28 @@ then holds 20-120 Hz to **-6.0 dB**, a quarter of the song's power, with a shelf
 160 Hz. The shelf is stepped and **re-measured** rather than trusted: a shelf at 160 Hz
 does not deliver its full depth at 60-120 Hz, and the first pass of -2.4 dB moved the
 share only 1.4 dB. The trim is limited to 8 dB, and a render that is not sub-heavy is
-left alone. Measured with the shipped helper (`build/measure/test_sub_fix.py`):
+left alone. Measured with the shipped helper (`build/measure/test_sub_fix.py`), one method for
+every band, on the newest render and on its mix. The figures are dB as a share of the
+song's own power:
 
-| file | 20-120 Hz before | after | shelf | 80-120 Hz | 120-250 Hz |
-| --- | --- | --- | --- | --- | --- |
-| the render (`last_song.wav`) | 69% of the power | **27%** | -8.0 dB | -0.5 dB | +3.8 dB as a share |
-| its mix (`song_with_voice.wav`) | 61% | **26%** | -6.3 dB | -0.6 dB | +2.9 dB as a share |
+| band | render before | render after | mix before | mix after |
+| --- | --- | --- | --- | --- |
+| 20-32 Hz | -16.2 | -31.6 | -17.2 | -30.7 |
+| 32-45 Hz | -5.7 | -13.3 | -6.9 | -12.9 |
+| 45-60 Hz | -9.4 | -13.5 | -10.3 | -12.9 |
+| 60-120 Hz | -5.5 | -7.5 | -6.8 | -8.2 |
+| 80-120 Hz | -11.1 | -11.6 | -12.2 | -12.7 |
+| 20-120 Hz | -1.6 | -5.7 | -2.8 | -5.9 |
+| 120-250 Hz | -11.2 | -7.4 | -10.1 | -8.1 |
+| 250 Hz-2 kHz | -7.0 | -3.2 | -4.9 | -2.9 |
+| 2-5 kHz | -17.8 | -14.6 | -15.8 | -14.2 |
+| 5-16 kHz | -17.1 | -14.0 | -15.4 | -13.8 |
+
+The sub band went from **68.6% of the power to 26.9%** on the render (shelf -8.0 dB,
+the limit) and from **52.5% to 25.5%** on its mix (-4.4 dB). Nothing above the shelf's
+corner is filtered - those rows rise only because the sub fell and the shares are
+relative - so the top is not dulled by this: 5-16 kHz moves from -17.1 to -14.0 dB as a
+share, 3.1 dB louder against the track it sits in.
 
 Every render logs the numbers it measured - `sub check: 20-120 Hz held -2.1 dB of the
 song (61%), now -5.7 dB (27%) after -8.0 dB under 160 Hz`. The

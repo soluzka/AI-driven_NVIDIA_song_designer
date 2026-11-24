@@ -317,9 +317,13 @@ the power. Nothing under 6 kHz is a fixed tone - the stillest 1/24-octave band s
 high-passes at 40 Hz (4 poles) and holds 20-120 Hz to **-6.0 dB** of the song, a quarter
 of its power, with a shelf at 160 Hz that is stepped and re-measured (a shelf at 160 Hz
 does not reach its full depth at 60-120 Hz, and one pass of -2.4 dB moved the share only
-1.4 dB). Measured: **69% of the power to 27%** on the render, **61% to 26%** on its mix,
-with 80-120 Hz moving 0.5-0.6 dB. Every render logs it as `sub check: 20-120 Hz held ...
-now ... after ... dB under 160 Hz`.
+1.4 dB). Measured across the whole spectrum, one method (`build/measure/test_sub_fix.py`): the
+sub goes **68.6% of the power to 26.9%** on the render and **52.5% to 25.5%** on its mix,
+while nothing above the shelf's corner is filtered - 80-120 Hz moves 0.5 dB, 120-250 Hz
+and 250 Hz-2 kHz rise only as shares, and 5-16 kHz reads **3.1 dB louder** against the
+track. The full band table (20 Hz-16 kHz, before and after) is in
+`song_service/README.md`. Every render logs it as `sub check: 20-120 Hz held ... now ...
+after ... dB under 160 Hz`.
 
 #### The tail
 

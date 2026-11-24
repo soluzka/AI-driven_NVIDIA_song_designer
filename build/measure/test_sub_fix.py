@@ -1,8 +1,12 @@
-"""Measure the service's own `_fix_low_end` on a real render.
+"""Measure the service's own `_fix_low_end` across the whole spectrum.
 
 The helper is lifted out of `song_service/app.py` by name and executed from its own
 source, so what is measured is the shipped code. It is not imported: importing the
 module starts the lyric warm-up and loads the 3.5B model.
+
+Every band from 20 Hz to 16 kHz is reported, before and after the treatment, for
+each file given - so the cost of the sub work outside 20-120 Hz is on the record
+too, not just the band it was aimed at.
 
 Usage: test_sub_fix.py <wav> [...]
 """
@@ -20,6 +24,9 @@ APP = os.path.join(os.path.dirname(os.path.dirname(HERE)), 'song_service', 'app.
 WANTED_FUNCS = {'_fix_low_end', '_sub_share_db'}
 WANTED_CONSTS = {'SUB_HP_HZ', 'SUB_SHARE_MAX_DB', 'SUB_SHELF_HZ', 'SUB_TRIM_LIMIT_DB'}
 
+BANDS = [(20, 32), (32, 45), (45, 60), (60, 120), (80, 120), (20, 120),
+         (120, 250), (250, 2000), (2000, 5000), (5000, 16000)]
+
 
 def load_helper():
     with open(APP, encoding='utf-8') as handle:
@@ -32,22 +39,19 @@ def load_helper():
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id in WANTED_CONSTS:
                     nodes.append(node)
-    missing = WANTED_FUNCS | WANTED_CONSTS
     found = set()
     for node in nodes:
-        found.add(node.name if isinstance(node, ast.FunctionDef) else
-                  node.targets[0].id)
-    if missing - found:
-        raise SystemExit('not found in app.py: %s' % ', '.join(sorted(missing - found)))
+        found.add(node.name if isinstance(node, ast.FunctionDef) else node.targets[0].id)
+    missing = (WANTED_FUNCS | WANTED_CONSTS) - found
+    if missing:
+        raise SystemExit('not found in app.py: %s' % ', '.join(sorted(missing)))
     namespace = {'np': np}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), APP, 'exec'), namespace)
     return namespace
 
 
-BANDS = [(20, 120), (60, 120), (80, 120), (120, 250), (250, 2000), (20, 32), (32, 45)]
-
-
 def shares(mono, rate):
+    """Share of the song's power in each band, in dB, over the whole file."""
     from scipy.signal import welch
 
     freqs, power = welch(mono, fs=rate, nperseg=65536, noverlap=32768, window='hann',
@@ -65,25 +69,33 @@ def main():
     print('constants: HP %g Hz (4 poles), share cap %+.1f dB, shelf %g Hz, limit %g dB'
           % (namespace['SUB_HP_HZ'], namespace['SUB_SHARE_MAX_DB'],
              namespace['SUB_SHELF_HZ'], namespace['SUB_TRIM_LIMIT_DB']))
-    header = '%-40s %9s %9s %9s %9s %9s %9s %9s' % (
-        '', '20-120', '60-120', '80-120', '120-250', '250-2k', '20-32', '32-45')
+    print()
+
+    columns = []
     for path in paths:
         data, rate = sf.read(path, always_2d=True, dtype='float32')
         before = shares(data.mean(axis=1), rate)
         frames = namespace['_fix_low_end'](data.copy(), rate)
         after = shares(frames.mean(axis=1), rate)
-        print()
-        print(os.path.basename(path))
-        print(header)
-        order = list(range(len(BANDS)))
-        print('%-40s %9.1f %9.1f %9.1f %9.1f %9.1f %9.1f %9.1f' % (
-            'before', *[before[i] for i in order]))
-        print('%-40s %9.1f %9.1f %9.1f %9.1f %9.1f %9.1f %9.1f' % (
-            'after', *[after[i] for i in order]))
-        print('%-40s %9.1f %9.1f %9.1f %9.1f %9.1f %9.1f %9.1f' % (
-            'change', *[after[i] - before[i] for i in order]))
-        print('sub band now holds %.0f%% of the song\'s power (was %.0f%%)'
-              % (100 * 10 ** (after[0] / 10), 100 * 10 ** (before[0] / 10)))
+        name = os.path.basename(path).replace('.wav', '')
+        columns.append((name, before, after))
+
+    width = max(len(name) for name, _, _ in columns)
+    header = '%-10s' % 'band'
+    for name, _, _ in columns:
+        header += ' %*s %*s' % (width, name, width, 'after')
+    print(header)
+    print('-' * len(header))
+    for i, (lo, hi) in enumerate(BANDS):
+        row = '%-10s' % ('%d-%d' % (lo, hi))
+        for _, before, after in columns:
+            row += ' %*.1f %*.1f' % (width, before[i], width, after[i])
+        print(row)
+
+    print()
+    for name, before, after in columns:
+        print('%-28s sub 20-120 Hz: %5.1f%% of the power -> %5.1f%%'
+              % (name, 100 * 10 ** (before[5] / 10), 100 * 10 ** (after[5] / 10)))
 
 
 if __name__ == '__main__':

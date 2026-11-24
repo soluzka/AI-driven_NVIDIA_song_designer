@@ -10,6 +10,9 @@ genre it belongs to, and downloads what you want. Two ways in from one codebase:
   searching a bundled index in the browser, with downloads handled by a small
   separately hosted service.
 
+**Live site: <https://browser.bpiersing.workers.dev/>** — served by the Cloudflare
+Worker (`worker.js`, `public/` and D1), not by a Vercel function.
+
 ## The pieces
 
 | Piece | What it does |

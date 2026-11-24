@@ -57,7 +57,30 @@ logger = logging.getLogger(__name__)
 # DATABASE SCHEMA
 # ============================================================================
 
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'video_index.db'))
+def index_db_path() -> str:
+    """Where the writable live index lives.
+
+    It sits beside the code by default, which is right where the tree is
+    unpacked and wrong on a read-only deployment: the parent is outside the
+    bundle there, so the copy of data/video_index.db could never be made and
+    opening the file raised "unable to open database file" during import. That
+    took the whole app down, not just search. VIDEO_INDEX_DB names the file
+    outright; a parent that cannot be written to falls back to the temporary
+    directory, where the snapshot is still seeded and searches still answer -
+    read-only, per instance, which is what a serverless host can offer.
+    """
+    default = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'video_index.db'))
+    chosen = os.environ.get('VIDEO_INDEX_DB', '').strip() or default
+    chosen = os.path.abspath(os.path.expanduser(chosen))
+    parent = os.path.dirname(chosen) or '.'
+    # isdir matters: os.access() reports a writable *file* as a writable place for
+    # a database too, and the connect would then fail on a parent that is a file.
+    if os.path.isdir(parent) and os.access(parent, os.W_OK):
+        return chosen
+    return os.path.join(tempfile.gettempdir(), os.path.basename(chosen) or 'video_index.db')
+
+
+DB_PATH = index_db_path()
 
 def count_videos(db_path: str) -> int:
     """Videos stored in a database, or 0 when it is missing or has no table."""
@@ -1390,9 +1413,47 @@ class DownloadManager:
 # ROUTES SETUP
 # ============================================================================
 
+class UnavailableIndex:
+    """Stands in when the index cannot be opened, so the app still starts.
+
+    Every route reaches the index through this object, so a database that
+    cannot be opened used to stop the import and answer nothing at all. An
+    empty library with an explanation is the honest failure: the page renders,
+    search returns no results, and the reason is in the log.
+    """
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        self.db_path = ''
+        self.documents = []
+        self.genre_model = None
+
+    def search(self, query: str, limit: int = None) -> List[Dict]:
+        return []
+
+    def count_matches(self, query: str) -> int:
+        return 0
+
+    def add_video(self, *args, **kwargs) -> bool:
+        return False
+
+    def record_click(self, query: str, url: str, title: str = '') -> None:
+        return None
+
+    def rebuild(self) -> None:
+        return None
+
+    def get_stats(self) -> Dict:
+        return {'total_videos': 0, 'by_source': {}, 'total_searches': 0, 'total_clicks': 0}
+
+
 def setup_routes(app, socketio):
     """Set up Flask routes and Socket.IO event handlers for the AI search engine."""
-    database = MLDatabase()
+    try:
+        database = MLDatabase()
+    except Exception as db_err:
+        logger.error('Index unavailable, serving an empty library: %s', db_err)
+        database = UnavailableIndex(str(db_err))
 
     # The genre model weighs phrases by how rare they are in this library, so it
     # has to read every document once. That fit takes seconds on a large index,

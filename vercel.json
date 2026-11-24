@@ -4,6 +4,8 @@
     "site": {
       "root": ".",
       "framework": "flask",
+      "entrypoint": "app:app",
+      "installCommand": "python -m pip install --no-cache-dir -r requirements-vercel.txt",
       "bindings": [
         {
           "type": "service",
@@ -15,11 +17,13 @@
     },
     "downloader": {
       "root": "downloader_service",
-      "framework": "flask"
+      "framework": "flask",
+      "entrypoint": "app:app"
     },
     "song": {
       "root": "song_service",
       "framework": "flask",
+      "entrypoint": "app:app",
       "installCommand": "python -m pip install --no-cache-dir -r requirements-vercel.txt",
       "bindings": [
         {
@@ -39,6 +43,7 @@
     "voice": {
       "root": "voice_service",
       "framework": "flask",
+      "entrypoint": "app:app",
       "installCommand": "python -m pip install --no-cache-dir -r requirements-vercel.txt"
     }
   },

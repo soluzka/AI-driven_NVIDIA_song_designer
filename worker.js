@@ -99,7 +99,10 @@ export default {
         return await cachedSearch(env, request, url);
       } catch (err) {
         // An uncaught throw here becomes a blank Cloudflare 500 with no clue in
-        // it. The reason is worth more than the tidiness.
+        // it. The reason is worth more than the tidiness - and it goes to the log
+        // as well, because a 500 that only travels in the response cannot be
+        // diagnosed after the fact (one was seen and not reproducible).
+        console.error('[search] unhandled:', (err && (err.stack || err.message)) || err);
         return json({ error: String((err && err.message) || err) }, 500);
       }
     }
@@ -1169,18 +1172,33 @@ async function cachedSearch(env, request, url) {
 
   const cache = caches.default;
   const key = new Request('https://search-cache.internal' + url.pathname + url.search, { method: 'GET' });
-  const hit = await cache.match(key);
+  // A cache that cannot be read is a cache miss, not a failed search: this sat
+  // outside every guard, so an error here reached the route's catch as a 500.
+  let hit = null;
+  try {
+    hit = await cache.match(key);
+  } catch (err) {
+    console.error('[search] cache.match failed:', (err && (err.stack || err.message)) || err);
+  }
   if (hit) return hit;
 
   const fresh = await searchIndex(env, url);
   if (fresh.status === 200) {
-    const copy = new Response(fresh.body, {
-      status: fresh.status,
-      statusText: fresh.statusText,
-      headers: fresh.headers,
+    // A body can be read once. Passing `fresh.body` into another Response locks
+    // it, so returning `fresh` afterwards threw "Body has already been used" and
+    // Cloudflare answered 500 (error 1101) - measured on 10 of 120 requests, all
+    // of them cache misses on this path, which is what made it look intermittent.
+    // clone() gives the cache its own stream and leaves `fresh` readable.
+    const forCache = fresh.clone();
+    const copy = new Response(forCache.body, {
+      status: forCache.status,
+      statusText: forCache.statusText,
+      headers: forCache.headers,
     });
     copy.headers.set('Cache-Control', 'public, max-age=60');
-    await cache.put(key, copy).catch(() => {});
+    await cache.put(key, copy).catch((err) => {
+      console.error('[search] cache.put failed:', (err && (err.stack || err.message)) || err);
+    });
   }
   return fresh;
 }
@@ -1221,8 +1239,13 @@ async function searchIndex(env, url) {
   // KV read and one KV write.
   const logging = url.searchParams.get('log') === '1';
   if (logging) {
-    const after = await bumpStats(env, 'total_searches', 1);
-    if (after.total_searches) library.total_searches = after.total_searches;
+    try {
+      const after = await bumpStats(env, 'total_searches', 1);
+      if (after.total_searches) library.total_searches = after.total_searches;
+    } catch (err) {
+      // Counting the search is a nicety; failing it must not fail the search.
+      console.error('[stats] bumpStats failed:', (err && (err.stack || err.message)) || err);
+    }
   }
 
   // LIKE wildcards inside a search term are escaped, so a term of "100%" is a
@@ -1807,7 +1830,7 @@ async function exactVideoTotal(env, shipped) {
 // First use after this change: the database still holds the real totals, so they
 // are copied across once and KV answers from then on. If D1 cannot be read either,
 // the answer is zeroes and the page keeps showing what it already knows.
-async function readStats(env) {
+async function readStatsUnsafe(env) {
   const doc = await readStatsDoc(env);
   if (!doc.v && !doc.s && !doc.c) {
     const seeded = await indexTotals(env);
@@ -1829,6 +1852,20 @@ async function readStats(env) {
     total_searches: Number(doc.s) || 0,
     total_clicks: Number(doc.c) || 0,
   };
+}
+
+// The counters are decoration, and this runs before the search's own try/catch: a
+// KV or D1 hiccup in here turned a query that could still be answered into a 500.
+// One such 500 was seen on the live site (the next two identical calls answered
+// 200) and could not be reproduced, so the failure is made harmless and loud
+// rather than hunted in the dark: the search answers, the log says what broke.
+async function readStats(env) {
+  try {
+    return await readStatsUnsafe(env);
+  } catch (err) {
+    console.error('[stats] readStats failed:', (err && (err.stack || err.message)) || err);
+    return { total_videos: 0, total_searches: 0, total_clicks: 0 };
+  }
 }
 
 // The D1 totals, kept only to seed KV once and to answer if KV is missing.

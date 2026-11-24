@@ -1237,10 +1237,18 @@ async function searchIndex(env, url) {
     // be read as well as what the totals are, so the page can explain itself
     // instead of silently serving the export's older figures.
     const library = await readStats(env);
+    // One source of truth for "can it be read": the shared verdict a failed search
+    // left behind. Comparing totals here was per-isolate, so the same outage answered
+    // readable:true on one request and readable:false on the next.
+    const unreadable = await libraryUnreadable(env);
+    // Either witness is enough to say no, and neither can say yes on its own: the
+    // page treats "readable" as advice and only a successful search as proof.
+    const why = unreadable
+      || (statsLookBehind ? 'the library total is behind the last one read' : '');
     return json({
       query: '', total: 0, library, discovered: 0, videos: [],
-      readable: !statsLookBehind,
-      error: statsLookBehind ? 'the library total is behind the last one read' : undefined,
+      readable: !why,
+      error: why || undefined,
     });
   }
 
@@ -1317,9 +1325,13 @@ async function searchIndex(env, url) {
   } catch (err) {
     // The library could not be read. That is not the same as "no results": say so,
     // and still hand back the counters so the page does not fall back to zeros.
+    const reason = String((err && err.message) || err).slice(0, 200);
+    // Shared, not per isolate: the next request may land on a Worker that never saw
+    // this failure, and it has to answer the same way.
+    await noteLibraryUnreadable(env, reason);
     return json({
       error: 'The library could not be read just now.',
-      detail: String((err && err.message) || err).slice(0, 200),
+      detail: reason,
       query,
       total: 0,
       // The page reads this: it may say the library is unreadable, but it must not
@@ -1330,6 +1342,10 @@ async function searchIndex(env, url) {
       videos: [],
     }, 503);
   }
+
+  // A read that worked clears the shared verdict, so the banner goes away as soon as
+  // the database answers again - this request (or any later one) may be the first.
+  await noteLibraryReadable(env);
 
   const videos = (found.results || []).map((row) => ({
     u: row.url,
@@ -1945,9 +1961,52 @@ async function d1Problem(env) {
 
 // True when the live count is behind the last one this Worker managed to read: the
 // database is answering from something stale (a spent allowance makes its reads
-// fail, and the helpers then fall back to the export's 8,724). A probe cannot tell:
-// a one-row SELECT still answers at the quota, only a real scan fails.
+// fail, and the helpers then fall back to the export's 8,724). Kept for the log;
+// the answer the page gets comes from the shared verdict below, because this flag
+// differs per isolate and flipped readable:true/false on consecutive requests.
 let statsLookBehind = false;
+
+// Why the library could not be read, shared through KV so every isolate agrees. A
+// real row read is the only honest probe: a one-row SELECT still answers when the
+// daily allowance is spent, so the failure itself is what gets recorded.
+const D1_DOWN_KEY = 'library_unreadable';
+const D1_DOWN_MS = 15 * 60 * 1000;   // a verdict older than this stops counting
+let d1DownMarkedAt = 0;              // per isolate: keeps the writes cheap
+
+async function noteLibraryUnreadable(env, reason) {
+  if (!env.STATS) return;
+  const now = Date.now();
+  if (now - d1DownMarkedAt < 60 * 1000) return;   // one write a minute at most
+  d1DownMarkedAt = now;
+  try {
+    await env.STATS.put(D1_DOWN_KEY, JSON.stringify({ at: now, reason: String(reason || '').slice(0, 200) }));
+  } catch (err) {
+    // KV refused the write: the page still gets readable:false on this response.
+  }
+}
+
+async function noteLibraryReadable(env) {
+  if (!env.STATS) return;
+  try {
+    if (await env.STATS.get(D1_DOWN_KEY)) await env.STATS.delete(D1_DOWN_KEY);
+    d1DownMarkedAt = 0;
+  } catch (err) {
+    // Nothing to do: a stale verdict expires on its own after D1_DOWN_MS.
+  }
+}
+
+async function libraryUnreadable(env) {
+  if (!env.STATS) return null;
+  try {
+    const raw = await env.STATS.get(D1_DOWN_KEY);
+    if (!raw) return null;
+    const doc = JSON.parse(raw);
+    if (!doc || Date.now() - Number(doc.at || 0) > D1_DOWN_MS) return null;
+    return String(doc.reason || 'the library could not be read');
+  } catch (err) {
+    return null;
+  }
+}
 
 async function readStats(env) {
   try {

@@ -1321,10 +1321,18 @@
 
         // The database said it could not be read. Say so where the totals are,
         // instead of letting the export's older numbers stand in silently.
+        // Once the page has seen a search fail because the library could not be read,
+        // only a search that worked may clear this. A counter poll answered by a
+        // different Worker cannot be trusted to say "fine": D1 read limits are
+        // counted per colo, so one request saw them spent and the next did not, and
+        // the banner flickered.
+        let libraryUnreadableSticky = false;
+
         function showLibraryUnreadable(reason) {
             const banner = document.getElementById('libraryBanner');
             const text = document.getElementById('libraryText');
             if (!banner || !text) return;
+            libraryUnreadableSticky = true;
             const why = String(reason || '').replace(/\s+/g, ' ').trim().slice(0, 160);
             text.textContent = 'The library and counters cannot be read right now'
                 + (why ? ' (' + why + ')' : '')
@@ -1332,9 +1340,13 @@
             banner.hidden = false;
         }
 
-        function hideLibraryUnreadable() {
+        // `proven` means a search actually read the library: that is the only evidence
+        // strong enough to take the banner down.
+        function hideLibraryUnreadable(proven) {
+            if (!proven && libraryUnreadableSticky) return;
             const banner = document.getElementById('libraryBanner');
             if (banner) banner.hidden = true;
+            if (proven) libraryUnreadableSticky = false;
         }
 
         // One empty search: the counters, and whether the database can answer at all.
@@ -1344,8 +1356,9 @@
                 const doc = await answer.json().catch(() => null);
                 if (!doc) return null;
                 applyLibraryStats(doc.library);
+                // Only ever raised here: a poll saying "readable" is not proof that the
+                // scan a search needs will work.
                 if (doc.readable === false) showLibraryUnreadable(doc.error);
-                else if (doc.readable === true) hideLibraryUnreadable();
                 return doc;
             } catch (err) {
                 return null;
@@ -1535,8 +1548,10 @@
             // The search itself failed because the library could not be read: say so
             // here, where the reason is on hand, rather than only in the poll.
             if (doc && doc.readable === false) showLibraryUnreadable(doc.detail || doc.error);
-            else if (doc && doc.readable === true) hideLibraryUnreadable();
             if (!response.ok) throw new Error('search unavailable (' + response.status + ')');
+            // Reached only when the search itself read the library: the one fact that
+            // clears the banner.
+            hideLibraryUnreadable(true);
             if (!doc || !Array.isArray(doc.videos)) throw new Error('search returned an unexpected shape');
             const total = Number(doc.total) || 0;
             // The database answers in the same compact keys the JSON index uses
@@ -8538,7 +8553,6 @@
                     flushClicks();
                 }
                 if (doc && doc.readable === false) showLibraryUnreadable(doc.error);
-                else if (doc && doc.readable === true) hideLibraryUnreadable();
             } catch (err) { /* fall through to the bundled index */ }
 
             // A restored search already brought its counters with it; the snapshot

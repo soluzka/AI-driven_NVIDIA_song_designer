@@ -305,7 +305,14 @@ under 6 dB of a true hum - so there is nothing to notch, and the sub is the bass
 near-sine and 7.2 dB above its own second harmonic.
 `build/measure/test_sub_fix.py` at the repository root runs the shipped helper over
 renders on disk and prints every band before and after; `hum_scan.py`, `hum_persist.py`
-and `sub_check.py` are the measurements above.
+and `sub_check.py` are the measurements above. `hum_after.py` writes what the shipped
+`_fix_low_end` makes of a render to a file - no room, no mix - so the hum can be
+measured on the audio that ships rather than on its input; the run on three renders is
+saved as `build/measure/hum_before_after.txt`. Measured there, the excess is gone: the
+dominant low pitch holds 75% of the song before the treatment and 65% after, 20-32 Hz
+falls 13.4 dB, DC goes from +0.00238 to 0.00000, and the stillest 1/24-octave band in
+20-120 Hz still swings 33.8 dB - the low end is a steady bass note, not a hum (a hum
+holds within 6 dB).
 
 The write path also closes a **gated tail**. The model does not always fill the length
 it was asked for: six 59.9 s requests truly ended at 55.3-59.9 s, and four of them

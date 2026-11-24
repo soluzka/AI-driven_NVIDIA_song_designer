@@ -1,0 +1,67 @@
+The before/after hum check, as run on 2026-11-24 (no fresh render was made).
+Treatment: the shipped _fix_low_end, written out by build/measure/hum_after.py.
+
+== the treatment applied (its own log, per render) ==
+sub-bass under 40 Hz removed (4 poles)
+sub check: 20-120 Hz held -5.2 dB of the song (30%), now -6.0 dB (25%) after -1.5 dB under 160 Hz
+song_750b437295b24ef8808ba7c2d9193034.wav -> after_song_750b437295b24ef8808ba7c2d9193034.wav
+sub-bass under 40 Hz removed (4 poles)
+sub check: 20-120 Hz held -3.5 dB of the song (45%), now -5.9 dB (26%) after -4.9 dB under 160 Hz
+song_e75dff81834048fb9d56990156ce32a6.wav -> after_song_e75dff81834048fb9d56990156ce32a6.wav
+sub-bass under 40 Hz removed (4 poles)
+sub check: 20-120 Hz held -5.2 dB of the song (30%), now -6.0 dB (25%) after -1.5 dB under 160 Hz
+song_433da495a899480bb723a4e0d89d4289.wav -> after_song_433da495a899480bb723a4e0d89d4289.wav
+
+== hum_scan, before ==
+                                              sec  peakHz steady  crest  20-32  32-45  45-60 60-120
+---------------------------------------------------------------------------------------------------
+song_750b437295b24ef8808ba7c2d9193034.wav   179.9    35.0    75%  -12.9  -11.7  -10.9  -14.9   -6.9
+song_e75dff81834048fb9d56990156ce32a6.wav   179.9    37.0    33%  -13.1  -13.8   -4.5  -13.5   -8.0
+song_433da495a899480bb723a4e0d89d4289.wav   179.9   104.3    51%  -12.4  -16.8  -10.8  -13.8   -6.8
+
+steady = share of 0.68 s frames where the peak pitch holds within 6 dB
+crest  = that pitch above the whole 20-120 Hz band (dB)
+worst: song_750b437295b24ef8808ba7c2d9193034.wav -- 35.0 Hz holds 75% of the song, -12.9 dB over the band, DC +0.00238
+
+== hum_scan, after ==
+                                              sec  peakHz steady  crest  20-32  32-45  45-60 60-120
+---------------------------------------------------------------------------------------------------
+after_song_750b437295b24ef8808ba7c2d919303  179.9    98.2    65%  -11.8  -25.1  -15.9  -16.0   -7.0
+after_song_e75dff81834048fb9d56990156ce32a  179.9    37.7    32%  -16.5  -27.1  -10.8  -15.8   -8.3
+after_song_433da495a899480bb723a4e0d89d428  179.9   104.3    50%  -10.9  -29.3  -15.7  -15.1   -7.1
+
+steady = share of 0.68 s frames where the peak pitch holds within 6 dB
+crest  = that pitch above the whole 20-120 Hz band (dB)
+worst: after_song_750b437295b24ef8808ba7c2d9193034.wav -- 98.2 Hz holds 65% of the song, -11.8 dB over the band, DC -0.00000
+
+== hum_persist 20-120 Hz, before (song_e75dff81834048fb9d56990156ce32a6) ==
+file   song_service/logs/song_e75dff81834048fb9d56990156ce32a6.wav
+       179.9 s, 967 frames of 0.19 s, 20-120 Hz
+
+      Hz      p10      p50    swing   verdict
+--------------------------------------------------------------
+
+stillest bands (smallest swing):
+   118.4 Hz  swing  33.7 dB   10th     6.0  median    27.9  over song median  -27.6 dB
+   115.7 Hz  swing  34.8 dB   10th     5.7  median    27.8  over song median  -27.7 dB
+   113.0 Hz  swing  37.8 dB   10th     4.8  median    29.6  over song median  -26.0 dB
+    96.9 Hz  swing  38.8 dB   10th     2.0  median    27.0  over song median  -28.5 dB
+
+reference: a note that is only played now and then swings 20-40 dB;
+a hum swings less than 6 dB across the whole song.
+
+== hum_persist 20-120 Hz, after ==
+file   build/measure/after_song_e75dff81834048fb9d56990156ce32a6.wav
+       179.9 s, 967 frames of 0.19 s, 20-120 Hz
+
+      Hz      p10      p50    swing   verdict
+--------------------------------------------------------------
+
+stillest bands (smallest swing):
+   118.4 Hz  swing  33.8 dB   10th     4.7  median    26.5  over song median  -23.9 dB
+   115.7 Hz  swing  34.8 dB   10th     4.4  median    26.4  over song median  -24.1 dB
+   113.0 Hz  swing  37.6 dB   10th     3.5  median    28.0  over song median  -22.5 dB
+    96.9 Hz  swing  38.7 dB   10th    -0.2  median    24.8  over song median  -25.6 dB
+
+reference: a note that is only played now and then swings 20-40 dB;
+a hum swings less than 6 dB across the whole song.

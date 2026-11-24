@@ -79,7 +79,7 @@ const WHISPER_MODEL = '@cf/openai/whisper-large-v3-turbo';
 const MAX_CLIP_BYTES = 8 * 1024 * 1024;
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (DOWNLOAD_ROUTES.some((route) => route.test(url.pathname))) {
@@ -96,7 +96,7 @@ export default {
 
     if (SEARCH_ROUTE.test(url.pathname)) {
       try {
-        return await cachedSearch(env, request, url);
+        return await cachedSearch(env, request, url, ctx);
       } catch (err) {
         // An uncaught throw here becomes a blank Cloudflare 500 with no clue in
         // it. The reason is worth more than the tidiness - and it goes to the log
@@ -156,6 +156,32 @@ export default {
 
     if (url.pathname === '/api/song/probe') {
       return songProbe(url);
+    }
+
+    // Rebuild the KV index snapshot on demand, so the owner does not have to wait
+    // for a search to notice it is missing. Guarded by the same key the pool uses.
+    if (url.pathname === '/api/index/rebuild' && request.method === 'POST') {
+      const expected = poolJoinKey(env);
+      const given = request.headers.get('x-join-key') || '';
+      if (expected && given !== expected) return json({ error: 'Wrong join key.' }, 403);
+      try {
+        const built = await buildIndexSnapshot(env);
+        if (!built) return json({ error: 'No snapshot could be built: no database, no KV, or too large.' }, 503);
+        return json({ ok: true, count: built.count, bytes: built.bytes, at: built.at });
+      } catch (err) {
+        return json({ error: 'The snapshot could not be built.', detail: String((err && err.message) || err).slice(0, 200) }, 503);
+      }
+    }
+
+    if (url.pathname === '/api/index/snapshot') {
+      const doc = await loadIndexSnapshot(env);
+      return json({
+        present: Boolean(doc),
+        rows: doc ? doc.rows.length : 0,
+        at: doc ? doc.at : null,
+        age_minutes: doc ? Math.round((Date.now() - Number(doc.at || 0)) / 60000) : null,
+        max_age_minutes: SNAPSHOT_MAX_AGE_MS / 60000,
+      });
     }
 
     if (SONG_ROUTES.some((route) => route.test(url.pathname))) {
@@ -1177,7 +1203,7 @@ function videoHostClause() {
 // reload - are answered from the edge cache instead of scanning the database
 // again. A search that logs itself, or one that discovers new videos, has a side
 // effect and is never cached.
-async function cachedSearch(env, request, url) {
+async function cachedSearch(env, request, url, ctx) {
   // The counters are not a search: they are what the page shows while someone is
   // looking at them, and a minute-old copy of a number that a click just moved
   // reads as "the click did not count".
@@ -1186,7 +1212,7 @@ async function cachedSearch(env, request, url) {
     && url.searchParams.get('log') !== '1'
     && url.searchParams.get('discover') !== '1'
     && !askingForCounters;
-  if (!plain) return searchIndex(env, url);
+  if (!plain) return searchIndex(env, url, ctx);
 
   const cache = caches.default;
   const key = new Request('https://search-cache.internal' + url.pathname + url.search, { method: 'GET' });
@@ -1200,7 +1226,7 @@ async function cachedSearch(env, request, url) {
   }
   if (hit) return hit;
 
-  const fresh = await searchIndex(env, url);
+  const fresh = await searchIndex(env, url, ctx);
   if (fresh.status === 200) {
     // A body can be read once. Passing `fresh.body` into another Response locks
     // it, so returning `fresh` afterwards threw "Body has already been used" and
@@ -1221,7 +1247,104 @@ async function cachedSearch(env, request, url) {
   return fresh;
 }
 
-async function searchIndex(env, url) {
+// The whole searchable index as one KV value (about 6.4 MB for 11.8k rows, well
+// under KV's 25 MB). A search that uses it reads one key instead of scanning the
+// table, which is what spends D1's free daily row allowance; D1 stays the source of
+// truth and is still what answers when this is missing, stale or refused.
+const SNAPSHOT_KEY = 'index_snapshot';
+const SNAPSHOT_MAX_AGE_MS = 30 * 60 * 1000;
+const SNAPSHOT_MAX_BYTES = 20 * 1024 * 1024;
+const SNAPSHOT_CHUNK = 2000;
+
+async function loadIndexSnapshot(env) {
+  if (!env.STATS) return null;
+  try {
+    const doc = await env.STATS.get(SNAPSHOT_KEY, 'json');
+    if (!doc || !Array.isArray(doc.rows) || !doc.rows.length) return null;
+    if (Date.now() - Number(doc.at || 0) > SNAPSHOT_MAX_AGE_MS) return null;   // stale
+    return doc;
+  } catch (err) {
+    console.error('[index] snapshot unreadable:', (err && err.message) || err);
+    return null;
+  }
+}
+
+async function buildIndexSnapshot(env) {
+  if (!env.DB || !env.STATS) return null;
+  const rows = [];
+  const base = 'url, title, description, thumbnail, duration, source, click_count, relevance_score, tags';
+  const tail = ' FROM videos WHERE ' + videoHostClause()
+    + ' ORDER BY click_count DESC, relevance_score DESC, id DESC LIMIT ? OFFSET ?';
+  // genre_json is the one column a database older than the genre model does not
+  // have; without this the whole rebuild would fail on such a table.
+  let withGenre = true;
+  for (let offset = 0; ; offset += SNAPSHOT_CHUNK) {
+    let batch;
+    try {
+      const answer = await env.DB.prepare('SELECT ' + base + (withGenre ? ', genre_json' : '') + tail)
+        .bind(SNAPSHOT_CHUNK, offset).all();
+      batch = answer.results || [];
+    } catch (err) {
+      if (!withGenre) throw err;
+      withGenre = false;
+      const answer = await env.DB.prepare('SELECT ' + base + tail).bind(SNAPSHOT_CHUNK, offset).all();
+      batch = answer.results || [];
+    }
+    for (const row of batch) {
+      // Arrays, not objects: the keys would be repeated 12k times. The haystack is
+      // lowered once here so a search is includes() instead of toLowerCase() on
+      // every row of every request.
+      rows.push([
+        row.url || '',
+        row.title || '',
+        row.description || '',
+        ((row.title || '') + ' ' + (row.description || '') + ' ' + (row.tags || '')).toLowerCase(),
+        Number(row.click_count) || 0,
+        row.thumbnail || '',
+        row.duration || '',
+        row.source || '',
+        withGenre ? parseGenre(row.genre_json) : null,
+      ]);
+    }
+    if (batch.length < SNAPSHOT_CHUNK) break;
+    if (rows.length > 40000) break;   // a runaway table must not exhaust the isolate
+  }
+  const doc = { at: Date.now(), count: rows.length, rows };
+  const text = JSON.stringify(doc);
+  if (text.length > SNAPSHOT_MAX_BYTES) {
+    console.error('[index] snapshot would be too large for KV:', text.length);
+    return null;
+  }
+  await env.STATS.put(SNAPSHOT_KEY, text);
+  console.log('[index] snapshot rebuilt:', rows.length, 'rows,', text.length, 'bytes');
+  return { at: doc.at, count: rows.length, bytes: text.length };
+}
+
+function searchSnapshot(snapshot, terms, limit, offset) {
+  const rows = snapshot.rows || [];
+  const page = [];
+  let total = 0;
+  const cap = 1000;   // the same ceiling the SQL count puts on its inner scan
+  for (const row of rows) {
+    const hay = row[3] || '';
+    let ok = true;
+    for (const term of terms) {
+      if (!hay.includes(term)) { ok = false; break; }
+    }
+    if (!ok) continue;
+    total = Math.min(total + 1, cap);
+    if (page.length < limit && total > offset) page.push(row);
+    if (total >= cap && page.length >= limit) break;
+  }
+  return {
+    total,
+    videos: page.map((row) => ({
+      u: row[0], t: row[1], d: row[2], th: row[5], du: row[6], s: row[7], c: row[4], g: row[8],
+    })),
+  };
+}
+
+async function searchIndex(env, url, ctx) {
   const query = (url.searchParams.get('q') || '').trim().slice(0, 120);
   // 200 a page, not 60: a query with 332 matches used to say "332 matches" and
   // show sixty of them, because that is all one request returned.
@@ -1280,6 +1403,30 @@ async function searchIndex(env, url) {
       // Counting the search is a nicety; failing it must not fail the search.
       console.error('[stats] bumpStats failed:', (err && (err.stack || err.message)) || err);
     }
+  }
+
+  // The cheap path: one KV read, the whole index already ordered the way the SQL
+  // orders it. A stale or missing snapshot means D1 answers this request instead,
+  // and the rebuild runs after the response so the next search is cheap.
+  const snapshot = await loadIndexSnapshot(env);
+  if (snapshot) {
+    const answer = searchSnapshot(snapshot, terms, limit, offset);
+    if (logging) {
+      try {
+        await env.DB.prepare(
+          'INSERT INTO search_history (query, result_count, searched_at) VALUES (?, ?, ?)'
+        ).bind(query, answer.total, Date.now() / 1000).run();
+      } catch (err) { /* the history is a nicety; the count already happened */ }
+    }
+    return json({
+      query, total: answer.total, library, discovered, videos: answer.videos,
+      source: 'snapshot',
+    });
+  }
+  if (ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(buildIndexSnapshot(env).catch((err) => {
+      console.error('[index] snapshot build failed:', (err && err.message) || err);
+    }));
   }
 
   // LIKE wildcards inside a search term are escaped, so a term of "100%" is a

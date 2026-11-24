@@ -164,10 +164,15 @@ export default {
       const expected = poolJoinKey(env);
       const given = request.headers.get('x-join-key') || '';
       if (expected && given !== expected) return json({ error: 'Wrong join key.' }, 403);
+      // ?full=1 re-sorts by clicks and drops deleted rows; otherwise this appends
+      // only what was discovered since the last build.
       try {
-        const built = await buildIndexSnapshot(env);
+        const built = await buildIndexSnapshot(env, { full: url.searchParams.get('full') === '1' });
         if (!built) return json({ error: 'No snapshot could be built: no database, no KV, or too large.' }, 503);
-        return json({ ok: true, count: built.count, bytes: built.bytes, at: built.at });
+        return json({
+          ok: true, count: built.count, bytes: built.bytes, at: built.at,
+          added: built.added, incremental: built.incremental,
+        });
       } catch (err) {
         return json({ error: 'The snapshot could not be built.', detail: String((err && err.message) || err).slice(0, 200) }, 503);
       }
@@ -179,6 +184,8 @@ export default {
         present: Boolean(doc),
         rows: doc ? doc.rows.length : 0,
         at: doc ? doc.at : null,
+        last_id: doc ? Number(doc.lastId) || null : null,
+        built_at: doc ? Number(doc.built) || null : null,
         age_minutes: doc ? Math.round((Date.now() - Number(doc.at || 0)) / 60000) : null,
         stale: doc ? Boolean(doc.stale) : null,
         fresh_after_minutes: SNAPSHOT_FRESH_MS / 60000,
@@ -1265,14 +1272,29 @@ const SNAPSHOT_CHUNK = 2000;
 async function loadIndexSnapshot(env) {
   if (!env.STATS) return null;
   try {
-    const doc = await env.STATS.get(SNAPSHOT_KEY, 'json');
+    const [doc, marker] = await Promise.all([
+      env.STATS.get(SNAPSHOT_KEY, 'json'),
+      env.STATS.get(SEARCHABLE_KEY, 'json').catch(() => null),
+    ]);
     if (!doc || !Array.isArray(doc.rows) || !doc.rows.length) return null;
-    const age = Date.now() - Number(doc.at || 0);
+    // A check that found nothing new rewrites only the small counter key, so the
+    // newest of the two is when this snapshot was last known to be current.
+    const age = Date.now() - Math.max(Number(doc.at || 0), Number(marker && marker.at) || 0);
     if (age > SNAPSHOT_MAX_AGE_MS) return null;     // too old to trust
-    doc.stale = age > SNAPSHOT_FRESH_MS;            // usable, worth rebuilding
+    doc.stale = age > SNAPSHOT_FRESH_MS;            // usable, worth checking again
     return doc;
   } catch (err) {
     console.error('[index] snapshot unreadable:', (err && err.message) || err);
+    return null;
+  }
+}
+
+async function readSnapshotDoc(env) {
+  if (!env.STATS) return null;
+  try {
+    const doc = await env.STATS.get(SNAPSHOT_KEY, 'json');
+    return doc && Array.isArray(doc.rows) && doc.rows.length ? doc : null;
+  } catch (err) {
     return null;
   }
 }
@@ -1379,12 +1401,103 @@ function withRecentRows(rows, recent) {
   return extra.length ? rows.concat(extra) : rows;
 }
 
-async function buildIndexSnapshot(env) {
+// A full pass re-sorts by clicks and drops rows that are no longer there, so it is
+// worth doing - once a day, not every half hour. In between, the snapshot carries the
+// highest videos.id it holds and a rebuild reads only rows above that watermark.
+const SNAPSHOT_FULL_MS = 24 * 60 * 60 * 1000;
+const SNAPSHOT_COLUMNS = 'id, url, title, description, thumbnail, duration, source, click_count, relevance_score, tags';
+
+// Reads the rows discovered since the snapshot was built and appends them. One query
+// per chunk, keyed on id, so a library that grew by thirty rows costs thirty rows.
+async function appendDiscoveredRows(env, existing) {
+  const rows = existing.rows;
+  const have = new Set(rows.map((row) => row[0]));
+  const tail = ' FROM videos WHERE id > ? AND ' + videoHostClause()
+    + ' ORDER BY id LIMIT ' + SNAPSHOT_CHUNK;
+  let withGenre = existing.genre !== false;
+  let lastId = Number(existing.lastId) || 0;
+  let added = 0;
+  for (;;) {
+    let batch;
+    try {
+      const answer = await env.DB.prepare(
+        'SELECT ' + SNAPSHOT_COLUMNS + (withGenre ? ', genre_json' : '') + tail
+      ).bind(lastId).all();
+      batch = answer.results || [];
+    } catch (err) {
+      if (!withGenre) throw err;
+      withGenre = false;
+      const answer = await env.DB.prepare('SELECT ' + SNAPSHOT_COLUMNS + tail).bind(lastId).all();
+      batch = answer.results || [];
+    }
+    for (const row of batch) {
+      const id = Number(row.id) || 0;
+      if (id > lastId) lastId = id;
+      const shaped = snapshotRow({
+        url: row.url,
+        title: row.title,
+        description: row.description,
+        thumbnail: row.thumbnail,
+        duration: row.duration,
+        source: row.source,
+        click_count: row.click_count,
+        tags: row.tags,
+        genre: withGenre ? parseGenre(row.genre_json) : null,
+      });
+      if (have.has(shaped[0])) continue;   // the same link under a second id is one video
+      have.add(shaped[0]);
+      rows.push(shaped);
+      added += 1;
+    }
+    if (batch.length < SNAPSHOT_CHUNK) break;
+    if (rows.length > 40000) break;   // a runaway table must not exhaust the isolate
+  }
+  return { rows, lastId, added, withGenre };
+}
+
+async function buildIndexSnapshot(env, options = {}) {
   if (!env.DB || !env.STATS) return null;
+
+  const existing = options.full ? null : await readSnapshotDoc(env);
+  // Incremental only with a watermark to start from. A snapshot seeded without one
+  // (from an export, say) gets a single full pass before it can be topped up.
+  const canAppend = Boolean(existing && Number(existing.lastId) > 0
+    && Date.now() - Number(existing.built || existing.at || 0) < SNAPSHOT_FULL_MS);
+  if (canAppend) {
+    const grown = await appendDiscoveredRows(env, existing);
+    if (!grown.added) {
+      // Already current. Only the small marker moves, so a quiet library costs one
+      // tiny KV write instead of re-writing six megabytes.
+      await noteSearchableTotal(env, grown.rows.length);
+      console.log('[index] snapshot already current at id', grown.lastId);
+      return { at: Date.now(), count: grown.rows.length, added: 0, bytes: 0, incremental: true };
+    }
+    const merged = withRecentRows(grown.rows, await readRecentRows(env));
+    const doc = {
+      at: Date.now(),
+      built: Number(existing.built || existing.at || Date.now()),
+      lastId: grown.lastId,
+      genre: grown.withGenre,
+      count: merged.length,
+      rows: merged,
+    };
+    const text = JSON.stringify(doc);
+    if (text.length > SNAPSHOT_MAX_BYTES) {
+      console.error('[index] snapshot would be too large for KV:', text.length);
+      return null;
+    }
+    await env.STATS.put(SNAPSHOT_KEY, text);
+    await clearRecentRows(env);
+    await noteSearchableTotal(env, merged.length);
+    console.log('[index] snapshot appended:', grown.added, 'new rows ->', merged.length, 'total,', text.length, 'bytes');
+    return { at: doc.at, count: merged.length, added: grown.added, bytes: text.length, incremental: true };
+  }
+
   const rows = [];
-  const base = 'url, title, description, thumbnail, duration, source, click_count, relevance_score, tags';
+  const base = SNAPSHOT_COLUMNS;
   const tail = ' FROM videos WHERE ' + videoHostClause()
     + ' ORDER BY click_count DESC, relevance_score DESC, id DESC LIMIT ? OFFSET ?';
+  let lastId = 0;
   // genre_json is the one column a database older than the genre model does not
   // have; without this the whole rebuild would fail on such a table.
   let withGenre = true;
@@ -1401,6 +1514,8 @@ async function buildIndexSnapshot(env) {
       batch = answer.results || [];
     }
     for (const row of batch) {
+      const id = Number(row.id) || 0;
+      if (id > lastId) lastId = id;
       // Arrays, not objects: the keys would be repeated 12k times. The haystack is
       // lowered once here so a search is includes() instead of toLowerCase() on
       // every row of every request.
@@ -1422,7 +1537,9 @@ async function buildIndexSnapshot(env) {
   // Anything discovered while the database was still being read belongs in this
   // snapshot too, or clearing the overlay would hide it until the next rebuild.
   const rebuilt = withRecentRows(rows, await readRecentRows(env));
-  const doc = { at: Date.now(), count: rebuilt.length, rows: rebuilt };
+  const doc = {
+    at: Date.now(), built: Date.now(), lastId, genre: withGenre, count: rebuilt.length, rows: rebuilt,
+  };
   const text = JSON.stringify(doc);
   if (text.length > SNAPSHOT_MAX_BYTES) {
     console.error('[index] snapshot would be too large for KV:', text.length);
@@ -1431,8 +1548,8 @@ async function buildIndexSnapshot(env) {
   await env.STATS.put(SNAPSHOT_KEY, text);
   await clearRecentRows(env);
   await noteSearchableTotal(env, rebuilt.length);
-  console.log('[index] snapshot rebuilt:', rebuilt.length, 'rows,', text.length, 'bytes');
-  return { at: doc.at, count: rebuilt.length, bytes: text.length };
+  console.log('[index] snapshot rebuilt in full:', rebuilt.length, 'rows,', text.length, 'bytes');
+  return { at: doc.at, count: rebuilt.length, added: rebuilt.length, bytes: text.length, incremental: false };
 }
 
 function searchSnapshot(snapshot, terms, limit, offset) {

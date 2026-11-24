@@ -1468,6 +1468,22 @@ than owning one, so naming it as the entrypoint cannot resolve. The original
 `vercel.json` built `ai_engine.py` and routed every request to `/app.py`, one
 file built and another served, which is why nothing was ever served from it.
 
+Vercel's Python runtime allows **500 MB** of uncompressed function bundle on the
+standard path. Anything larger needs the **Large Functions** beta, which raises
+the ceiling to **5 GB**; it is switched on per project with
+`VERCEL_SUPPORT_LARGE_FUNCTIONS=1` — an environment variable in the project's
+settings, not a `vercel.json` field — followed by a redeploy, and it requires
+Fluid Compute. The `site` service alone installs about 426 MB of wheels, most of
+it scipy, scikit-learn and numpy, and one build of it stopped at 238 MB against
+an enforced 225 MB ceiling.
+
+The public site does not depend on that headroom: it is served by the
+**Cloudflare Worker** — `worker.js`, `public/` and D1 — which has no
+function-size limit. The search page, `/api/search` and the counters run there.
+The `site` service in `vercel.json` mirrors the local engine as a Vercel service
+for parity; what Vercel has to carry is the three model-facing services, `song`,
+`voice` and `downloader`, reachable at `/song/`, `/voice/` and `/downloader/`.
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).

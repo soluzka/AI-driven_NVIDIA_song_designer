@@ -1973,3 +1973,7 @@ image contains — is in `deploy\gpu\README.md`.
 
 `vercel.json` is a leftover deployment target that routes everything to
 `ai_engine`; the Cloudflare Worker is the supported static deployment.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).

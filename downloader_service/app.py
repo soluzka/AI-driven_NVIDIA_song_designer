@@ -840,6 +840,31 @@ def download_file(token):
     return response
 
 
+# ---------------------------------------------------------------------------
+# Public mount path
+#
+# A platform that publishes this service under a prefix (Vercel services route
+# /downloader/* here and keep the path) hands the request over with that prefix
+# still in PATH_INFO. The routes below are written without one, so it is stripped
+# here and recorded in SCRIPT_NAME: the same app answers at / locally and at
+# /downloader/<route> in front of the internet.
+# ---------------------------------------------------------------------------
+class _MountPrefix:
+    def __init__(self, wsgi_app, prefix):
+        self.wsgi_app = wsgi_app
+        self.prefix = prefix
+
+    def __call__(self, environ, start_response):
+        path = environ.get('PATH_INFO') or ''
+        if path == self.prefix or path.startswith(self.prefix + '/'):
+            environ['SCRIPT_NAME'] = (environ.get('SCRIPT_NAME') or '') + self.prefix
+            environ['PATH_INFO'] = path[len(self.prefix):] or '/'
+        return self.wsgi_app(environ, start_response)
+
+
+app.wsgi_app = _MountPrefix(app.wsgi_app, '/downloader')
+
+
 if __name__ == '__main__':
     # Local runs use the Flask dev server; the container uses gunicorn.
     port = int(os.environ.get('PORT', '8080'))

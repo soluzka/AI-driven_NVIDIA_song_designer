@@ -1441,8 +1441,24 @@ The full walkthrough — tunnel commands, GPU reservation, systemd unit, image c
   signed release answered for GitHub; the partial file is deleted, so check the network
   or proxy rather than editing the check away.
 
-`vercel.json` is a leftover deployment target that routes everything to `ai_engine`;
-the Cloudflare Worker is the supported static deployment.
+`vercel.json` describes the same stack as four Vercel **services**: `site` on
+`/(.*)`, and `song`, `voice` and `downloader` published under `/song/`, `/voice/`
+and `/downloader/` — the catch-all comes last so the specific prefixes win. The
+calling services get their targets through bindings, which fill
+`SONG_SERVICE_URL`, `VOICE_SERVICE` and `DOWNLOADER_URL` with each target's
+internal URL; nothing is set by hand and nothing is hardcoded, because every one
+of those variables also accepts the tunnel address when the stack runs here. Each
+service strips its public prefix in a small WSGI wrapper, so the same app answers
+at `/` locally and at `/song/api/song` (for example) behind the internet.
+
+`song` and `voice` build there from `requirements-vercel.txt`, which is Flask and
+nothing else: their model imports are lazy, `/health` reports
+`model_installed: false`, and the render routes answer **503** with that reason
+instead of the import taking the service down. A published API with no model is
+honest about it; the GPU install is unchanged and still uses `install.py`,
+`models.json` and `requirements.txt`. The Cloudflare Worker does not read
+`vercel.json` at all — it keeps serving `worker.js` and `public/`, and the two
+deployments are independent.
 
 ## License
 

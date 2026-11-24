@@ -1,13 +1,71 @@
 {
-  "version": 2,
-  "builds": [
-    {
-      "src": "ai_engine.py",
-      "use": "@vercel/python"
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "site": {
+      "root": ".",
+      "framework": "flask",
+      "bindings": [
+        {
+          "type": "service",
+          "service": "song",
+          "format": "url",
+          "env": "SONG_SERVICE_URL"
+        }
+      ]
+    },
+    "downloader": {
+      "root": "downloader_service",
+      "framework": "flask"
+    },
+    "song": {
+      "root": "song_service",
+      "framework": "flask",
+      "installCommand": "python -m pip install --no-cache-dir -r requirements-vercel.txt",
+      "bindings": [
+        {
+          "type": "service",
+          "service": "voice",
+          "format": "url",
+          "env": "VOICE_SERVICE"
+        },
+        {
+          "type": "service",
+          "service": "downloader",
+          "format": "url",
+          "env": "DOWNLOADER_URL"
+        }
+      ]
+    },
+    "voice": {
+      "root": "voice_service",
+      "framework": "flask",
+      "installCommand": "python -m pip install --no-cache-dir -r requirements-vercel.txt"
     }
-  ],
-  "routes": [
-    { "src": "/socket.io/(.*)", "dest": "/app.py" },
-    { "src": "/(.*)", "dest": "/app.py" }
+  },
+  "rewrites": [
+    {
+      "source": "/song/(.*)",
+      "destination": {
+        "service": "song"
+      }
+    },
+    {
+      "source": "/voice/(.*)",
+      "destination": {
+        "service": "voice"
+      }
+    },
+    {
+      "source": "/downloader/(.*)",
+      "destination": {
+        "service": "downloader"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "site"
+      }
+    }
   ]
 }

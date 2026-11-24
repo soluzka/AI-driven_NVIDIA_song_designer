@@ -1,0 +1,12 @@
+# What the published API needs, not the model.
+#
+# vercel.json installs this file for the `voice` service. chatterbox-tts pins
+# torch==2.6.0 and needs the +cu126 wheels plus a downloaded checkpoint, which a
+# function cannot hold: app.py imports numpy, soundfile and chatterbox lazily,
+# /health reports `model_installed: false`, and /api/voice/sing answers 503 with
+# that reason instead of crashing the service.
+#
+# The GPU install is untouched: voice_service/install.py and requirements.txt are
+# unchanged, and install.py still restores the CUDA wheels afterwards.
+flask>=3.0
+flask-cors>=4.0

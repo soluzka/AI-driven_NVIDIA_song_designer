@@ -18,8 +18,6 @@ import tempfile
 import threading
 import time
 
-import numpy as np
-import soundfile as sf
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 
@@ -30,6 +28,18 @@ os.makedirs(OUT_DIR, exist_ok=True)
 app = Flask(__name__)
 CORS(app)
 
+# numpy and soundfile write the vocal; they are not needed to answer. A host that
+# publishes this API without the model install (the Vercel service) starts on
+# Flask alone, and /health says so rather than the import killing the process.
+try:
+    import numpy as np
+    import soundfile as sf
+    _AUDIO_DEPS_ERROR = None
+except Exception as _exc:  # noqa: BLE001 - a slim host has neither
+    np = None
+    sf = None
+    _AUDIO_DEPS_ERROR = str(_exc)
+
 _model = None
 _model_lock = threading.Lock()
 
@@ -37,6 +47,18 @@ _model_lock = threading.Lock()
 # phrases and the phrases are joined with a breath of silence.
 PHRASE_CHARS = 180
 GAP_SECONDS = 0.18
+
+
+def _model_installed():
+    """Whether this host can synthesise at all: chatterbox, numpy and soundfile."""
+    import importlib.util
+
+    if np is None or sf is None:
+        return False
+    try:
+        return importlib.util.find_spec('chatterbox') is not None
+    except (ImportError, ValueError):
+        return False
 
 
 def _torch_status():
@@ -92,12 +114,22 @@ def health():
     # answer in milliseconds so the launcher can tell up from loading.
     status = _torch_status() if _model is not None else {'cuda': None, 'torch': 'not loaded'}
     return jsonify({'ok': True, 'model_loaded': _model is not None,
+                    'model_installed': _model_installed(),
+                    'audio_deps_error': _AUDIO_DEPS_ERROR,
                     'cuda': status.get('cuda'), 'torch': status.get('torch')})
 
 
 @app.post('/api/voice/sing')
 def sing():
     """Reference clip in the body, lyrics in ?text= or JSON text; WAV comes back."""
+    if not _model_installed():
+        return jsonify({
+            'error': 'This host has no voice model installed: chatterbox, numpy and '
+                     'soundfile live in the GPU install, so the API answers but '
+                     'nothing can be sung here.',
+            'model_installed': False,
+        }), 503
+
     raw = request.get_data()
     if len(raw) < 2000:
         return jsonify({'error': 'Send the voice recording as the request body.'}), 400
@@ -160,6 +192,31 @@ def voice_file(token):
     if not os.path.exists(path):
         return jsonify({'error': 'not found'}), 404
     return send_file(path, mimetype='audio/wav')
+
+
+# ---------------------------------------------------------------------------
+# Public mount path
+#
+# A platform that publishes this service under a prefix (Vercel services route
+# /voice/* here and keep the path) hands the request over with that prefix still
+# in PATH_INFO. The routes below are written without one, so it is stripped here
+# and recorded in SCRIPT_NAME: the same app answers at / locally and at
+# /voice/<route> in front of the internet.
+# ---------------------------------------------------------------------------
+class _MountPrefix:
+    def __init__(self, wsgi_app, prefix):
+        self.wsgi_app = wsgi_app
+        self.prefix = prefix
+
+    def __call__(self, environ, start_response):
+        path = environ.get('PATH_INFO') or ''
+        if path == self.prefix or path.startswith(self.prefix + '/'):
+            environ['SCRIPT_NAME'] = (environ.get('SCRIPT_NAME') or '') + self.prefix
+            environ['PATH_INFO'] = path[len(self.prefix):] or '/'
+        return self.wsgi_app(environ, start_response)
+
+
+app.wsgi_app = _MountPrefix(app.wsgi_app, '/voice')
 
 
 if __name__ == '__main__':

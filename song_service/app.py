@@ -273,12 +273,50 @@ def _load_pipeline():
         return _pipeline
 
 
-VOICE_SERVICE = os.environ.get('VOICE_SERVICE', 'http://127.0.0.1:8095')
+# The voice service. A platform that hosts both (Vercel service bindings) fills this
+# with the target's internal URL; unset, it is the loopback port the Windows install
+# and a pooled notebook both use.
+VOICE_SERVICE = os.environ.get('VOICE_SERVICE', 'http://127.0.0.1:8095').rstrip('/')
 
-# Where the video downloader listens. 8080 is what the Windows install uses, but a
-# host can already have something there - Colab's own node process listens on 8080 -
-# so a pooled notebook passes the port it managed to bind instead.
+# Where the video downloader answers. DOWNLOADER_URL is what a service binding
+# injects. DOWNLOAD_PORT stays for the pool, where the port is chosen at boot: 8080
+# is often taken - Colab's own node process listens there - so the notebook exports
+# the port it managed to bind instead.
+DOWNLOADER_URL = os.environ.get('DOWNLOADER_URL', '').rstrip('/')
 DOWNLOAD_PORT = int(os.environ.get('DOWNLOAD_PORT', '8080'))
+
+
+def _downloader_base():
+    """The downloader's base URL: the bound one when a platform injected it."""
+    return DOWNLOADER_URL or ('http://127.0.0.1:%d' % DOWNLOAD_PORT)
+
+
+def _model_installed():
+    """Whether this host can render at all.
+
+    A slim host - the Vercel service, any box without the GPU install - has Flask
+    and none of the model: torch comes from the cu126 index and ACE-Step is a 3.5B
+    checkpoint on a card. The API still starts there and says so, instead of an
+    import at module level taking the whole service down.
+    """
+    import importlib.util
+
+    for name in ('torch', 'acestep'):
+        try:
+            if importlib.util.find_spec(name) is None:
+                return False
+        except (ImportError, ValueError):
+            return False
+    return True
+
+
+def _no_model():
+    """The 503 a render route answers on a host without the model."""
+    return jsonify({
+        'error': 'This host has no song model installed: torch and ACE-Step live on '
+                 'the GPU machine, so the API answers but nothing can render here.',
+        'model_installed': False,
+    }), 503
 
 
 def _measure_pitch(path):
@@ -862,7 +900,13 @@ def _warm_lyrics():
     request comes back quickly instead of spending that time on "Composing...".
     The model is released again before a song job loads ACE-Step, so the two
     still never share the 8 GB of VRAM.
+
+    Skipped where there is no model to load - the Vercel service, any host without
+    torch and ACE-Step - so a published API does not print a traceback for a warm-up
+    that could never have worked. /health already says model_installed: false there.
     """
+    if not _model_installed():
+        return
     try:
         _lyricist()
         print('lyric model ready', flush=True)
@@ -870,7 +914,10 @@ def _warm_lyrics():
         traceback.print_exc()
 
 
-threading.Thread(target=_warm_lyrics, daemon=True).start()
+# No thread at all on a host without the model: a warm-up there can only fail, and
+# it would fail inside a thread where nothing is listening for it.
+if _model_installed():
+    threading.Thread(target=_warm_lyrics, daemon=True).start()
 
 
 def _release_lyricist():
@@ -1226,7 +1273,7 @@ def pc_proxy(rest):
     import urllib.error
     import urllib.request
 
-    target = 'http://127.0.0.1:%d/' % DOWNLOAD_PORT + rest
+    target = _downloader_base() + '/' + rest
     query = request.query_string.decode('latin-1')
     if query:
         target += '?' + query
@@ -1270,6 +1317,8 @@ def api_align():
     """
     if request.method == 'OPTIONS':
         return ('', 204)
+    if not _model_installed():
+        return _no_model()
     body = request.get_json(silent=True) or {}
     raw_lines = request.form.get('lines', body.get('lines'))
     if isinstance(raw_lines, str):
@@ -1328,7 +1377,7 @@ def api_top_proxy():
 
     body = request.get_data() or b'{}'
     upstream = urllib.request.Request(
-        'http://127.0.0.1:%d/api/top' % DOWNLOAD_PORT, data=body,
+        _downloader_base() + '/api/top', data=body,
         headers={'Content-Type': 'application/json'}, method='POST')
     try:
         with urllib.request.urlopen(upstream, timeout=180) as answer:
@@ -1347,6 +1396,8 @@ def api_lyrics():
     """Write lyrics for the page with the local language model."""
     if request.method == 'OPTIONS':
         return ('', 204)
+    if not _model_installed():
+        return _no_model()
     body = request.get_json(silent=True) or {}
     genre = str(body.get('genre') or 'electronic music')[:120]
     subject = str(body.get('subject') or '')[:400]
@@ -1501,6 +1552,7 @@ def health():
         'warm_done': bool(_warm_started and not _warm_active and not _warm_failed),
         'warm_failed': _warm_failed,
         'model': 'ACE-Step v1 3.5B',
+        'model_installed': _model_installed(),
         'checkpoint': CHECKPOINT,
         'checkpoint_present': os.path.isdir(CHECKPOINT),
         'loaded': ready,
@@ -1613,6 +1665,8 @@ def api_pool_join():
 def api_song():
     if request.method == 'OPTIONS':
         return ('', 204)
+    if not _model_installed():
+        return _no_model()
 
     data = request.get_json(silent=True) or {}
     prompt = (data.get('prompt') or '').strip()
@@ -1679,6 +1733,8 @@ def api_song_voice():
     """
     if request.method == 'OPTIONS':
         return ('', 204)
+    if not _model_installed():
+        return _no_model()
     raw = request.get_data()
     if len(raw) < 2000:
         return jsonify({'error': 'Send the voice recording as the request body.'}), 400
@@ -1827,6 +1883,8 @@ def api_song_mix():
     """
     if request.method == 'OPTIONS':
         return ('', 204)
+    if not _model_installed():
+        return _no_model()
     # Read and written here: without this the read below becomes a local lookup
     # and fails with UnboundLocalError.
     global _latest_token
@@ -1955,6 +2013,12 @@ def _warm():
     service starts is not what every machine wants.
     """
     global _warm_started, _warm_failed, _warm_active
+    if not _model_installed():
+        # SONG_WARM on a host with no model asks for something that cannot happen;
+        # leave warm_failed to say so instead of a traceback from a thread.
+        _warm_failed = 'no song model installed on this host'
+        print('warm skipped: %s' % _warm_failed, flush=True)
+        return
     _warm_started = time.time()
     _warm_active = True
     try:
@@ -1969,6 +2033,31 @@ def _warm():
         _warm_active = False
 
 
+# ---------------------------------------------------------------------------
+# Public mount path
+#
+# A platform that publishes this service under a prefix (Vercel services route
+# /song/* here and keep the path) hands the request over with that prefix still
+# in PATH_INFO. The routes below are written without one, so it is stripped here
+# and recorded in SCRIPT_NAME: the same app answers at / locally and at
+# /song/<route> in front of the internet.
+# ---------------------------------------------------------------------------
+class _MountPrefix:
+    def __init__(self, wsgi_app, prefix):
+        self.wsgi_app = wsgi_app
+        self.prefix = prefix
+
+    def __call__(self, environ, start_response):
+        path = environ.get('PATH_INFO') or ''
+        if path == self.prefix or path.startswith(self.prefix + '/'):
+            environ['SCRIPT_NAME'] = (environ.get('SCRIPT_NAME') or '') + self.prefix
+            environ['PATH_INFO'] = path[len(self.prefix):] or '/'
+        return self.wsgi_app(environ, start_response)
+
+
+app.wsgi_app = _MountPrefix(app.wsgi_app, '/song')
+
+
 if __name__ == '__main__':
     # The page looks for this service on 8090, so an empty or zero PORT from the
     # environment must not turn into a random port.
@@ -1979,7 +2068,8 @@ if __name__ == '__main__':
     host = os.environ.get('SONG_HOST') or '127.0.0.1'
     if not port:
         port = 8090
-    if os.environ.get('SONG_WARM', '0') not in ('0', '', 'false', 'False'):
+    if (os.environ.get('SONG_WARM', '0') not in ('0', '', 'false', 'False')
+            and _model_installed()):
         threading.Thread(target=_warm, daemon=True).start()
     # Otherwise loading happens on the first request so the service answers
     # health immediately.

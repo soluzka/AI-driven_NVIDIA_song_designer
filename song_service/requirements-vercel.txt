@@ -1,0 +1,12 @@
+# What the published API needs, not the model.
+#
+# vercel.json installs this file for the `song` service. torch comes from the
+# cu126 index and ACE-Step is a 3.5B checkpoint that wants a card, so neither can
+# live in a function: app.py imports both lazily, /health reports
+# `model_installed: false`, and /api/song, /api/song/voice and /api/song/mix
+# answer 503 with that reason instead of crashing the service.
+#
+# The GPU install is untouched: song_service/install.py reads models.json and
+# requirements.txt, and none of the three files changed.
+flask
+flask-cors

@@ -1,21 +1,28 @@
-"""The voice-over-music balance of every separated render, in one table.
+"""The voice-over-music balance of the render-based mix, in one table.
 
-`_mix_separated` sets the lead's gain so the voice sits `LEAD_DB` over the music
-under a word, and ducks the music by `DUCK_UNDER_VOICE`. Those two numbers are
-what a listener hears as "can I hear the song under the lyric", so after any
-change to the mix they have to be measured again on real material - the synthetic
-bed reports a different figure from any real song.
+The finished song is now the render itself with only the mapping's difference added,
+so **no lead gain is applied at all**: the voice sits where the model put it. The only
+thing that moves the level under a word is the duck, and it scales the whole mix -
+voice and music together - by `DUCK_UNDER_VOICE` (15%, which is -1.41 dB), not just
+the bed. Because it scales both, it cannot change the ratio the listener hears; it
+lowers the mix under the word.
+
+So the number to watch is the render's own balance, measured here from the separated
+stems: the voice against the music in the frames where the voice is sounding.
 
     <service-venv-python> tools/check_mix_balance.py [stems-root]
+    <service-venv-python> tools/check_mix_balance.py [stems-root] --render <song.wav>
 
-`stems-root` defaults to build/stems/htdemucs, which is where the demucs command
-in the README puts one folder per render holding `no_vocals.wav` and `vocals.wav`.
-Each song is measured with today's constants and with the pair they replaced, and
-the mix is rebuilt with the service's own `_mix_separated` and compared, so the
-arithmetic here cannot drift from the service's without the table saying so.
+`stems-root` defaults to build/stems/htdemucs, one folder per render holding
+`no_vocals.wav` and `vocals.wav` (the demucs command is in the service README). With
+`--render` the mix is rebuilt through the service's own `_mix_separated` and compared
+with `render * (1 - duck * gate)`, which is what that function must produce when the
+mapping is the identity: any lead gain, or any rebuild from the stems instead of the
+render, shows up as a mismatch and a nonzero exit.
 
-Measured on the twelve renders in the service's logs: 1.3-2.4 dB of voice over
-the music under a word (mean 1.7), against 2.8-5.1 dB with the old constants.
+Measured on the twelve renders in build/stems/htdemucs: the voice sits -5.9 to +1.7 dB
+over the music under a word (mean -0.4), the mix is 1.41 dB lower there (the duck), and
+the rebuild matches the render times the duck to 3.1e-05.
 """
 import argparse
 import contextlib
@@ -24,38 +31,31 @@ import importlib.util
 import io
 import os
 import sys
-import tempfile
 import threading
+from fractions import Fraction
 
 import numpy as np
 import soundfile as sf
-from scipy.signal import fftconvolve
+from scipy.signal import resample_poly
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 APP = os.path.join(ROOT, 'song_service', 'app.py')
 DEFAULT_STEMS = os.path.join(ROOT, 'build', 'stems', 'htdemucs')
 
-# The pair that buried the song under the lyric: 1.5 dB over with a 45% duck.
-BEFORE = (1.5, 0.45)
-
 
 def load_app():
     """The service module, for its constants and its own mix function.
 
     Importing it starts the lyric helper, which without the `lyrics` module on the
-    path prints an ImportError from a background thread. That has nothing to do
-    with the mix, so it is kept out of the table.
+    path prints an ImportError from a background thread. That has nothing to do with
+    the mix, so it is kept out of the table.
     """
     spec = importlib.util.spec_from_file_location('song_app', APP)
     module = importlib.util.module_from_spec(spec)
     quiet = io.StringIO()
     with contextlib.redirect_stderr(quiet):
         spec.loader.exec_module(module)
-        # The service starts its lyric model in a background thread as it imports.
-        # Without the `lyrics` module on this path the thread prints a traceback
-        # that says nothing about the mix, so it is kept out of the table by waiting
-        # for that thread here, inside the redirect.
         for thread in threading.enumerate():
             if thread is not threading.main_thread() and thread.daemon:
                 thread.join(2.0)
@@ -67,83 +67,66 @@ def rms(x):
 
 
 def db(ratio):
-    return 20 * np.log10(max(ratio, 1e-12))
+    return 20 * np.log10(max(float(ratio), 1e-12))
 
 
-def load_pair(backing_path, vocal_path, app):
-    """The bed and the voice as `_mix_separated` receives them."""
-    bed, rate = sf.read(backing_path, always_2d=True)
-    vocal, vocal_rate = sf.read(vocal_path, always_2d=True)
-    mono = vocal.mean(axis=1).astype('float32')
-    if vocal_rate != rate and len(mono):
-        mono = np.interp(np.linspace(0, len(mono) - 1, int(len(mono) * rate / vocal_rate)),
-                         np.arange(len(mono)), mono).astype('float32')
-    with contextlib.redirect_stdout(io.StringIO()):
-        placed = app._map_vocal(mono, rate, (0.0, 0.0, 0.0))
-    frames = min(len(placed), len(bed))
-    return bed[:frames].copy(), placed[:frames], rate
-
-
-def gate_for(placed, rate):
+def gate_for(voice, rate, app):
     """The service's presence gate: a 50 ms envelope of the voice, normalised so a
-    word passes and a gap does not."""
+    word passes and a gap does not. `voice` is (samples, channels)."""
+    level = np.sqrt(np.mean(np.square(voice), axis=1))
     win = max(1, int(rate * 0.05))
-    hit = fftconvolve(np.abs(placed), np.ones(win) / win, mode='same')
+    kernel = np.ones(win) / win
+    hit = np.convolve(level, kernel, mode='same')
     return np.clip(hit / (float(hit.max()) * 0.12 + 1e-9), 0.0, 1.0)
 
 
-def balance(bed, placed, rate, lead_db, duck, app):
-    """The arithmetic `_mix_separated` does, with the two constants as arguments."""
-    gate = gate_for(placed, rate)
-    ducked = bed * (1.0 - duck * gate)[:, None]
-
+def measure(bed, voice, rate, app):
+    """The balance under a word, from the two stems."""
+    gate = gate_for(voice, rate, app)
     active = gate > 0.5
-    bed_rms = float(np.sqrt(np.mean(ducked[active] ** 2)) or 0.0) if np.any(active) else rms(ducked)
-    voice_rms = float(np.sqrt(np.mean(placed[active] ** 2)) or 0.0) if np.any(active) else rms(placed)
-    gain = 1.0
-    if bed_rms > 1e-6 and voice_rms > 1e-6:
-        gain = min(app.MAX_LEAD_GAIN, (bed_rms * 10 ** (lead_db / 20.0)) / voice_rms)
-    voice = placed * gain
-    mixed = ducked + voice[:, None].repeat(bed.shape[1], axis=1)
-    # `_mix_separated` holds the mix under 0.98 with one peak trim at the end. It
-    # is a scale on voice and music together, so it moves no ratio here, but the
-    # rebuilt file has to have it or the comparison reads a hot song as a mismatch.
-    peak = float(np.max(np.abs(mixed)) or 0.0)
-    if peak > 0.98:
-        mixed *= 0.98 / peak
-    return {'active': active, 'ducked': ducked, 'voice': voice,
-            'mixed': mixed, 'gain_db': db(gain)}
-
-
-def measure(bed, placed, rate, lead_db, duck, app):
-    """The dip under a word and the voice's height over the music there, in dB."""
-    out = balance(bed, placed, rate, lead_db, duck, app)
-    active = out['active']
     if not np.any(active):
-        return {'active': active, 'dip': 0.0, 'over': 0.0, 'gain_db': out['gain_db']}
-    underwater = out['ducked'][active].mean(axis=1)
-    dip = db(rms(bed[active].mean(axis=1)) / max(rms(underwater), 1e-12))
-    over = db(rms(out['voice'][active]) / max(rms(underwater), 1e-12))
-    return {'active': active, 'dip': dip, 'over': over, 'gain_db': out['gain_db'],
-            'mixed': out['mixed']}
+        return {'active': active, 'gate': gate, 'over': 0.0, 'duck': 0.0}
+    voice_rms = rms(voice[active])
+    music_rms = rms(bed[active])
+    duck = float(np.median(20 * np.log10(
+        1.0 - app.DUCK_UNDER_VOICE * gate[active] + 1e-12)))
+    return {'active': active, 'gate': gate,
+            'over': db(voice_rms / max(music_rms, 1e-12)), 'duck': duck}
 
 
-def check_service(bed_path, vocal_path, ours, app):
-    """Rebuild the same mix with the service's own function and compare."""
-    work = tempfile.mkdtemp(prefix='mixbatch-')
+def verify(bed_path, vocal_path, render_path, app, work):
+    """Rebuild the mix with the service and compare with render * (1 - duck * gate)."""
     out_path = os.path.join(work, 'service.wav')
     with contextlib.redirect_stdout(io.StringIO()):
-        app._mix_separated(bed_path, vocal_path, out_path, (0.0, 0.0, 0.0))
-    from_service, _ = sf.read(out_path, always_2d=True)
+        app._mix_separated(bed_path, vocal_path, out_path, (0.0, 0.0, 0.0),
+                           render_path=render_path)
+    mixed, rate = sf.read(out_path, always_2d=True, dtype='float32')
+    bed, stem_rate = sf.read(bed_path, always_2d=True, dtype='float32')
+    voice, _ = sf.read(vocal_path, always_2d=True, dtype='float32')
+    render, render_rate = sf.read(render_path, always_2d=True, dtype='float32')
+    if render_rate != stem_rate:
+        ratio = Fraction(int(stem_rate), int(render_rate)).limit_denominator(1000)
+        render = resample_poly(render, ratio.numerator, ratio.denominator, axis=0)
+    frames = min(len(render), len(bed), len(voice), len(mixed))
+    gate = gate_for(voice[:frames], stem_rate, app)
+    expected = render[:frames] * (1.0 - app.DUCK_UNDER_VOICE * gate)[:, None]
+    # `_mix_separated` holds the mix under 0.98 with one peak trim; it is a scale on
+    # everything, so it is put on the expected signal too.
+    peak = float(np.max(np.abs(expected)) or 0.0)
+    if peak > 0.98:
+        expected *= 0.98 / peak
     os.unlink(out_path)
-    os.rmdir(work)
-    return float(np.max(np.abs(from_service[:len(ours)] - ours)))
+    return float(np.max(np.abs(mixed[:frames] - expected)))
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='The voice-over-music balance of every separated render.')
+    parser = argparse.ArgumentParser(description='The voice-over-music balance of the render-based mix.')
     parser.add_argument('stems', nargs='?', default=DEFAULT_STEMS,
                         help='folder of htdemucs/<song>/{no_vocals,vocals}.wav (default: %(default)s)')
+    parser.add_argument('--render', default=None,
+                        help='a render (song.wav) whose stems are in <stems>/<folder>; rebuilds and checks the mix')
+    parser.add_argument('--stems-dir', default=None,
+                        help='the one stems folder to check with --render (default: the first found)')
     args = parser.parse_args(argv)
 
     app = load_app()
@@ -157,48 +140,54 @@ def main(argv=None):
     if not pairs:
         raise SystemExit('no no_vocals.wav + vocals.wav pairs under %s' % args.stems)
 
-    print('%d songs: LEAD_DB %.1f dB, DUCK_UNDER_VOICE %.0f%% (measured %s)'
-          % (len(pairs), app.LEAD_DB, app.DUCK_UNDER_VOICE * 100,
-             os.path.relpath(APP, ROOT).replace(os.sep, '/')))
+    print('%d songs: render-based mix, no lead gain, DUCK_UNDER_VOICE %.0f%% (%.2f dB) [%s]'
+          % (len(pairs), app.DUCK_UNDER_VOICE * 100,
+             db(1.0 - app.DUCK_UNDER_VOICE), os.path.relpath(APP, ROOT).replace(os.sep, '/')))
     print()
-    print('%-40s %8s %9s %10s %8s %9s %8s'
-          % ('render', 'sounding', 'dip now', 'voice now', 'dip old', 'voice old', 'rebuild'))
+    print('%-40s %8s %9s %9s %9s' % ('render', 'sounding', 'voice/music', 'duck there', 'lead gain'))
+    print('-' * 80)
     rows = []
-    worst = 0.0
     for folder, backing, vocal in pairs:
-        bed, placed, rate = load_pair(backing, vocal, app)
-        now = measure(bed, placed, rate, app.LEAD_DB, app.DUCK_UNDER_VOICE, app)
-        before = measure(bed, placed, rate, BEFORE[0], BEFORE[1], app)
-        diff = check_service(backing, vocal, now['mixed'], app)
-        worst = max(worst, diff)
-        sounding = 100.0 * now['active'].mean()
-        rows.append((os.path.basename(folder), sounding, now['dip'], now['over'], before['dip'], before['over']))
-        print('%-40s %7.0f%% %8.1f %9.1f %8.1f %8.1f %8.1e'
-              % (rows[-1][0][:40], sounding, now['dip'], now['over'], before['dip'], before['over'], diff))
+        bed, rate = sf.read(backing, always_2d=True, dtype='float32')
+        voice, _ = sf.read(vocal, always_2d=True, dtype='float32')
+        frames = min(len(bed), len(voice))
+        result = measure(bed[:frames], voice[:frames], rate, app)
+        rows.append((os.path.basename(folder), 100.0 * result['active'].mean(),
+                     result['over'], result['duck']))
+        print('%-40s %7.0f%% %8.1f %8.2f %8.1f'
+              % (rows[-1][0][:40], rows[-1][1], rows[-1][2], rows[-1][3], 0.0))
 
-    over_now = [row[3] for row in rows]
-    over_old = [row[5] for row in rows]
-    lo = min(rows, key=lambda row: row[3])
-    hi = max(rows, key=lambda row: row[3])
+    over = [row[2] for row in rows]
+    lowest = min(rows, key=lambda row: row[2])
+    highest = max(rows, key=lambda row: row[2])
     print()
-    print('voice over the music now : %.1f-%.1f dB, mean %.1f over %d songs'
-          % (lo[3], hi[3], sum(over_now) / len(over_now), len(rows)))
-    print('  lowest  %s (%.1f dB)' % (lo[0][:40], lo[3]))
-    print('  highest %s (%.1f dB)' % (hi[0][:40], hi[3]))
-    print('voice over the music old : %.1f-%.1f dB, mean %.1f'
-          % (min(over_old), max(over_old), sum(over_old) / len(over_old)))
-    print('music dips under a word  : %.1f-%.1f dB now, %.1f-%.1f dB old'
-          % (min(row[2] for row in rows), max(row[2] for row in rows),
-             min(row[4] for row in rows), max(row[4] for row in rows)))
-    print('rebuild vs the service\'s own mix: worst difference %.1e' % worst)
-    # The whole point is that this table describes the service, so a mix that no
-    # longer matches it is a failure, not a footnote.
-    if worst > 1e-3:
+    print('voice over the music under a word: %.1f-%.1f dB, mean %.1f over %d songs'
+          % (min(over), max(over), sum(over) / len(over), len(rows)))
+    print('  lowest  %s (%.1f dB)' % (lowest[0][:40], lowest[2]))
+    print('  highest %s (%.1f dB)' % (highest[0][:40], highest[2]))
+    print('the mix under a word is %.2f dB lower (the duck on the whole mix, not the bed)'
+          % float(np.median([row[3] for row in rows])))
+    print('lead gain: 0.0 dB on this path - the render already carries its own balance')
+
+    status = 0
+    if args.render:
+        folder = args.stems_dir or pairs[0][0]
+        backing = os.path.join(folder, 'no_vocals.wav')
+        vocal = os.path.join(folder, 'vocals.wav')
+        import tempfile
+        work = tempfile.mkdtemp(prefix='mixbalance-')
+        try:
+            diff = verify(backing, vocal, args.render, app, work)
+        finally:
+            os.rmdir(work)
         print()
-        print('the service\'s `_mix_separated` no longer matches this arithmetic: '
-              'the balance has changed, and the table above is not the service\'s.')
-        return 1
-    return 0
+        print('rebuild through _mix_separated against render * (1 - duck * gate): '
+              'worst difference %.1e' % diff)
+        if diff > 1e-3:
+            print("the service's mix is not the render plus the mapping's difference: "
+                  'a lead gain, or a rebuild from the stems, has come back.')
+            status = 1
+    return status
 
 
 if __name__ == '__main__':

@@ -209,13 +209,19 @@ F1/F2/F3 moved ×0.993/×0.966/×0.976, against ×1.205/×0.915/×0.978 for the
 uncorrected vocoder, and spectral flatness came out 23% *below* the source's - which
 is why it was used rather than a WORLD resynthesis (WORLD held the formants at
 ×1.019/×0.986/×0.995 but measured +281% flatness, a grain or grind). Nothing you said into the microphone is in the track and no voice is
-cloned: the vocal is ACE-Step's own, separated from the music, mapped, and mixed
-back with the bed ducked lightly under it (`DUCK_UNDER_VOICE`) and the voice
-`LEAD_DB` above it. Those two numbers are the balance: 0 dB and 20% measured on all
-twelve real renders in the logs and their separated vocals leaves the voice
-1.3-2.4 dB over the music under a word (mean 1.7), with the music dipping 1.6-1.9
-dB; 1.5 dB over a 45% duck measured 2.8-3.9 dB with the music dipping 4.0-5.1 dB,
-which buried the song under the lyric.
+cloned: the vocal is ACE-Step's own, separated from the music, mapped, and laid back
+**on the render itself** - see the next section - so the balance is the model's own.
+No lead gain is applied on this path: `LEAD_DB` and `MAX_LEAD_GAIN` only drive
+`_layout_vocal`, the route that lays a recorded phrase over an instrumental. The one
+thing that moves the level under a word is `DUCK_UNDER_VOICE` (15%), and it scales the
+whole mix - voice and music together - by **-1.41 dB**, so it cannot change the ratio
+a listener hears.
+
+Measured from the separated stems of the twelve renders in `build/stems/htdemucs`, at
+the frames where the voice is sounding, the voice sits **-5.9 to +1.7 dB** over the
+music, mean **-0.4 dB**; the mix is **1.41 dB** lower under a word in every one of them
+(the duck). That is the honest number: the model does not always put its own voice on
+top, and the mix no longer changes that.
 
 Re-measure it after any change to the mix with `tools/check_mix_balance.py` at the
 repository root. It reads `build/stems/htdemucs/<song>/{no_vocals,vocals}.wav`,
@@ -226,10 +232,10 @@ which `demucs` writes from a render in this service's logs:
 <service-venv-python> tools/check_mix_balance.py
 ```
 
-It prints each song's dip and voice height for the current constants and for the
-pair they replaced, and exits nonzero if `_mix_separated` no longer matches the
-arithmetic it checks - which is the signal that the balance has changed and the
-table is no longer describing the service.
+Add `--render <song.wav>` and it also rebuilds the mix through `_mix_separated` and
+compares it with `render * (1 - duck * gate)`, exiting nonzero if anything else - a lead
+gain, or a rebuild from the stems - has come back into the path. Measured on the render
+whose stems are still on disk, that rebuild matched to **3.1e-05**.
 
 The finished song is the **render itself**, not the stems re-summed. Rebuilding it as
 `no_vocals + vocal` cannot be exact - the two stems are a mask of the render rather than

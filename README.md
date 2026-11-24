@@ -1098,27 +1098,25 @@ timing belong to the song it is singing over:
 1. the lyrics come from the language model, or from the designer's panel;
 2. ACE-Step renders the whole song — its own sung vocal and the backing together;
 3. `demucs` splits that render into a vocal stem and a backing stem;
-4. the vocal is measured against your recording: the service takes the median
-   pitch of each, folds the difference into the nearest register (a voice an
-   octave away is the same voice) and applies it as a semitone shift on a
-   half-semitone grid, never beyond ±7 — and the shift is **formant
-   preserving**: the pitch moves, then the source's own spectral envelope is
-   divided back over it, so the same singer sounds higher or lower rather than
-   thin;
-5. the shifted vocal is laid back over the same backing, matched to it and the bed
-   ducked lightly under it: `LEAD_DB` (0 dB) and `DUCK_UNDER_VOICE` (20%). Measured
-   on all twelve real renders in the service's logs and their separated vocals,
-   that leaves the voice 1.3-2.4 dB over the music under a word (mean 1.7), the
-   music dipping 1.6-1.9 dB; at 1.5 dB over a 45% duck the same songs measured
-   2.8-3.9 dB with the music dipping 4.0-5.1 dB, and the song was hard to hear
-   under the lyric.
+4. the vocal is measured against your recording - both pitches, and the tone half of
+   the fit - but it is **not transposed**: the model sings its own melody over its
+   own backing, so its voice is already in the song's key;
+5. the vocal is laid back **on the render itself**: the song is the render plus only
+   the difference the mapping made (its room), so there is no lead gain on this path
+   (`LEAD_DB` and `MAX_LEAD_GAIN` only drive the route that lays a recorded phrase
+   over an instrumental). `DUCK_UNDER_VOICE` (15%) lowers the whole mix - voice and
+   music together - by **1.41 dB** under a word, so it cannot change the ratio.
+   Measured from the separated stems of the twelve renders in
+   `build/stems/htdemucs`, the voice sits **-5.9 to +1.7 dB** over the music under a
+   word (mean **-0.4 dB**): the model's own balance, which the mix preserves.
 
-To re-measure that after any change to the mix, `tools/check_mix_balance.py`
-prints every separated render's figure with the current constants and with the
-pair they replaced, and exits nonzero if the mix no longer matches the service's
-own `_mix_separated`. It reads the stems `demucs` writes, which stay out of the
-repository (`build/*.wav` is ignored), so they are made from the renders in the
-service's logs first:
+To re-measure that after any change to the mix, `tools/check_mix_balance.py` prints
+every separated render's voice-over-music figure and the duck; with
+`--render <song.wav>` it rebuilds the mix through the service's own `_mix_separated`
+and compares it with `render * (1 - duck * gate)`, exiting nonzero if a lead gain or
+a rebuild from the stems has come back. It reads the stems `demucs` writes, which stay
+out of the repository (`build/*.wav` is ignored), so they are made from the renders in
+the service's logs first:
 
 ```
 <service-venv-python> -m demucs --two-stems=vocals -n htdemucs -o build/stems <install>/song_service/logs/song_<id>.wav

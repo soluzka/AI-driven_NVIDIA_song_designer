@@ -482,18 +482,20 @@ def _map_vocal(mono, rate, mapping):
     return out
 
 
-# How far above the bed the voice is placed, how far the bed dips under it, and
-# the most gain that will ever be applied to a quiet model output.
+# LEAD_DB and MAX_LEAD_GAIN drive `_layout_vocal` only - the route that lays a
+# recorded phrase over an instrumental. The song path is the render itself with only
+# the mapping's difference added, so it applies **no lead gain**: the model's own
+# balance is kept. Measured from the separated stems of the twelve renders in
+# build/stems/htdemucs, at the frames where the voice sounds, that balance is -5.9 to
+# +1.7 dB of voice over the music (mean -0.4), not the 1.3-2.4 dB this comment used
+# to claim for the mix that rebuilt the song from its stems.
 #
-# The offset is measured where the voice is actually singing, not across the whole
-# track: a sung line covers about a third of a song, so matching whole-track RMS
-# compared a sparse signal with a continuous one and put the voice +13.9 dB over
-# the music (measured on a 180 s song) while claiming 2.5. That is what "too loud"
-# was. Matching the active frames gives the number the ear hears.
-# 0 dB and a light duck, not 1.5 dB over a bed cut by 45%: the two together put the
-# voice 8.3 dB over the music under every word (measured on the mix this service
-# makes), which is a lyric you cannot hear the song behind. At 0 dB and 20% it is
-# about 3.5 dB - the voice is still the lead, and the music is still there.
+# DUCK_UNDER_VOICE is the only thing that moves the level under a word, and on the
+# song path it scales the whole mix - voice and music together - so it lowers
+# everything there by -1.41 dB and cannot change the ratio. The offset was measured
+# where the voice is actually singing rather than across the whole track: a sung line
+# covers about a third of a song, so a whole-track RMS compares a sparse signal with
+# a continuous one.
 LEAD_DB = 0.0
 DUCK_UNDER_VOICE = 0.15
 MAX_LEAD_GAIN = 8.0

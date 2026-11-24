@@ -1908,6 +1908,10 @@ async function saveLibrarySnapshot(env, library) {
   if (!env.STATS || !library || !Number(library.total_videos)) return;
   try {
     const existing = await readLibrarySnapshot(env);
+    // Never write a smaller total over a larger one: a read that fell back to the
+    // export's 8,724 used to clobber a snapshot holding 11,854, and the page then
+    // showed the smaller figure as if it were the library.
+    if (existing && Number(existing.v) > Number(library.total_videos)) return;
     if (existing && Date.now() - Number(existing.at || 0) < 5 * 60 * 1000) return;
     await env.STATS.put(LIBRARY_KEY, JSON.stringify({
       v: library.total_videos, s: library.total_searches, c: library.total_clicks, at: Date.now(),

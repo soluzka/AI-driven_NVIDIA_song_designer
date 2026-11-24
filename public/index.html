@@ -1532,6 +1532,10 @@
             // the bundled snapshot's - which is where "8,000 and then back" came
             // from: one failed search put the old total on screen.
             applyLibraryStats(doc && doc.library);
+            // The search itself failed because the library could not be read: say so
+            // here, where the reason is on hand, rather than only in the poll.
+            if (doc && doc.readable === false) showLibraryUnreadable(doc.detail || doc.error);
+            else if (doc && doc.readable === true) hideLibraryUnreadable();
             if (!response.ok) throw new Error('search unavailable (' + response.status + ')');
             if (!doc || !Array.isArray(doc.videos)) throw new Error('search returned an unexpected shape');
             const total = Number(doc.total) || 0;

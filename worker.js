@@ -1485,7 +1485,17 @@ async function appendDiscoveredRows(env, existing) {
   let lastId = Number(existing.lastId) || 0;
   let added = 0;
   const addedUrls = [];
-  for (;;) {
+
+  // Where the table ends, asked once - the same question the full rebuild asks. A
+  // chunk coming back short used to mean "that is the end", so a hole in the ids
+  // ended the append early on every run; now a short chunk means nothing of the sort.
+  // When the watermark is already at the top this is the only query the check makes.
+  const top = await env.DB.prepare('SELECT MAX(id) AS top FROM videos').first();
+  const maxId = Number(top && top.top) || 0;
+  if (maxId && lastId >= maxId) return { rows, lastId, added, withGenre, addedUrls };
+
+  while (maxId && lastId < maxId) {
+    const before = lastId;
     let batch;
     try {
       const answer = await env.DB.prepare(
@@ -1498,6 +1508,7 @@ async function appendDiscoveredRows(env, existing) {
       const answer = await env.DB.prepare('SELECT ' + SNAPSHOT_COLUMNS + tail).bind(lastId).all();
       batch = answer.results || [];
     }
+    if (!batch.length) break;
     for (const row of batch) {
       const id = Number(row.id) || 0;
       if (id > lastId) lastId = id;
@@ -1518,8 +1529,8 @@ async function appendDiscoveredRows(env, existing) {
       addedUrls.push(shaped[0]);
       added += 1;
     }
-    if (batch.length < SNAPSHOT_CHUNK) break;
     if (rows.length > 40000) break;   // a runaway table must not exhaust the isolate
+    if (lastId === before) break;     // no progress: never loop on the same rows
   }
   return { rows, lastId, added, withGenre, addedUrls };
 }

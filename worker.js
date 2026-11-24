@@ -1221,14 +1221,20 @@ async function cachedSearch(env, request, url, ctx) {
     && url.searchParams.get('log') !== '1'
     && url.searchParams.get('discover') !== '1'
     && !askingForCounters;
-  if (!plain) return searchIndex(env, url, ctx);
+  // Read once here, used by the cache key and by the search it hands this to: the
+  // count, the click revision and the clicks themselves are one document.
+  let meta = null;
+  try {
+    meta = await readIndexMeta(env);
+  } catch (err) { /* the search itself can still answer */ }
+  if (!plain) return searchIndex(env, url, ctx, meta);
 
   const cache = caches.default;
   // One small KV read, no D1: the revision is what a click changes. Without it a
   // bare search URL kept serving the order from before the click for a minute.
   let rev = 0;
   try {
-    rev = await readClickRev(env);
+    rev = await readClickRev(env, meta);
   } catch (err) { /* a cache that cannot key on clicks is still better than none */ }
   const search = url.search ? url.search + '&clicks=' + rev : '?clicks=' + rev;
   const key = new Request('https://search-cache.internal' + url.pathname + search, { method: 'GET' });
@@ -1242,7 +1248,7 @@ async function cachedSearch(env, request, url, ctx) {
   }
   if (hit) return hit;
 
-  const fresh = await searchIndex(env, url, ctx);
+  const fresh = await searchIndex(env, url, ctx, meta);
   if (fresh.status === 200) {
     // A body can be read once. Passing `fresh.body` into another Response locks
     // it, so returning `fresh` afterwards threw "Body has already been used" and
@@ -1276,17 +1282,19 @@ const SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const SNAPSHOT_MAX_BYTES = 20 * 1024 * 1024;
 const SNAPSHOT_CHUNK = 2000;
 
-async function loadIndexSnapshot(env) {
+async function loadIndexSnapshot(env, meta) {
   if (!env.STATS) return null;
   try {
     const [doc, marker] = await Promise.all([
       env.STATS.get(SNAPSHOT_KEY, 'json'),
-      env.STATS.get(SEARCHABLE_KEY, 'json').catch(() => null),
+      // The caller has already read this for the cache key: one key, one read.
+      meta ? Promise.resolve(meta) : readIndexMeta(env),
     ]);
     if (!doc || !Array.isArray(doc.rows) || !doc.rows.length) return null;
-    // A check that found nothing new rewrites only the small counter key, so the
-    // newest of the two is when this snapshot was last known to be current.
-    const age = Date.now() - Math.max(Number(doc.at || 0), Number(marker && marker.at) || 0);
+    // A check that found nothing new rewrites only the small metadata document, so
+    // the newest of the two is when this snapshot was last known to be current.
+    const age = Date.now()
+      - Math.max(Number(doc.at || 0), Number(marker && (marker.countAt || marker.at)) || 0);
     if (age > SNAPSHOT_MAX_AGE_MS) return null;     // too old to trust
     doc.stale = age > SNAPSHOT_FRESH_MS;            // usable, worth checking again
     return doc;
@@ -1310,35 +1318,87 @@ async function readSnapshotDoc(env) {
 // big snapshot so the page's counter poll does not have to read 3 MB to learn one
 // number, and it is what the counter shows: a page that claims 11,858 videos while
 // a search can only reach 6,507 is lying to whoever reads "331 matches".
-const SEARCHABLE_KEY = 'index_snapshot_count';
+// The small index facts - how many videos a search can return, the cache revision a
+// click bumps, and the clicks themselves - in one document, read once per request.
+// They were three keys and five reads on a search; a KV read is a round trip, and
+// the free allowance is 100,000 a day, so the count is now paid for once and shared
+// by the cache key, the totals and the ordering.
+//
+// The discovered-rows overlay is deliberately *not* in here: it holds rows, not a
+// sentence of metadata, and every click rewrites this document - a click must not
+// carry a hundred kilobytes of somebody else's rows with it.
+const META_KEY = 'index_meta';
+const SEARCHABLE_KEY = 'index_snapshot_count';   // the documents this replaced
+const CLICK_KEY = 'index_clicks';
 
-async function readSearchableTotal(env) {
-  if (!env.STATS) return 0;
+async function readIndexMeta(env) {
+  if (!env.STATS) return null;
   try {
-    const doc = await env.STATS.get(SEARCHABLE_KEY, 'json');
-    if (!doc || !Number(doc.q)) return 0;
-    // Past the age at which the snapshot itself is not trusted, neither is its count.
-    if (Date.now() - Number(doc.at || 0) > SNAPSHOT_MAX_AGE_MS) return 0;
-    return Number(doc.q);
+    const doc = await env.STATS.get(META_KEY, 'json');
+    if (doc && typeof doc === 'object') return doc;
+    // Migration: the two documents this replaced. Read once, then written back as one.
+    const [count, clicks] = await Promise.all([
+      env.STATS.get(SEARCHABLE_KEY, 'json').catch(() => null),
+      env.STATS.get(CLICK_KEY, 'json').catch(() => null),
+    ]);
+    if (!count && !clicks) return null;
+    return {
+      at: Math.max(Number(count && count.at) || 0, Number(clicks && clicks.at) || 0),
+      countAt: Number(count && count.at) || 0,
+      count: Number(count && count.q) || 0,
+      rev: Number(clicks && clicks.rev) || Number(clicks && clicks.at) || 0,
+      clicks: Array.isArray(clicks && clicks.rows) ? clicks.rows : [],
+    };
   } catch (err) {
-    return 0;
+    return null;
   }
+}
+
+// One writer, one field at a time: a click writes `clicks`, a rebuild writes
+// `count`, and neither carries the other field's stale value with it.
+async function writeIndexMeta(env, changes) {
+  if (!env.STATS) return null;
+  try {
+    const current = await readIndexMeta(env);
+    const doc = {
+      at: Date.now(),
+      rev: (Number(current && current.rev) || 0) + 1,
+      count: changes.count !== undefined ? Number(changes.count) || 0 : Number(current && current.count) || 0,
+      countAt: changes.count !== undefined ? Date.now() : Number(current && current.countAt) || 0,
+      clicks: changes.clicks !== undefined
+        ? changes.clicks
+        : (Array.isArray(current && current.clicks) ? current.clicks : []),
+    };
+    await env.STATS.put(META_KEY, JSON.stringify(doc));
+    return doc;
+  } catch (err) {
+    return null;
+  }
+}
+
+function searchableFromMeta(meta) {
+  if (!meta || !Number(meta.count)) return 0;
+  // Past the age at which the snapshot itself is not trusted, neither is its count.
+  if (Date.now() - Number(meta.countAt || 0) > SNAPSHOT_MAX_AGE_MS) return 0;
+  return Number(meta.count);
+}
+
+function clickBoostsFromMeta(meta) {
+  if (!meta || !Array.isArray(meta.clicks)) return [];
+  if (Date.now() - Number(meta.at || 0) > SNAPSHOT_MAX_AGE_MS) return [];
+  return meta.clicks;
 }
 
 async function noteSearchableTotal(env, count) {
   if (!env.STATS || !Number(count)) return;
-  try {
-    await env.STATS.put(SEARCHABLE_KEY, JSON.stringify({ q: Number(count), at: Date.now() }));
-  } catch (err) {
-    // The counter falls back to the totals it had; never fail a search over it.
-  }
+  await writeIndexMeta(env, { count: Number(count) });
 }
 
 // The searchable count wins when there is one, because it is the only total a
 // search can honour. Without a snapshot the totals are D1's, as before.
-async function withSearchableTotal(env, library) {
+async function withSearchableTotal(env, library, meta) {
   if (!library) return library;
-  const searchable = await readSearchableTotal(env);
+  const searchable = searchableFromMeta(meta || await readIndexMeta(env));
   if (searchable) library.total_videos = searchable;
   return library;
 }
@@ -1567,31 +1627,17 @@ async function buildIndexSnapshot(env, options = {}) {
 // Clicks recorded since the snapshot was built, as [url, extra] pairs. The snapshot
 // itself is never re-sorted for them: a search lifts the clicked rows into the place
 // their new count earns, and the rest of the order is left exactly as it was.
-const CLICK_KEY = 'index_clicks';
 const CLICK_BOOST_MAX = 500;
 
-async function readClickDoc(env) {
-  if (!env.STATS) return null;
-  try {
-    const doc = await env.STATS.get(CLICK_KEY, 'json');
-    return doc && typeof doc === 'object' ? doc : null;
-  } catch (err) {
-    return null;
-  }
-}
-
-async function readClickBoosts(env) {
-  const doc = await readClickDoc(env);
-  if (!doc || !Array.isArray(doc.rows)) return [];
-  if (Date.now() - Number(doc.at || 0) > SNAPSHOT_MAX_AGE_MS) return [];
-  return doc.rows;
+async function readClickBoosts(env, meta) {
+  return clickBoostsFromMeta(meta || await readIndexMeta(env));
 }
 
 // The cache key for a plain search carries this, so a click makes every cached copy
 // of every query stale at once instead of waiting out the minute. It counts writes,
 // not clicks, so it also moves when the map is trimmed or cleared.
-async function readClickRev(env) {
-  const doc = await readClickDoc(env);
+async function readClickRev(env, meta) {
+  const doc = meta || await readIndexMeta(env);
   if (!doc) return 0;
   const rev = Number(doc.rev) || 0;
   if (rev) return rev;
@@ -1599,12 +1645,8 @@ async function readClickRev(env) {
 }
 
 async function writeClickDoc(env, rows) {
-  const current = await readClickDoc(env);
-  const rev = (Number(current && current.rev) || 0) + 1;
-  await env.STATS.put(CLICK_KEY, JSON.stringify({
-    at: Date.now(), rev, rows: rows.slice(-CLICK_BOOST_MAX),
-  }));
-  return rev;
+  const doc = await writeIndexMeta(env, { clicks: rows.slice(-CLICK_BOOST_MAX) });
+  return Number(doc && doc.rev) || 0;
 }
 
 async function noteClickBoost(env, url) {
@@ -1721,7 +1763,10 @@ function searchSnapshot(snapshot, terms, limit, offset, boosts) {
   };
 }
 
-async function searchIndex(env, url, ctx) {
+async function searchIndex(env, url, ctx, knownMeta) {
+  // Everything this request needs from the small index document: the searchable
+  // count, the clicks. The caller usually read it already for the cache key.
+  const meta = knownMeta || await readIndexMeta(env);
   const query = (url.searchParams.get('q') || '').trim().slice(0, 120);
   // 200 a page, not 60: a query with 332 matches used to say "332 matches" and
   // show sixty of them, because that is all one request returned.
@@ -1736,7 +1781,7 @@ async function searchIndex(env, url, ctx) {
     // The empty query is the page's counter poll: it says whether the database can
     // be read as well as what the totals are, so the page can explain itself
     // instead of silently serving the export's older figures.
-    const library = await readStats(env);
+    const library = await readStats(env, meta);
     // One source of truth for "can it be read": the shared verdict a failed search
     // left behind. Comparing totals here was per-isolate, so the same outage answered
     // readable:true on one request and readable:false on the next.
@@ -1749,7 +1794,7 @@ async function searchIndex(env, url, ctx) {
     // answers it with the database refusing every read, so this must not report the
     // database's health on its own - it reported "cannot be read" while searches
     // were returning results, and the banner then covered a working page.
-    const searchable = await readSearchableTotal(env);
+    const searchable = searchableFromMeta(meta);
     return json({
       query: '', total: 0, library, discovered: 0, videos: [],
       readable: Boolean(searchable) || !why,
@@ -1776,7 +1821,7 @@ async function searchIndex(env, url, ctx) {
     // waiting for the snapshot to go stale and be rebuilt.
     if (found.rows.length) freshRows = await appendRecentRows(env, found.rows);
   }
-  const library = await readStats(env);
+  const library = await readStats(env, meta);
 
   const terms = (query.toLowerCase().match(/[a-z0-9']+/g) || []).slice(0, 8);
   if (!terms.length) {
@@ -1801,7 +1846,7 @@ async function searchIndex(env, url, ctx) {
   // The cheap path: one KV read, the whole index already ordered the way the SQL
   // orders it. A stale or missing snapshot means D1 answers this request instead,
   // and the rebuild runs after the response so the next search is cheap.
-  const snapshot = await loadIndexSnapshot(env);
+  const snapshot = await loadIndexSnapshot(env, meta);
   if (snapshot) {
     if (snapshot.stale && ctx && typeof ctx.waitUntil === 'function') {
       ctx.waitUntil(buildIndexSnapshot(env).catch((err) => {
@@ -1812,11 +1857,11 @@ async function searchIndex(env, url, ctx) {
     // was written by something that did not record its size.
     const recent = freshRows.length ? freshRows : await readRecentRows(env);
     const rows = withRecentRows(snapshot.rows, recent);
-    if ((await readSearchableTotal(env)) !== rows.length) {
+    if (searchableFromMeta(meta) !== rows.length) {
       await noteSearchableTotal(env, rows.length);
     }
     // Clicks since the last build, so a video people are clicking is where it belongs.
-    const answer = searchSnapshot({ rows }, terms, limit, offset, await readClickBoosts(env));
+    const answer = searchSnapshot({ rows }, terms, limit, offset, clickBoostsFromMeta(meta));
     if (logging) {
       try {
         await env.DB.prepare(
@@ -2499,10 +2544,12 @@ async function readLibrarySnapshot(env) {
   }
 }
 
-async function saveLibrarySnapshot(env, library) {
+async function saveLibrarySnapshot(env, library, known) {
   if (!env.STATS || !library || !Number(library.total_videos)) return;
   try {
-    const existing = await readLibrarySnapshot(env);
+    // The caller usually read this document a moment ago to answer with; reading it
+    // twice was one of the reads a search paid for.
+    const existing = known !== undefined ? known : await readLibrarySnapshot(env);
     // Never write a smaller total over a larger one: a read that fell back to the
     // export's 8,724 used to clobber a snapshot holding 11,854, and the page then
     // showed the smaller figure as if it were the library.
@@ -2587,14 +2634,16 @@ async function libraryUnreadable(env) {
   }
 }
 
-async function readStats(env) {
+async function readStats(env, meta) {
+  const index = meta || await readIndexMeta(env);
   try {
     const live = await readStatsUnsafe(env);
-    const fromSnapshot = snapshotAsLibrary(await readLibrarySnapshot(env));
+    const stored = await readLibrarySnapshot(env);
+    const fromSnapshot = snapshotAsLibrary(stored);
     if (!fromSnapshot) {
       statsLookBehind = false;
-      if (Number(live.total_videos)) await saveLibrarySnapshot(env, live);
-      return await withSearchableTotal(env, live);
+      if (Number(live.total_videos)) await saveLibrarySnapshot(env, live, stored);
+      return await withSearchableTotal(env, live, index);
     }
     const behind = (Number(live.total_videos) || 0) < fromSnapshot.total_videos;
     statsLookBehind = behind;
@@ -2609,17 +2658,17 @@ async function readStats(env) {
       console.error('[stats] live total is behind the last snapshot:', live.total_videos,
         'vs', fromSnapshot.total_videos, '- answering with the snapshot');
     } else {
-      await saveLibrarySnapshot(env, merged);
+      await saveLibrarySnapshot(env, merged, stored);
     }
-    return await withSearchableTotal(env, merged);
+    return await withSearchableTotal(env, merged, index);
   } catch (err) {
     console.error('[stats] readStats failed:', (err && (err.stack || err.message)) || err);
     statsLookBehind = true;
     // With no totals at all the snapshot count is still a true answer: it is
     // exactly what a search can return.
     const fromSnapshot = snapshotAsLibrary(await readLibrarySnapshot(env));
-    const searchable = await readSearchableTotal(env);
-    if (fromSnapshot) return await withSearchableTotal(env, fromSnapshot);
+    const searchable = searchableFromMeta(index);
+    if (fromSnapshot) return await withSearchableTotal(env, fromSnapshot, index);
     return { total_videos: searchable, total_searches: 0, total_clicks: 0 };
   }
 }

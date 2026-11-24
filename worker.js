@@ -1312,6 +1312,7 @@ async function buildIndexSnapshot(env) {
         row.duration || '',
         row.source || '',
         withGenre ? parseGenre(row.genre_json) : null,
+        row.tags || '',
       ]);
     }
     if (batch.length < SNAPSHOT_CHUNK) break;
@@ -1347,7 +1348,7 @@ function searchSnapshot(snapshot, terms, limit, offset) {
   return {
     total,
     videos: page.map((row) => ({
-      u: row[0], t: row[1], d: row[2], th: row[5], du: row[6], s: row[7], c: row[4], g: row[8],
+      u: row[0], t: row[1], d: row[2], th: row[5], du: row[6], s: row[7], c: row[4], g: row[8], tg: row[9] || '',
     })),
   };
 }

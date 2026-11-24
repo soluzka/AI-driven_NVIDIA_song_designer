@@ -1504,10 +1504,12 @@ async function searchIndex(env, url, ctx) {
   // table has never seen - so searching something new leaves the library larger
   // than it was, which is what a discovery tool is for.
   let discovered = 0;
+  let discoverError = '';
   let freshRows = [];
   if (url.searchParams.get('discover') === '1') {
     const found = await discoverVideos(env, query);
     discovered = found.added;
+    if (found.error) discoverError = found.error;
     // In this request's hands already: the search below can return them without
     // waiting for the snapshot to go stale and be rebuilt.
     if (found.rows.length) freshRows = await appendRecentRows(env, found.rows);
@@ -1562,6 +1564,7 @@ async function searchIndex(env, url, ctx) {
     return json({
       query, total: answer.total, library, discovered, videos: answer.videos,
       source: 'snapshot',
+      discover_error: discoverError || undefined,
     });
   }
   if (ctx && typeof ctx.waitUntil === 'function') {
@@ -1663,6 +1666,7 @@ async function searchIndex(env, url, ctx) {
     total: counted ? (Number(counted.n) || 0) : Number(videos.length) + offset,
     library,
     discovered,
+    discover_error: discoverError || undefined,
     videos,
   });
 }
@@ -1680,10 +1684,12 @@ async function discoverVideos(env, query, limit = 20) {
       + '&fields=id,title,url,description,thumbnail_360_url,duration'
       + '&sort=relevance&limit=' + limit;
     const response = await fetch(api, { headers: { accept: 'application/json' } });
-    if (!response.ok) return { added: 0, rows: [] };
+    if (!response.ok) return { added: 0, rows: [], error: 'Dailymotion answered ' + response.status };
     doc = await response.json();
   } catch (err) {
-    return { added: 0, rows: [] };   // discovery failing must never fail the search
+    // Discovery failing must never fail the search, but it must not be silent either:
+    // "added 0" has to mean "nothing was new", not "the write was refused".
+    return { added: 0, rows: [], error: 'Dailymotion: ' + String((err && err.message) || err).slice(0, 150) };
   }
 
   const found = Array.isArray(doc && doc.list) ? doc.list : [];
@@ -1744,7 +1750,7 @@ async function discoverVideos(env, query, limit = 20) {
       if (changes && pending[index]) rows.push(snapshotRow(pending[index]));
     });
   } catch (err) {
-    return { added: 0, rows: [] };
+    return { added: 0, rows: [], error: 'the database refused the insert: ' + String((err && err.message) || err).slice(0, 150) };
   }
   // A discovered video is a video in the library, so it is counted like any other. This
   // path stored rows without ever moving the total, which is why a search that found

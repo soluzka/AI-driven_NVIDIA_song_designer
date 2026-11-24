@@ -1294,15 +1294,20 @@
         // --- Bundled index: used when no backend is reachable (static hosting) ---
         let videoIndex = null;
         let indexStats = null;
-        // Rows in the shipped data/videos.json. The server's counter is seeded once and
-        // only grows with new ingests, so a regenerated export is regularly larger than
-        // it says; the library the page searches is the floor for the number shown.
+        // Rows in the shipped data/videos.json, shown only when no server answers. It is
+        // regularly larger than the server's index, and it must never be used to raise
+        // the server's figure - the summary and the header then disagreed.
         let snapshotVideos = 0;
         let indexRequest = null;
         // True once the counters have come from the server. The bundled snapshot is
         // only a fallback, and its numbers are as old as the last export: once real
         // numbers are on screen, the snapshot must never replace them.
         let liveStats = false;
+        // True once the number on screen came from the server's own index. The export
+        // then must not raise it: data/library.json counts rows this page can only
+        // search when the server is unreachable, and taking the larger of the two made
+        // the header say 8,713 right beside a summary saying 6,526.
+        let searchableStats = false;
 
         function applyLibraryStats(library) {
             if (!library) return false;
@@ -1314,6 +1319,7 @@
                 total_clicks: Number(library.total_clicks) || (indexStats ? indexStats.total_clicks : 0),
             };
             liveStats = true;
+            searchableStats = true;
             try { statsFromSession = false; } catch (err) { /* declared later */ }
             updateStats(indexStats);
             return true;
@@ -1931,6 +1937,9 @@
                     if (found.discovered) {
                         extras.push(`discovery added ${found.discovered} new video${found.discovered === 1 ? '' : 's'}`);
                     }
+                    if (found.seen) {
+                        extras.push(`${found.seen} found on Dailymotion just now, not in the library yet`);
+                    }
                     if (found.total > results.length) {
                         extras.push(`showing the first ${results.length.toLocaleString()} of ${found.total.toLocaleString()}`);
                     }
@@ -1999,15 +2008,18 @@
                         // only holds it once it can be read again, and waiting for
                         // that would hide today's finds.
                         const merged = mergeFound(found.results, extra.videos || []);
-                        found.total = found.total + merged.added;
                         found.results = merged.results;
+                        // These came from this browser's own request to Dailymotion, so
+                        // they are in no library: not in the index, not searchable
+                        // again, not counted by the totals. Adding them to "N matches"
+                        // read "104 matches" beside "Library holds 6,526", and calling
+                        // them discovery "added" said they were stored when they were
+                        // only shown.
+                        found.seen = merged.added;
                         // The library figure is what was stored, not what was seen on
                         // screen: the search's own answer carries the counts after its
                         // discoveries were inserted, so adding the cards here counted
                         // the same videos twice (8,882 shown against 8,804 stored).
-                        if (merged.added) {
-                            found.discovered = (Number(found.discovered) || 0) + merged.added;
-                        }
                         if (found.library) applyLibraryStats(found.library);
                         finish(found);
                     })
@@ -8523,10 +8535,13 @@
         function updateStats(stats) {
             if (!stats) return;
             const format = (value) => (Number(value) || 0).toLocaleString();
-            // Never show fewer videos than this page can actually search. The ingest
-            // counter starts from whatever the library held when it was seeded and then
-            // counts only new rows, so it lags every re-export (8,067 against 8,724).
-            const held = Math.max(Number(stats.total_videos) || 0, snapshotVideos, videoIndex ? videoIndex.length : 0);
+            // The server's number is what a search can return, so it stands as given.
+            // The export only answers when there is no server: it is larger (8,713
+            // against 6,526) because it holds rows the server's index does not, and
+            // flooring the server's figure with it is what made the two disagree.
+            const fromExport = Math.max(snapshotVideos, videoIndex ? videoIndex.length : 0);
+            const reported = Number(stats.total_videos) || 0;
+            const held = searchableStats && reported ? reported : Math.max(reported, fromExport);
             document.getElementById('statVideos').textContent = format(held);
             document.getElementById('statSearches').textContent = format(stats.total_searches);
             document.getElementById('statClicks').textContent = format(stats.total_clicks);

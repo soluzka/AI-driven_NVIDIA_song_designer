@@ -18,7 +18,7 @@
 #   the lyric model here needs the 4.57 line (5.x would pull huggingface-hub 2.x)
 #
 # pip cannot satisfy both, and a clean install stopped with
-# "ResolutionImpossible: The user requested transformers==4.57.6 / ace-step 0.2.0
+# "ResolutionImpossible: The user requested transformers==5.10.1 / ace-step 0.2.0
 # depends on transformers==4.50.0". The environment that works on this machine is
 # ace_step 0.2.0 with transformers 4.57.6, so its pin is the thing left out:
 # install ACE-Step with --no-deps and name its runtime dependencies here instead.
@@ -34,7 +34,7 @@ torchaudio==2.11.0+cu126
 torchvision==0.29.2
 
 # 5.x needs huggingface-hub 2.x, which the ACE install does not use.
-transformers==4.57.6
+transformers==5.10.1
 huggingface-hub==0.36.2
 
 # ACE-Step's own declared dependencies, minus torch/torchaudio/torchvision (pinned

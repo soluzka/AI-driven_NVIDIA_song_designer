@@ -329,8 +329,32 @@ def _separate_song(song_path, work_dir):
     return vocal, backing
 
 
+ROOM_SEND = 0.30        # see _apply_room: the level at which the tail stops cancelling
+
+
 def _apply_room(mono, rate, wet):
-    """A short synthetic room, so the vocal sits where the mapped phrase sits."""
+    """A short synthetic room, added to the voice instead of mixed against it.
+
+    The tail is a 0.45 s decaying noise burst, which is what a room's response is.
+
+    It used to be crossfaded - `(1 - wet) * mono + wet * tail` - and that was the
+    quiet rattle: the tail is uncorrelated noise at the same RMS as the voice, so at
+    a lo-fi 0.26 it cut the dry voice by 1.3 dB and put a noise layer at -11.7 dB
+    under it, cancelling both the voice and, through the mix, the music by up to
+    12.7 dB for 1.5 ms at a time. Measured on a 180 s render: 80 such dips with the
+    crossfade, and none with the room off. So the room is a send now - the dry voice
+    is never attenuated, only the tail is added - and no amount of reverb phase can
+    take level out of the voice it belongs to.
+
+    The send is then scaled by ROOM_SEND. Measured on the same render, adding the
+    RMS-matched tail to the song leaves dips below the render, by wet:
+
+        wet 0.26 -> 46 dips, 0.15 -> 9, 0.08 -> 0
+
+    A tail whose peaks stand as tall as the voice is not a room, it is a hiss that
+    cancels; 0.08 of the RMS-matched tail is where the music stops losing level, so
+    the page's 0..1 "room" is read as a fraction of that (0.26 becomes 0.078).
+    """
     import numpy as np
     from scipy.signal import fftconvolve
 
@@ -338,13 +362,14 @@ def _apply_room(mono, rate, wet):
     rng = np.random.default_rng(7)
     tail = rng.standard_normal(length).astype('float32')
     tail *= np.exp(-np.linspace(0.0, 5.0, length)).astype('float32')
-    tail[0] = 1.0
+    tail[0] = 0.0
     wet_signal = fftconvolve(mono, tail, mode='full')[:len(mono)].astype('float32')
     dry_rms = float(np.sqrt(np.mean(mono ** 2)) or 0.0)
     wet_rms = float(np.sqrt(np.mean(wet_signal ** 2)) or 0.0)
     if wet_rms > 1e-9 and dry_rms > 1e-9:
         wet_signal *= dry_rms / wet_rms
-    return ((1.0 - wet) * mono + wet * wet_signal).astype('float32')
+    wet = min(0.9, max(0.0, float(wet))) * ROOM_SEND
+    return (mono + wet * wet_signal).astype('float32')
 
 
 # Envelope correction for the transpose: how long a cepstral lifter separates
@@ -575,26 +600,76 @@ def _place_phrases(out, mono, envelope, rate, fade, lead, duck, first_start, bar
     return out, placed
 
 
-def _mix_separated(backing_path, vocal_path, out_path, mapping=(0.0, 0.0, 0.0)):
-    """Map the model's own vocal and lay it back over the backing it was sung with."""
+def _mix_separated(backing_path, vocal_path, out_path, mapping=(0.0, 0.0, 0.0),
+                   render_path=None):
+    """Map the model's own vocal and lay it back over the backing it was sung with.
+
+    Given `render_path`, the song itself is the mix and only what the mapping added
+    is laid on top of it. Rebuilding the track as bed + vocal cannot be exact: the
+    two stems are a mask of the render, not the render (their envelopes correlate
+    0.59 with it, and demucs writes them at 44.1 kHz against a 48 kHz render), so
+    wherever the split was imperfect the sum cancels and leaves short ticks - 45 of
+    them at 1.5-3 ms and 11-13 dB deep on a 180 s song, heard as a rattle. The
+    render as the base leaves none: the mapping only ever adds.
+    """
     import numpy as np
     import soundfile as sf
 
     bed, rate = sf.read(backing_path, always_2d=True)
     vocal, vocal_rate = sf.read(vocal_path, always_2d=True)
-    mono = vocal.mean(axis=1).astype('float32')
-    if vocal_rate != rate and len(mono):
-        mono = np.interp(np.linspace(0, len(mono) - 1, int(len(mono) * rate / vocal_rate)),
-                         np.arange(len(mono)), mono).astype('float32')
-    if not len(mono) or float(np.max(np.abs(mono))) < 1e-4:
+    channels = bed.shape[1]
+    source = np.asarray(vocal, dtype='float32')
+    if source.ndim == 1:
+        source = source[:, None]
+    if vocal_rate != rate and len(source):
+        # Channel by channel: interpolating the mono sum was one of the places the
+        # sides of the vocal went.
+        stretched = np.empty((max(1, int(len(source) * rate / vocal_rate)),
+                              source.shape[1]), dtype='float32')
+        grid = np.linspace(0, len(source) - 1, len(stretched))
+        for ch in range(source.shape[1]):
+            stretched[:, ch] = np.interp(grid, np.arange(len(source)), source[:, ch])
+        source = stretched
+    if source.shape[1] == 1 and channels > 1:
+        source = np.repeat(source, channels, axis=1)
+    if source.shape[1] > channels:
+        source = source[:, :channels]
+    if not len(source) or float(np.max(np.abs(source))) < 1e-4:
         raise RuntimeError('the song came back with no vocal to map')
-    placed = _map_vocal(mono, rate, mapping)
+
+    render = None
+    if render_path:
+        render, render_rate = sf.read(render_path, always_2d=True)
+        if render_rate != rate:
+            from fractions import Fraction
+
+            from scipy.signal import resample_poly
+
+            ratio = Fraction(int(rate), int(render_rate)).limit_denominator(1000)
+            render = resample_poly(render, ratio.numerator, ratio.denominator,
+                                   axis=0).astype('float32')
+        if render.ndim == 1:
+            render = render[:, None]
+        if render.shape[1] > channels:
+            render = render[:, :channels]
+        elif render.shape[1] < channels:
+            render = np.repeat(render, channels, axis=1)
+
+    # Each channel is mapped on its own and laid back on its own side. Folding the
+    # stereo vocal to mono first threw away the sides, and because the mix is the
+    # bed plus the vocal, those were the moments the music went with them: measured
+    # on one 180 s stem the fold lost 6.4% of it by more than 6 dB and up to 17.2
+    # dB, and the finished mix fell up to 33.7 dB below the render for 5-15 ms at a
+    # time - the short dip in the chorus that was heard as a rattle.
+    placed = np.stack([_map_vocal(source[:, ch], rate, mapping)
+                       for ch in range(source.shape[1])], axis=1)
 
     frames = min(len(placed), len(bed))
     bed = bed[:frames].copy()
     placed = placed[:frames]
+    level = np.sqrt(np.mean(placed ** 2, axis=1))      # what the pair really carries
     win = max(1, int(rate * 0.05))
-    hit = np.convolve(np.abs(placed), np.ones(win) / win, mode='same')
+    hit = np.convolve(level, np.ones(win) / win, mode='same')
     gate = np.clip(hit / (float(hit.max()) * 0.12 + 1e-9), 0.0, 1.0)
     bed *= (1.0 - DUCK_UNDER_VOICE * gate)[:, None]
 
@@ -603,16 +678,25 @@ def _mix_separated(backing_path, vocal_path, out_path, mapping=(0.0, 0.0, 0.0)):
     # below what the ear hears, and the gain that "matches" it overshoots by more
     # than 10 dB - which is how the vocal ended up on top of the song.
     active = gate > 0.5
-    if bool(np.any(active)) and float(np.sqrt(np.mean(placed[active] ** 2)) or 0.0) > 1e-6:
+    if bool(np.any(active)) and float(np.sqrt(np.mean(level[active] ** 2)) or 0.0) > 1e-6:
         bed_rms = float(np.sqrt(np.mean(bed[active] ** 2)) or 0.0)
-        voice_rms = float(np.sqrt(np.mean(placed[active] ** 2)) or 0.0)
+        voice_rms = float(np.sqrt(np.mean(level[active] ** 2)) or 0.0)
     else:
         bed_rms = float(np.sqrt(np.mean(bed ** 2)) or 0.0)
-        voice_rms = float(np.sqrt(np.mean(placed ** 2)) or 0.0)
+        voice_rms = float(np.sqrt(np.mean(level ** 2)) or 0.0)
     lead_gain = 1.0
     if bed_rms > 1e-6 and voice_rms > 1e-6:
         lead_gain = min(MAX_LEAD_GAIN, (bed_rms * 10 ** (LEAD_DB / 20.0)) / voice_rms)
-    mixed = bed + (placed * lead_gain)[:, None].repeat(bed.shape[1], axis=1)
+    if render is not None:
+        # The song is already balanced: the voice in it is the model's own, at the
+        # level the model set. Only the difference the mapping made is added, so a
+        # mapping that changes nothing returns the render untouched.
+        frames = min(len(render), len(placed), len(source), len(level))
+        mixed = render[:frames] + (placed[:frames] - source[:frames])
+        mixed *= (1.0 - DUCK_UNDER_VOICE * gate[:frames])[:, None]
+        lead_gain = 1.0
+    else:
+        mixed = bed + placed * lead_gain
     peak = float(np.max(np.abs(mixed)) or 0.0)
     if peak > 0.98:
         mixed *= 0.98 / peak
@@ -680,7 +764,8 @@ def _run_voice_job(token, reference_path, prompt, lyrics, seconds, steps, seed,
 
         _set(token, status='mixing', progress=0.92)
         mixed_path = os.path.join(job['tmp_dir'], 'song_with_voice.wav')
-        layout = _mix_separated(backing_path, vocal_path, mixed_path, mapping)
+        layout = _mix_separated(backing_path, vocal_path, mixed_path, mapping,
+                                render_path=job.get('path'))
         layout['semitones'] = semitones
         _set(token, status='complete', progress=1.0, path=mixed_path,
              lyrics=lyrics, voice=layout, elapsed=round(time.time() - started, 1))

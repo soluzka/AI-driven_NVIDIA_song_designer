@@ -309,6 +309,15 @@ keep their weight. It does not lower or raise the music's pitch: the renders sit
 because their bass is written low, which is a question for the prompt and key, not
 for a filter.
 
+A song with a voice is the **render itself** with only the mapping's difference added, not
+the demucs stems re-summed: the stems are a mask of the render (envelopes correlate 0.59,
+and demucs writes 44.1 kHz against a 48 kHz render), so a rebuild cancels wherever the
+split is imperfect - **80 dips up to 12.7 dB deep** at 1.5 ms resolution, heard as a quiet
+rattle or a dip in the chorus. With the render as the base: **1 dip at -6.0 dB**. The
+**room** is now a send that never attenuates the dry voice, at a level measured to stop
+cancelling (0.26 wet left 46 dips, 0.15 left 9, 0.08 left 0; `ROOM_SEND` 0.30 maps the
+page's 0..1 room into that range).
+
 The same write path treats the model's **sub**, which was heard as "a hum like a low
 tuned guitar". It is close to a sine and held most of the song: on a 180 s render the
 bass pitch was 63 Hz with its second harmonic 13.6 dB down, and 20-120 Hz carried 60% of

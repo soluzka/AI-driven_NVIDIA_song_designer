@@ -231,6 +231,30 @@ pair they replaced, and exits nonzero if `_mix_separated` no longer matches the
 arithmetic it checks - which is the signal that the balance has changed and the
 table is no longer describing the service.
 
+The finished song is the **render itself**, not the stems re-summed. Rebuilding it as
+`no_vocals + vocal` cannot be exact - the two stems are a mask of the render rather than
+the render (their envelopes correlate **0.59** with it, and demucs writes them at
+**44.1 kHz** against a 48 kHz render) - so wherever the split is imperfect the sum
+cancels. Measured against the render at 1.5 ms resolution, that was **80 dips** up to
+**12.7 dB** deep; with the render as the base and only the mapping's difference added it
+is **1 dip at -6.0 dB**. The vocal is also mapped per channel rather than folded to mono:
+the fold lost 6.4% of one stem by more than 6 dB, up to 17.2 dB, because the model's
+vocal is wide.
+
+The **room** is a send, and a quieter one. It is a 0.45 s decaying noise tail, RMS-matched
+to the voice; crossfaded as `(1-wet)*dry + wet*tail` it cut the dry voice and cancelled
+against it - at the page's lo-fi 0.26 that was the quiet rattle heard as a dip in the
+chorus. Adding that tail over the song leaves dips below the render by wet:
+
+| wet | dips below the render (1.5 ms, > 6 dB) |
+| --- | --- |
+| 0.26 | 46 |
+| 0.15 | 9 |
+| 0.08 | 0 |
+
+So the dry voice is never attenuated by the room, and the page's 0..1 room is read as a
+fraction of that send (`ROOM_SEND` 0.30: 0.26 becomes 0.078).
+
 The same write path treats the **sub**. It is close to a sine and it held most of the
 song: on a 180 s render the bass pitch was 63 Hz with its second harmonic **13.6 dB**
 down, and **20-120 Hz carried 60% of the power** - heard as a low held tone under the

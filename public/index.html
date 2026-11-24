@@ -1434,6 +1434,9 @@
                 results: unique,
                 total: unique.length + Math.max(0, total - results.length),
                 discovered: first.discovered,
+                // Only the first page asks the Worker to look for new videos, so only
+                // that answer knows whether they could be stored.
+                discoverError: first.discoverError,
                 stats,
             };
         }
@@ -1582,6 +1585,8 @@
                 results,
                 total,
                 discovered: Number(doc.discovered) || 0,
+                // Why the Worker could not store what it found, when it could not.
+                discoverError: String(doc.discover_error || ''),
                 // A database that answers zeros is a database that could not be
                 // read, not an empty library. Taken as real, those zeros wiped the
                 // counters the page had already shown from the bundled snapshot.
@@ -1591,6 +1596,15 @@
                     total_clicks: Number(doc.library.total_clicks) || 0,
                 } : null,
             };
+        }
+
+        // When the free daily allowance is spent, the only thing that changes it is the
+        // reset, so say when that is instead of leaving the number unexplained.
+        function libraryResetNote() {
+            const now = new Date();
+            const reset = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+            const hours = Math.max(1, Math.round((reset - now.getTime()) / 3600000));
+            return `the database's daily limit is spent and resets at 00:00 UTC (in about ${hours}h)`;
         }
 
         function tokenize(text) {
@@ -1938,7 +1952,14 @@
                         extras.push(`discovery added ${found.discovered} new video${found.discovered === 1 ? '' : 's'}`);
                     }
                     if (found.seen) {
-                        extras.push(`${found.seen} found on Dailymotion just now, not in the library yet`);
+                        // A card found a moment ago is not in the library, and there is a
+                        // reason that is worth saying rather than leaving the reader to
+                        // wonder why searching again finds nothing: the database's daily
+                        // allowance is spent, and only its own reset frees it.
+                        const blocked = /daily row|exceeded|limit/i.test(found.discoverError || '');
+                        extras.push(blocked
+                            ? `${found.seen} found on Dailymotion just now, not in the library yet - ${libraryResetNote()}, so nothing can be stored until then`
+                            : `${found.seen} found on Dailymotion just now, not in the library yet`);
                     }
                     if (found.total > results.length) {
                         extras.push(`showing the first ${results.length.toLocaleString()} of ${found.total.toLocaleString()}`);

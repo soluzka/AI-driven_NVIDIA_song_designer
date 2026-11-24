@@ -821,10 +821,10 @@ def _release_lyricist():
 # the bass pitch was 63 Hz with its second harmonic 13.6 dB down, and 20-120 Hz
 # carried 60% of the power. That is heard not as a bass note but as a low, held tone
 # under the whole track - "a hum like a low tuned guitar". Four poles at 40 Hz take
-# 35 Hz down 5.8 dB and leave 60 Hz alone, and the sub band is then kept to a share
-# of the song's power with a shelf at 160 Hz. Measured on that render through the
-# chain below: 20-120 Hz from -2.2 dB (60% of the power) to -4.1 dB (39%), with
-# 120-250 Hz losing 1.9 dB and 250 Hz-2 kHz 2.0 dB.
+# 35 Hz down 5.8 dB and leave 60 Hz alone, and the sub band is then kept to a quarter
+# of the song's power (-6.0 dB) with a shelf at 160 Hz, stepped and re-measured.
+# Measured with the chain below: 20-120 Hz went from 69% of the power to 27% on that
+# render, and from 61% to 26% on its mix, with 80-120 Hz moving 0.5-0.6 dB.
 SUB_HP_HZ = 40.0
 SUB_SHARE_MAX_DB = -6.0      # the most of the song the sub band may hold (25%)
 SUB_SHELF_HZ = 160.0

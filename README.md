@@ -314,8 +314,12 @@ tuned guitar". It is close to a sine and held most of the song: on a 180 s rende
 bass pitch was 63 Hz with its second harmonic 13.6 dB down, and 20-120 Hz carried 60% of
 the power. Nothing under 6 kHz is a fixed tone - the stillest 1/24-octave band swings
 19.7 dB - so there is nothing to notch; the sub is the bass itself. `_fix_low_end` now
-high-passes at 40 Hz (4 poles) and holds 20-120 Hz to a share of the song (-4.5 dB,
-about 35%) with a shelf at 160 Hz, measured on every render and logged as `sub check:`.
+high-passes at 40 Hz (4 poles) and holds 20-120 Hz to **-6.0 dB** of the song, a quarter
+of its power, with a shelf at 160 Hz that is stepped and re-measured (a shelf at 160 Hz
+does not reach its full depth at 60-120 Hz, and one pass of -2.4 dB moved the share only
+1.4 dB). Measured: **69% of the power to 27%** on the render, **61% to 26%** on its mix,
+with 80-120 Hz moving 0.5-0.6 dB. Every render logs it as `sub check: 20-120 Hz held ...
+now ... after ... dB under 160 Hz`.
 
 #### The tail
 

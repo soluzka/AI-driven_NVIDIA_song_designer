@@ -235,10 +235,20 @@ The same write path treats the **sub**. It is close to a sine and it held most o
 song: on a 180 s render the bass pitch was 63 Hz with its second harmonic **13.6 dB**
 down, and **20-120 Hz carried 60% of the power** - heard as a low held tone under the
 track rather than as a note. `_fix_low_end` high-passes at **40 Hz** (4 poles: 35 Hz down
-5.8 dB, 60 Hz untouched) and then holds 20-120 Hz to a share of the song's own power
-(**-4.5 dB**, about 35%), the difference taken off with a shelf at 160 Hz and limited to
-6.5 dB. The share is measured on each render and logged as `sub check: 20-120 Hz held
-... shelf ... dB under 160 Hz`; a render that is not sub-heavy is left alone. The
+5.8 dB, 60 Hz untouched, which took 20-32 Hz from -16.2 dB of the song to -31.6) and
+then holds 20-120 Hz to **-6.0 dB**, a quarter of the song's power, with a shelf at
+160 Hz. The shelf is stepped and **re-measured** rather than trusted: a shelf at 160 Hz
+does not deliver its full depth at 60-120 Hz, and the first pass of -2.4 dB moved the
+share only 1.4 dB. The trim is limited to 8 dB, and a render that is not sub-heavy is
+left alone. Measured with the shipped helper (`build/measure/test_sub_fix.py`):
+
+| file | 20-120 Hz before | after | shelf | 80-120 Hz | 120-250 Hz |
+| --- | --- | --- | --- | --- | --- |
+| the render (`last_song.wav`) | 69% of the power | **27%** | -8.0 dB | -0.5 dB | +3.8 dB as a share |
+| its mix (`song_with_voice.wav`) | 61% | **26%** | -6.3 dB | -0.6 dB | +2.9 dB as a share |
+
+Every render logs the numbers it measured - `sub check: 20-120 Hz held -2.1 dB of the
+song (61%), now -5.7 dB (27%) after -8.0 dB under 160 Hz`. The
 measurement that decided this: nothing under 6 kHz is a fixed tone - the stillest
 1/24-octave band swings **19.7 dB** across the song - so there is nothing to notch, and
 the sub is the bass itself, near-sine and 13.6 dB above its own second harmonic.

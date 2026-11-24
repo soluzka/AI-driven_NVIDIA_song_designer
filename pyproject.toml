@@ -30,8 +30,11 @@ dependencies = [
     "scipy>=1.14.0",
 ]
 
+# Vercel's Python runtime wants "module:object", not a file path. Every service in
+# vercel.json exposes `app` from an app.py at its own root, so this one line names
+# the same object for all four.
 [tool.vercel]
-entrypoint = "app.py"
+entrypoint = "app:app"
 
 [tool.setuptools]
 include-package-data = true

@@ -1314,6 +1314,71 @@ async function withSearchableTotal(env, library) {
   return library;
 }
 
+// Videos discovered since the snapshot was built, stored beside it. A discovery
+// search knows its new rows without reading anything, so it returns them at once;
+// this overlay makes them visible to every later search, and the next rebuild folds
+// them into the snapshot and clears it. Small enough to read on every search.
+const RECENT_KEY = 'index_recent';
+const RECENT_MAX = 2000;
+
+function snapshotRow(row) {
+  const title = row.title || '';
+  const description = row.description || '';
+  const tags = row.tags || '';
+  return [
+    row.url || '', title, description,
+    (title + ' ' + description + ' ' + tags).toLowerCase(),
+    Number(row.click_count) || 0,
+    row.thumbnail || '', row.duration || '', row.source || '',
+    row.genre || null, tags,
+  ];
+}
+
+async function readRecentRows(env) {
+  if (!env.STATS) return [];
+  try {
+    const doc = await env.STATS.get(RECENT_KEY, 'json');
+    if (!doc || !Array.isArray(doc.rows)) return [];
+    // Past the age at which the snapshot is not trusted either, these are gone with it.
+    if (Date.now() - Number(doc.at || 0) > SNAPSHOT_MAX_AGE_MS) return [];
+    return doc.rows;
+  } catch (err) {
+    return [];
+  }
+}
+
+async function appendRecentRows(env, rows) {
+  if (!env.STATS || !rows.length) return rows;
+  try {
+    const existing = await readRecentRows(env);
+    const have = new Set(existing.map((row) => row[0]));
+    const added = rows.filter((row) => row[0] && !have.has(row[0]));
+    if (!added.length) return existing;
+    const merged = existing.concat(added).slice(-RECENT_MAX);
+    await env.STATS.put(RECENT_KEY, JSON.stringify({ at: Date.now(), rows: merged }));
+    return merged;
+  } catch (err) {
+    return rows;   // this search can still return them, even if KV refused the write
+  }
+}
+
+async function clearRecentRows(env) {
+  try {
+    if (env.STATS) await env.STATS.delete(RECENT_KEY);
+  } catch (err) {
+    // A leftover overlay expires on its own; never fail over it.
+  }
+}
+
+// The snapshot's order, plus anything not in it yet. Fresh rows sort last, which is
+// where the SQL puts a row with no clicks and no relevance score.
+function withRecentRows(rows, recent) {
+  if (!recent || !recent.length) return rows;
+  const have = new Set(rows.map((row) => row[0]));
+  const extra = recent.filter((row) => row[0] && !have.has(row[0]));
+  return extra.length ? rows.concat(extra) : rows;
+}
+
 async function buildIndexSnapshot(env) {
   if (!env.DB || !env.STATS) return null;
   const rows = [];
@@ -1339,32 +1404,35 @@ async function buildIndexSnapshot(env) {
       // Arrays, not objects: the keys would be repeated 12k times. The haystack is
       // lowered once here so a search is includes() instead of toLowerCase() on
       // every row of every request.
-      rows.push([
-        row.url || '',
-        row.title || '',
-        row.description || '',
-        ((row.title || '') + ' ' + (row.description || '') + ' ' + (row.tags || '')).toLowerCase(),
-        Number(row.click_count) || 0,
-        row.thumbnail || '',
-        row.duration || '',
-        row.source || '',
-        withGenre ? parseGenre(row.genre_json) : null,
-        row.tags || '',
-      ]);
+      rows.push(snapshotRow({
+        url: row.url,
+        title: row.title,
+        description: row.description,
+        thumbnail: row.thumbnail,
+        duration: row.duration,
+        source: row.source,
+        click_count: row.click_count,
+        tags: row.tags,
+        genre: withGenre ? parseGenre(row.genre_json) : null,
+      }));
     }
     if (batch.length < SNAPSHOT_CHUNK) break;
     if (rows.length > 40000) break;   // a runaway table must not exhaust the isolate
   }
-  const doc = { at: Date.now(), count: rows.length, rows };
+  // Anything discovered while the database was still being read belongs in this
+  // snapshot too, or clearing the overlay would hide it until the next rebuild.
+  const rebuilt = withRecentRows(rows, await readRecentRows(env));
+  const doc = { at: Date.now(), count: rebuilt.length, rows: rebuilt };
   const text = JSON.stringify(doc);
   if (text.length > SNAPSHOT_MAX_BYTES) {
     console.error('[index] snapshot would be too large for KV:', text.length);
     return null;
   }
   await env.STATS.put(SNAPSHOT_KEY, text);
-  await noteSearchableTotal(env, rows.length);
-  console.log('[index] snapshot rebuilt:', rows.length, 'rows,', text.length, 'bytes');
-  return { at: doc.at, count: rows.length, bytes: text.length };
+  await clearRecentRows(env);
+  await noteSearchableTotal(env, rebuilt.length);
+  console.log('[index] snapshot rebuilt:', rebuilt.length, 'rows,', text.length, 'bytes');
+  return { at: doc.at, count: rebuilt.length, bytes: text.length };
 }
 
 function searchSnapshot(snapshot, terms, limit, offset) {
@@ -1436,8 +1504,13 @@ async function searchIndex(env, url, ctx) {
   // table has never seen - so searching something new leaves the library larger
   // than it was, which is what a discovery tool is for.
   let discovered = 0;
+  let freshRows = [];
   if (url.searchParams.get('discover') === '1') {
-    discovered = await discoverVideos(env, query);
+    const found = await discoverVideos(env, query);
+    discovered = found.added;
+    // In this request's hands already: the search below can return them without
+    // waiting for the snapshot to go stale and be rebuilt.
+    if (found.rows.length) freshRows = await appendRecentRows(env, found.rows);
   }
   const library = await readStats(env);
 
@@ -1473,10 +1546,12 @@ async function searchIndex(env, url, ctx) {
     }
     // Keep the counter equal to what this path can return, even when the snapshot
     // was written by something that did not record its size.
-    if ((await readSearchableTotal(env)) !== snapshot.rows.length) {
-      await noteSearchableTotal(env, snapshot.rows.length);
+    const recent = freshRows.length ? freshRows : await readRecentRows(env);
+    const rows = withRecentRows(snapshot.rows, recent);
+    if ((await readSearchableTotal(env)) !== rows.length) {
+      await noteSearchableTotal(env, rows.length);
     }
-    const answer = searchSnapshot(snapshot, terms, limit, offset);
+    const answer = searchSnapshot({ rows }, terms, limit, offset);
     if (logging) {
       try {
         await env.DB.prepare(
@@ -1605,16 +1680,19 @@ async function discoverVideos(env, query, limit = 20) {
       + '&fields=id,title,url,description,thumbnail_360_url,duration'
       + '&sort=relevance&limit=' + limit;
     const response = await fetch(api, { headers: { accept: 'application/json' } });
-    if (!response.ok) return 0;
+    if (!response.ok) return { added: 0, rows: [] };
     doc = await response.json();
   } catch (err) {
-    return 0;   // discovery failing must never fail the search
+    return { added: 0, rows: [] };   // discovery failing must never fail the search
   }
 
   const found = Array.isArray(doc && doc.list) ? doc.list : [];
-  if (!found.length) return 0;
+  if (!found.length) return { added: 0, rows: [] };
 
   const statements = [];
+  // Same order as statements, so the rows INSERT actually wrote can be handed back
+  // to the search that is running right now.
+  const pending = [];
   const seen = new Set();
   // A video the shipped index already lists is already in the library. Storing it again
   // would count it twice in the total, which is what made the figure 8,882 against 8,804.
@@ -1625,6 +1703,17 @@ async function discoverVideos(env, query, limit = 20) {
     if (!link || !title || seen.has(link)) continue;
     if (shipped.has(videoKey(link))) continue;
     seen.add(link);
+    const stored = {
+      url: link,
+      title: tidyText(title).slice(0, 300),
+      description: tidyText(row.description).slice(0, 2000),
+      thumbnail: String(row.thumbnail_360_url || ''),
+      duration: formatSeconds(row.duration),
+      source: 'Dailymotion',
+      click_count: 0,
+      tags: '',
+    };
+    pending.push(stored);
     statements.push(
       env.DB.prepare(
         'INSERT OR IGNORE INTO videos '
@@ -1632,33 +1721,36 @@ async function discoverVideos(env, query, limit = 20) {
         + ' click_count, relevance_score, tags) '
         + "VALUES (?, ?, ?, ?, ?, 'Dailymotion', 'Dailymotion', ?, 0, 0, '')"
       ).bind(
-        link,
-        tidyText(title).slice(0, 300),
-        tidyText(row.description).slice(0, 2000),
-        String(row.thumbnail_360_url || ''),
-        formatSeconds(row.duration),
+        stored.url,
+        stored.title,
+        stored.description,
+        stored.thumbnail,
+        stored.duration,
         Date.now() / 1000
       )
     );
   }
-  if (!statements.length) return 0;
+  if (!statements.length) return { added: 0, rows: [] };
 
   // meta.changes counts the rows INSERT OR IGNORE actually wrote: a video the
   // library already had is ignored and not counted as new.
   let added = 0;
+  const rows = [];
   try {
     const results = await env.DB.batch(statements);
-    for (const result of results) {
-      added += Number((result.meta && result.meta.changes) || 0);
-    }
+    results.forEach((result, index) => {
+      const changes = Number((result.meta && result.meta.changes) || 0);
+      added += changes;
+      if (changes && pending[index]) rows.push(snapshotRow(pending[index]));
+    });
   } catch (err) {
-    return 0;
+    return { added: 0, rows: [] };
   }
   // A discovered video is a video in the library, so it is counted like any other. This
   // path stored rows without ever moving the total, which is why a search that found
   // twenty new videos could leave the library figure exactly where it was.
   if (added) await bumpVideoTotal(env, added);
-  return added;
+  return { added, rows };
 }
 
 function formatSeconds(value) {

@@ -1236,11 +1236,11 @@ async function searchIndex(env, url) {
     // The empty query is the page's counter poll: it says whether the database can
     // be read as well as what the totals are, so the page can explain itself
     // instead of silently serving the export's older figures.
-    const problem = await d1Problem(env);
+    const library = await readStats(env);
     return json({
-      query: '', total: 0, library: await readStats(env), discovered: 0, videos: [],
-      readable: !problem,
-      error: problem || undefined,
+      query: '', total: 0, library, discovered: 0, videos: [],
+      readable: !statsLookBehind,
+      error: statsLookBehind ? 'the library total is behind the last one read' : undefined,
     });
   }
 
@@ -1939,29 +1939,40 @@ async function d1Problem(env) {
   }
 }
 
+// True when the live count is behind the last one this Worker managed to read: the
+// database is answering from something stale (a spent allowance makes its reads
+// fail, and the helpers then fall back to the export's 8,724). A probe cannot tell:
+// a one-row SELECT still answers at the quota, only a real scan fails.
+let statsLookBehind = false;
+
 async function readStats(env) {
-  // Asked first, because the helpers below swallow a failed read and happily
-  // answer with the export's 8,724: that is how the page lost the real totals.
-  const problem = await d1Problem(env);
   try {
     const live = await readStatsUnsafe(env);
-    if (!problem && Number(live.total_videos)) {
-      await saveLibrarySnapshot(env, live);
+    const fromSnapshot = snapshotAsLibrary(await readLibrarySnapshot(env));
+    if (!fromSnapshot) {
+      statsLookBehind = false;
+      if (Number(live.total_videos)) await saveLibrarySnapshot(env, live);
       return live;
     }
-    const fromSnapshot = snapshotAsLibrary(await readLibrarySnapshot(env));
-    if (fromSnapshot) {
-      console.error('[stats] database unreadable, answering from the last snapshot:', problem || 'no live totals');
-      // Never lower a number the page may already be showing.
-      return {
-        total_videos: Math.max(fromSnapshot.total_videos, Number(live.total_videos) || 0),
-        total_searches: Math.max(fromSnapshot.total_searches, Number(live.total_searches) || 0),
-        total_clicks: Math.max(fromSnapshot.total_clicks, Number(live.total_clicks) || 0),
-      };
+    const behind = (Number(live.total_videos) || 0) < fromSnapshot.total_videos;
+    statsLookBehind = behind;
+    // Never lower a number that is already on screen: the snapshot holds the last
+    // totals a search actually read, and the counters only ever grow.
+    const merged = {
+      total_videos: Math.max(fromSnapshot.total_videos, Number(live.total_videos) || 0),
+      total_searches: Math.max(fromSnapshot.total_searches, Number(live.total_searches) || 0),
+      total_clicks: Math.max(fromSnapshot.total_clicks, Number(live.total_clicks) || 0),
+    };
+    if (behind) {
+      console.error('[stats] live total is behind the last snapshot:', live.total_videos,
+        'vs', fromSnapshot.total_videos, '- answering with the snapshot');
+    } else {
+      await saveLibrarySnapshot(env, merged);
     }
-    return live;
+    return merged;
   } catch (err) {
     console.error('[stats] readStats failed:', (err && (err.stack || err.message)) || err);
+    statsLookBehind = true;
     const fromSnapshot = snapshotAsLibrary(await readLibrarySnapshot(env));
     return fromSnapshot || { total_videos: 0, total_searches: 0, total_clicks: 0 };
   }

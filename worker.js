@@ -1563,47 +1563,69 @@ async function buildIndexSnapshot(env, options = {}) {
     return { at: doc.at, count: merged.length, added: grown.added, bytes: text.length, incremental: true };
   }
 
-  const rows = [];
+  // Ordered by id, not by clicks, and sorted here afterwards. EXPLAIN QUERY PLAN
+  // says what the difference is: ordering by click_count makes each chunk
+  // `SCAN videos` + `USE TEMP B-TREE FOR ORDER BY`, so six chunks read the table six
+  // times (~71k rows). An id range is `SEARCH videos USING INTEGER PRIMARY KEY`, so
+  // the whole pass reads the table once (~12k rows) and the sort is local.
+  const collected = [];   // [clicks, relevance, id, row]
   const base = SNAPSHOT_COLUMNS;
-  const tail = ' FROM videos WHERE ' + videoHostClause()
-    + ' ORDER BY click_count DESC, relevance_score DESC, id DESC LIMIT ? OFFSET ?';
+  const tail = ' FROM videos WHERE id > ? AND id <= ? AND ' + videoHostClause()
+    + ' ORDER BY id LIMIT ' + SNAPSHOT_CHUNK;
   let lastId = 0;
   // genre_json is the one column a database older than the genre model does not
   // have; without this the whole rebuild would fail on such a table.
   let withGenre = true;
-  for (let offset = 0; ; offset += SNAPSHOT_CHUNK) {
+  let from = 0;
+  let quiet = 0;          // consecutive ranges with no rows: ids are not dense
+  while (from < 2000000) {
+    const to = from + SNAPSHOT_CHUNK;
     let batch;
     try {
       const answer = await env.DB.prepare('SELECT ' + base + (withGenre ? ', genre_json' : '') + tail)
-        .bind(SNAPSHOT_CHUNK, offset).all();
+        .bind(from, to).all();
       batch = answer.results || [];
     } catch (err) {
       if (!withGenre) throw err;
       withGenre = false;
-      const answer = await env.DB.prepare('SELECT ' + base + tail).bind(SNAPSHOT_CHUNK, offset).all();
+      const answer = await env.DB.prepare('SELECT ' + base + tail).bind(from, to).all();
       batch = answer.results || [];
     }
+    from = to;
+    if (!batch.length) {
+      quiet += 1;
+      if (quiet >= 2) break;   // two empty ranges in a row is the end of the table
+      continue;
+    }
+    quiet = 0;
     for (const row of batch) {
       const id = Number(row.id) || 0;
       if (id > lastId) lastId = id;
       // Arrays, not objects: the keys would be repeated 12k times. The haystack is
       // lowered once here so a search is includes() instead of toLowerCase() on
       // every row of every request.
-      rows.push(snapshotRow({
-        url: row.url,
-        title: row.title,
-        description: row.description,
-        thumbnail: row.thumbnail,
-        duration: row.duration,
-        source: row.source,
-        click_count: row.click_count,
-        tags: row.tags,
-        genre: withGenre ? parseGenre(row.genre_json) : null,
-      }));
+      collected.push([
+        Number(row.click_count) || 0,
+        Number(row.relevance_score) || 0,
+        id,
+        snapshotRow({
+          url: row.url,
+          title: row.title,
+          description: row.description,
+          thumbnail: row.thumbnail,
+          duration: row.duration,
+          source: row.source,
+          click_count: row.click_count,
+          tags: row.tags,
+          genre: withGenre ? parseGenre(row.genre_json) : null,
+        }),
+      ]);
     }
-    if (batch.length < SNAPSHOT_CHUNK) break;
-    if (rows.length > 40000) break;   // a runaway table must not exhaust the isolate
+    if (collected.length > 40000) break;   // a runaway table must not exhaust the isolate
   }
+  // The order the SQL used to produce: most clicked first, then relevance, then newest.
+  collected.sort((a, b) => (b[0] - a[0]) || (b[1] - a[1]) || (b[2] - a[2]));
+  const rows = collected.map((entry) => entry[3]);
   // Anything discovered while the database was still being read belongs in this
   // snapshot too, or clearing the overlay would hide it until the next rebuild.
   const rebuilt = withRecentRows(rows, await readRecentRows(env));

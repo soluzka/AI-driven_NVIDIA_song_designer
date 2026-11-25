@@ -2285,109 +2285,11 @@
             resultsContainer.appendChild(card);
         }
 
-        // The library's own genres came from a model that has only ever seen a few
-        // hundred of its rows, and listings carry none, so most cards had nothing to
-        // show. This names a genre from the listing's own words, with the word it used
-        // as the evidence - beside a real genre it is never asked.
-        const GENRE_RULES = [
-            { genre: 'lo-fi', words: ['lofi', 'lo-fi', 'chillhop', 'jazzhop', 'study beats', 'lofi hip hop'] },
-            { genre: 'ambient / chill', words: ['ambient', 'chillout', 'chill out', 'downtempo', 'new age', 'drone music', 'meditation', 'sleep music', 'relaxing music', 'rain sounds', 'white noise', 'asmr'] },
-            // The bare words are too eager ("rock climbing", "soul food", "Monday blues"),
-            // so the risky ones only count when the listing puts them with music.
-            { genre: 'jazz / soul / funk', words: ['jazz', 'bebop', 'bossa nova', 'swing', 'soul music', 'soul singer', 'neo soul', 'motown', 'funk music', 'funk band', 'boogie'] },
-            { genre: 'blues', words: ['blues music', 'blues guitar', 'blues band', 'delta blues', 'chicago blues', 'boogie woogie'] },
-            { genre: 'rock / metal', words: ['rock music', 'rock band', 'rock song', 'rock concert', 'classic rock', 'hard rock', 'indie rock', 'punk rock', 'alternative rock', 'post-rock', 'shoegaze', 'grunge', 'emo', 'heavy metal', 'metal band', 'death metal', 'black metal', 'metalcore', 'djent'] },
-            { genre: 'punk', words: ['punk band', 'punk song', 'hardcore punk', 'pop punk'] },
-            { genre: 'hip hop', words: ['hip hop', 'hip-hop', 'rap', 'freestyle', 'boom bap', 'grime', 'rap beat'] },
-            { genre: 'trap', words: ['trap beat', 'trap music', 'trap remix', 'trap instrumental', 'drill beat'] },
-            { genre: 'r&b', words: ['r&b', 'rnb', 'rhythm and blues', 'slow jam'] },
-            { genre: 'gospel', words: ['gospel', 'worship music', 'choir', 'hymn'] },
-            { genre: 'dubstep', words: ['dubstep', 'riddim', 'brostep', 'bass music'] },
-            { genre: 'house', words: ['house music', 'deep house', 'tech house', 'afro house', 'progressive house', 'acid house', 'melodic house'] },
-            { genre: 'techno', words: ['techno', 'minimal techno', 'hard techno'] },
-            { genre: 'trance', words: ['trance', 'psytrance', 'uplifting trance'] },
-            { genre: 'drum and bass', words: ['drum and bass', 'drum & bass', 'dnb', 'jungle', 'liquid dnb'] },
-            { genre: 'edm', words: ['edm', 'electro', 'dance music', 'dj set', 'festival set', 'future bass', 'hardstyle', 'big room'] },
-            { genre: 'disco', words: ['disco', 'nu disco', 'italo disco'] },
-            { genre: 'afrobeat', words: ['afrobeat', 'afrobeats', 'amapiano', 'highlife', 'soukous', 'kizomba'] },
-            { genre: 'latin', words: ['latin music', 'musica latina', 'salsa', 'bachata', 'reggaeton', 'cumbia', 'merengue', 'tango', 'bolero'] },
-            { genre: 'reggae', words: ['reggae', 'dancehall', 'ska', 'roots reggae'] },
-            { genre: 'country', words: ['country music', 'country song', 'bluegrass', 'honky tonk', 'outlaw country'] },
-            { genre: 'folk', words: ['folk', 'celtic', 'singer-songwriter', 'acoustic cover', 'americana', 'irish trad'] },
-            { genre: 'classical', words: ['classical', 'orchestra', 'orchestral', 'symphony', 'concerto', 'sonata', 'baroque', 'opera', 'chamber music', 'string quartet', 'choral'] },
-            { genre: 'pop', words: ['pop song', 'pop music', 'pop hit', 'top 40', 'synth pop', 'city pop', 'indie pop', 'dance pop', 'j-pop'] },
-            { genre: 'k-pop', words: ['kpop', 'k-pop'] },
-            { genre: 'bollywood / desi', words: ['bollywood', 'hindi song', 'punjabi', 'bhangra', 'filmi'] },
-            { genre: 'arabic / oriental', words: ['arabic music', 'arabic song', 'oriental', 'maqam'] },
-            { genre: 'soundtrack / score', words: ['soundtrack', 'ost', 'film score', 'game music', 'cinematic', 'trailer music'] },
-            { genre: 'chiptune', words: ['chiptune', '8-bit music', 'retro game music'] },
-            { genre: 'vaporwave', words: ['vaporwave', 'synthwave', 'retrowave'] },
-            { genre: 'experimental', words: ['experimental', 'avant-garde', 'noise music', 'idm', 'glitch', 'breakcore', 'industrial music'] },
-            { genre: 'instrumental', words: ['instrumental', 'karaoke', 'backing track', 'piano cover', 'guitar cover', 'violin', 'cello', 'saxophone', 'flute', 'kalimba', 'ukulele', 'harmonica', 'accordion', 'sitar', 'tabla', 'fingerstyle', 'a cappella', 'acapella'] },
-            { genre: 'music (unspecified)', words: ['music video', 'official video', 'lyric video', 'official audio', 'remix', 'album', 'single'] },
-        ];
-
-        // What the video is, for the many rows that are not music at all. A separate
-        // list rather than a list of names checked later: the kind belongs to the rule,
-        // and is written into the row so no reader needs to know the vocabulary.
-        const CONTENT_RULES = [
-            { genre: 'tutorial / how-to', words: ['tutorial', 'how to', 'lesson', 'step by step', 'diy', 'repair', 'maintenance', 'restoration', 'guide'] },
-            { genre: 'documentary', words: ['documentary', 'the story of', 'history of', 'explained'] },
-            { genre: 'gameplay', words: ['gameplay', 'walkthrough', "let's play", 'speedrun', 'minecraft', 'fortnite', 'gta'] },
-            { genre: 'film / trailer', words: ['trailer', 'teaser', 'movie clip', 'behind the scenes', 'short film'] },
-            { genre: 'comedy', words: ['comedy', 'funny', 'prank', 'stand-up', 'meme', 'parody'] },
-            { genre: 'news / politics', words: ['news', 'breaking', 'press conference', 'debate', 'interview'] },
-            { genre: 'sports / fitness', words: ['highlights', 'goals', 'match', 'workout', 'fitness', 'gym', 'training'] },
-            { genre: 'cooking', words: ['recipe', 'cooking', 'baking', 'kitchen', 'food'] },
-            { genre: 'tech / review', words: ['review', 'unboxing', 'benchmark', 'gadget', 'smartphone', 'laptop', 'software'] },
-            { genre: 'education / science', words: ['science', 'physics', 'math', 'chemistry', 'lecture', 'biology', 'space'] },
-            { genre: 'travel / nature', words: ['travel', 'vlog', 'nature', 'drone footage', 'hiking', 'city tour'] },
-            { genre: 'automotive', words: ['car', 'engine', 'motorcycle', 'drift', 'tractor'] },
-            { genre: 'podcast / talk', words: ['podcast', 'talk show', 'q&a'] },
-        ];
-
-        // Whole words only: "rock" in "rock climbing" and "trap" in "mouse trap" are
-        // not genres, and the chip must not pretend to know more than the words do.
-        // An optional plural so "rock songs" and "pop hits" still count.
-        function says(text, word) {
-            const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            return new RegExp('(^|[^a-z0-9])' + escaped + '(e?s)?($|[^a-z0-9])').test(text);
-        }
-
-        function inferGenre(row) {
-            if (!row) return null;
-            const title = String(row.title || '').toLowerCase();
-            const hay = title + ' ' + String(row.description || '').toLowerCase()
-                + ' ' + String(row.tags || '').toLowerCase();
-            let best = null;
-            // Music first, so a listing that names both a scene and a format keeps the
-            // scene; the kind travels with the rule, never with its name.
-            const consider = (rules, kind) => {
-                rules.forEach(rule => {
-                    const hits = rule.words.filter(word => says(hay, word));
-                    if (!hits.length) return;
-                    // Named in the title is stronger evidence than mentioned in a
-                    // description, and more matching words is stronger still.
-                    const named = rule.words.some(word => says(title, word));
-                    const confidence = (named ? 0.6 : 0.5) + Math.min(0.2, 0.1 * (hits.length - 1));
-                    if (!best || confidence > best.confidence) best = { rule, hits, confidence, kind };
-                });
-            };
-            consider(GENRE_RULES, 'music');
-            consider(CONTENT_RULES, 'content');
-            if (!best) return null;
-            const content = best.kind === 'content';
-            return {
-                genre: best.rule.genre,
-                kind: best.kind,
-                confidence: Math.min(0.9, best.confidence),
-                evidence: [{
-                    question: content ? 'What does the listing say this is?' : 'Does the listing name the genre?',
-                    answer: `mentions "${best.hits[0]}"`,
-                }],
-                alternatives: [],
-            };
-        }
+        // The page does not name a genre of its own. The index stores one on every row
+        // it can (with its kind, and the words it came from), and a second copy of the
+        // rules here could only disagree with it - measured across 510 cards in five
+        // searches, this fallback added no chip at all. A card with no stored genre
+        // shows none rather than guessing one.
 
         // The genre line: what the model concluded and how decisive the evidence
         // was. "why?" opens the answers it used, so the guess can be checked.
@@ -7191,9 +7093,9 @@
             const scoreHtml = score > 0
                 ? `<div class="relevance-score">Relevance: ${(score * 100).toFixed(0)}%</div>` : '';
 
-            // A genre the index already holds wins; otherwise the listing's own words
-            // name one, so the line is there on every card it can honestly fill.
-            const genreHtml = renderGenre(result.genre || inferGenre(result));
+            // Only a genre the index stores. Guessing one here from the words was a
+            // second copy of the worker's rules that could disagree with them.
+            const genreHtml = renderGenre(result.genre);
 
             // Built once per card and kept off the DOM until the panel is opened:
             // a few hundred documents are not worth rendering up front. A remix

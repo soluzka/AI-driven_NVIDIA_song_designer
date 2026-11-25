@@ -1896,6 +1896,9 @@ async function searchIndex(env, url, ctx, knownMeta) {
     if (searchableFromMeta(meta) !== rows.length) {
       await noteSearchableTotal(env, rows.length);
     }
+    // The figure beside "matches" is what a search can return, so it counts the
+    // overlay rows this search can already answer with.
+    if (rows.length) library.total_videos = rows.length;
     // Clicks since the last build, so a video people are clicking is where it belongs.
     const answer = searchSnapshot({ rows }, terms, limit, offset, clickBoostsFromMeta(meta));
     if (logging) {
@@ -2205,12 +2208,18 @@ async function ingestVideos(env, request) {
   }
 
   const body = await request.json().catch(() => null);
-  const list = Array.isArray(body && body.videos) ? body.videos.slice(0, 40) : [];
+  // A search posts what every listing gave it - forty from the local service and forty
+  // from Dailymotion is normal - and a cap of forty threw half of them away without
+  // saying so.
+  const list = Array.isArray(body && body.videos) ? body.videos.slice(0, 200) : [];
   if (!list.length) {
     return json({ error: 'No videos were given.' }, 400);
   }
 
   const statements = [];
+  // Same order as statements: the rows the INSERT actually wrote are the ones that
+  // belong in the overlay below.
+  const pending = [];
   const seen = new Set();
   const shipped = await shippedUrlKeys(env);
   for (const video of list) {
@@ -2226,6 +2235,16 @@ async function ingestVideos(env, request) {
     if (shipped.has(videoKey(link))) continue;
     seen.add(link);
     const source = String((video.source) || 'YouTube').slice(0, 40);
+    pending.push({
+      url: link,
+      title: tidyText(title).slice(0, 300),
+      description: tidyText(video.description).slice(0, 2000),
+      thumbnail: String(video.thumbnail || ''),
+      duration: String(video.duration || 'Unknown'),
+      source,
+      click_count: 0,
+      tags: '',
+    });
     statements.push(
       env.DB.prepare(
         'INSERT OR IGNORE INTO videos '
@@ -2250,8 +2269,18 @@ async function ingestVideos(env, request) {
   let added = 0;
   try {
     const results = await env.DB.batch(statements);
-    for (const result of results) added += Number((result.meta && result.meta.changes) || 0);
+    const stored = [];
+    results.forEach((result, index) => {
+      const changes = Number((result.meta && result.meta.changes) || 0);
+      added += changes;
+      if (changes && pending[index]) stored.push(snapshotRow(pending[index]));
+    });
     if (added) await bumpVideoTotal(env, added);
+    // Writing the row is only half of storing it. A search reads the snapshot and the
+    // overlay beside it, never the table, so without this a stored video stayed
+    // unsearchable and uncounted until the next rebuild - which is exactly how a search
+    // could show eighty listings and the next search still find two.
+    if (stored.length) await appendRecentRows(env, stored);
   } catch (err) {
     // The reason is useful: a full disk, a locked table and an exhausted daily
     // limit all look identical from the page otherwise.

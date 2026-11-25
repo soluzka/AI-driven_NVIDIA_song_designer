@@ -1948,8 +1948,13 @@
                 const finish = (found) => {
                     const results = found.results;
                     const extras = [];
-                    if (found.discovered) {
-                        extras.push(`discovery added ${found.discovered} new video${found.discovered === 1 ? '' : 's'}`);
+                    // The Worker's own discovery is not the only thing that stores: the
+                    // page's listing call posts what it found first, so the Worker finds
+                    // those already in the table and honestly reports zero. Counting only
+                    // its figure said "nothing was added" for videos that were.
+                    const addedNow = (Number(found.storedNow) || 0) + (Number(found.discovered) || 0);
+                    if (addedNow) {
+                        extras.push(`discovery added ${addedNow} new video${addedNow === 1 ? '' : 's'}`);
                     }
                     if (found.seen) {
                         // A card found just now is not in the library, and there is a
@@ -2038,7 +2043,11 @@
                         // read "104 matches" beside "Library holds 6,526", and calling
                         // them discovery "added" said they were stored when they were
                         // only shown.
-                        found.seen = merged.added;
+                        // What this search's own listing call actually stored, as the
+                        // Worker answered it, and what is left that is still only on
+                        // screen.
+                        found.storedNow = Number(extra.added) || 0;
+                        found.seen = Math.max(0, merged.added - found.storedNow);
                         // The library figure is what was stored, not what was seen on
                         // screen: the search's own answer carries the counts after its
                         // discoveries were inserted, so adding the cards here counted

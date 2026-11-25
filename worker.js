@@ -2543,6 +2543,14 @@ const GENRE_RULES = [
   { genre: 'podcast / talk', words: ['podcast', 'talk show', 'q&a'] },
 ];
 
+// Labels that say what a video is rather than what kind of music it is. They belong
+// on the card, but never in a genre lookup: a cooking video is not a remix style.
+const CONTENT_GENRES = new Set([
+  'tutorial / how-to', 'documentary', 'gameplay', 'film / trailer', 'comedy',
+  'news / politics', 'sports / fitness', 'cooking', 'tech / review',
+  'education / science', 'travel / nature', 'automotive', 'podcast / talk',
+]);
+
 function saysWord(text, word) {
   const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp('(^|[^a-z0-9])' + escaped + '(e?s)?($|[^a-z0-9])').test(text);
@@ -2567,11 +2575,15 @@ function inferGenreFromText(title, description, tags) {
     }
   }
   if (!best) return null;
-  return {
+  const out = {
     n: best.genre,
     c: Number(Math.min(0.9, best.confidence).toFixed(2)),
-    e: [['Does the listing name the genre?', 'mentions "' + best.hit + '"']],
+    e: [[CONTENT_GENRES.has(best.genre)
+      ? 'What does the listing say this is?'
+      : 'Does the listing name the genre?', 'mentions "' + best.hit + '"']],
   };
+  if (CONTENT_GENRES.has(best.genre)) out.k = 'content';
+  return out;
 }
 
 // A genre a listing already carries, in the shape the snapshot stores it ("n", "c").
@@ -2595,7 +2607,11 @@ function parseGenre(text) {
   if (!text) return null;
   try {
     const parsed = JSON.parse(text);
-    return parsed && parsed.n ? parsed : null;
+    if (!parsed || !parsed.n) return null;
+    // Rows written before content labels were marked still have to be told apart, or
+    // every stored "cooking" would be read as a music genre.
+    if (!parsed.k && CONTENT_GENRES.has(parsed.n)) parsed.k = 'content';
+    return parsed;
   } catch (err) {
     return null;
   }

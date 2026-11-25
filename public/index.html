@@ -506,6 +506,13 @@
             flex-wrap: wrap;
             margin-top: 10px;
         }
+        .genre-chip.content-label {
+            color: var(--text-dim);
+            border-style: dashed;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+        }
+
         .genre-chip {
             font-size: 11px;
             font-weight: 600;
@@ -1727,6 +1734,8 @@
             if (!g || !g.n) return null;
             return {
                 genre: g.n,
+                // A row written before labels were marked still gets told apart by name.
+                kind: g.k === 'content' || CONTENT_GENRES.has(g.n) ? 'content' : 'music',
                 confidence: g.c || 0,
                 evidence: (g.e || []).map(pair => ({ question: pair[0], answer: pair[1] })),
                 alternatives: g.a ? [{ genre: g.a }] : [],
@@ -2331,6 +2340,15 @@
             { genre: 'podcast / talk', words: ['podcast', 'talk show', 'q&a'] },
         ];
 
+        // Labels that say what a video is rather than what kind of music it is. They
+        // belong on the card, but never in a genre lookup: a cooking video is not a
+        // remix style, and a chip that calls it one is a lie about what was measured.
+        const CONTENT_GENRES = new Set([
+            'tutorial / how-to', 'documentary', 'gameplay', 'film / trailer', 'comedy',
+            'news / politics', 'sports / fitness', 'cooking', 'tech / review',
+            'education / science', 'travel / nature', 'automotive', 'podcast / talk',
+        ]);
+
         // Whole words only: "rock" in "rock climbing" and "trap" in "mouse trap" are
         // not genres, and the chip must not pretend to know more than the words do.
         // An optional plural so "rock songs" and "pop hits" still count.
@@ -2355,10 +2373,15 @@
                 if (!best || confidence > best.confidence) best = { rule, hits, confidence };
             });
             if (!best) return null;
+            const content = CONTENT_GENRES.has(best.rule.genre);
             return {
                 genre: best.rule.genre,
+                kind: content ? 'content' : 'music',
                 confidence: Math.min(0.9, best.confidence),
-                evidence: [{ question: 'Does the listing name the genre?', answer: `mentions "${best.hits[0]}"` }],
+                evidence: [{
+                    question: content ? 'What does the listing say this is?' : 'Does the listing name the genre?',
+                    answer: `mentions "${best.hits[0]}"`,
+                }],
                 alternatives: [],
             };
         }
@@ -2368,6 +2391,9 @@
         function renderGenre(genre) {
             if (!genre || !genre.genre) return '';
             const fit = Math.round((genre.confidence || 0) * 100);
+            // A content label is shown as what the video is, never as a genre: the same
+            // shape, a different word, so nothing on the card claims a genre of music.
+            const content = genre.kind === 'content';
             const evidence = (genre.evidence || []).map(item => `
                 <div class="genre-evidence">
                     <span class="genre-q">${escapeHtml(item.question)}</span>
@@ -2379,7 +2405,9 @@
                 : '';
             return `
                 <div class="genre-line">
-                    <span class="genre-chip" title="Inferred from the listing, not from the audio">${escapeHtml(genre.genre)} <span class="genre-fit">${fit}% fit</span></span>
+                    ${content
+                        ? `<span class="genre-chip content-label" title="Read from the listing: what this video is, not a music genre">video: ${escapeHtml(genre.genre)} <span class="genre-fit">${fit}% fit</span></span>`
+                        : `<span class="genre-chip" title="Inferred from the listing, not from the audio">${escapeHtml(genre.genre)} <span class="genre-fit">${fit}% fit</span></span>`}
                     <button class="genre-why" onclick="toggleGenre(event, this)">why?</button>
                 </div>
                 <div class="genre-detail" hidden>${evidence}${alt}</div>`;
@@ -2543,12 +2571,17 @@
             const description = (result.description || '').trim();
             const source = result.source || 'the source site';
             const text = (title + ' ' + description + ' ' + source).toLowerCase();
-            const genre = (result.genre && result.genre.genre) || '';
+            // Only a music genre may choose a remix style. A content label - cooking,
+            // news, gameplay - is not a scene, so it takes the neutral shape rather
+            // than a style lookup that would have missed anyway and quietly implied a
+            // scene was known.
+            const musicGenre = result.genre && result.genre.kind !== 'content' ? result.genre : null;
+            const genre = (musicGenre && musicGenre.genre) || '';
             // What the words lean toward when they do not name a scene. Printed as a
             // reading so a card is not "unclassified" beside a title that says something.
             const readings = Array.isArray(result.readings) ? result.readings : [];
-            const runnerUp = result.genre && result.genre.alternatives && result.genre.alternatives[0]
-                ? result.genre.alternatives[0].genre : '';
+            const runnerUp = musicGenre && musicGenre.alternatives && musicGenre.alternatives[0]
+                ? musicGenre.alternatives[0].genre : '';
             const style = REMIX_STYLES[genre] || REMIX_NEUTRAL;
             const seconds = parseDuration(result.duration);
             const words = remixKeywords(title, description);
@@ -2574,8 +2607,8 @@
 
             const opening = genre
                 ? `Read from the listing only, this is a ${genre} record` +
-                  (result.genre && result.genre.confidence
-                      ? ` (${Math.round(result.genre.confidence * 100)}% fit on the words alone)` : '') + '.'
+                  (musicGenre && musicGenre.confidence
+                      ? ` (${Math.round(musicGenre.confidence * 100)}% fit on the words alone)` : '') + '.'
                 : readings.length
                     ? 'The listing never names its scene, and its words only lean: ' +
                       readings.map(item => `${item.genre} ${item.score.toFixed(1)}` +
@@ -4017,7 +4050,8 @@
             const genres = new Map();
             const words = new Map();
             recent.forEach(result => {
-                const genre = result.genre && result.genre.genre;
+                // What a song is built from is a genre of music; "cooking" is not one.
+                const genre = result.genre && result.genre.kind !== 'content' ? result.genre.genre : null;
                 if (genre) genres.set(genre, (genres.get(genre) || 0) + 1);
                 String(result.title || '').toLowerCase().split(/[^a-z0-9']+/).forEach(word => {
                     if (word.length < 4 || REMIX_NOISE.has(word)) return;

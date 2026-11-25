@@ -1785,6 +1785,7 @@ function searchSnapshot(snapshot, terms, limit, offset, boosts) {
     else if (boosted.has(String(row[0]).toLowerCase())) lifted.push(row);
     if (!boosted.size && total >= cap && window.length >= want) break;
   }
+  if (!total && terms.length > 1) return partialMatches(rows, terms, limit, offset, boosts, cap);
   const ordered = orderWithBoosts(lifted.length ? window.concat(lifted) : window, boosts);
   const page = ordered.slice(offset, offset + limit);
   const map = boostMap(boosts);
@@ -1795,6 +1796,35 @@ function searchSnapshot(snapshot, terms, limit, offset, boosts) {
       // The count shown is the one the order was decided by.
       c: (Number(row[4]) || 0) + (map.get(String(row[0]).toLowerCase()) || 0),
       g: row[8], tg: row[9] || '',
+    })),
+  };
+}
+
+// Nothing had every word of the query. Answering with nothing says the library holds
+// no such videos, when it holds the words separately - a video about fretwork and
+// another about a lute, for "lute fretwork closeup". So rank by how many words a row
+// does have and let the page say it only matched some of them, rather than reporting
+// zero matches beside a library of ten thousand videos.
+function partialMatches(rows, terms, limit, offset, boosts, cap) {
+  const map = boostMap(boosts);
+  const clicks = (row) => (Number(row[4]) || 0) + (map.get(String(row[0]).toLowerCase()) || 0);
+  const hits = [];
+  for (const row of rows) {
+    const hay = row[3] || '';
+    let matched = 0;
+    for (const term of terms) {
+      if (hay.includes(term)) matched += 1;
+    }
+    if (matched) hits.push({ row, matched });
+  }
+  hits.sort((a, b) => (b.matched - a.matched) || (clicks(b.row) - clicks(a.row)));
+  const page = hits.slice(offset, offset + limit).map((hit) => hit.row);
+  return {
+    total: Math.min(hits.length, cap),
+    relaxed: true,
+    videos: page.map((row) => ({
+      u: row[0], t: row[1], d: row[2], th: row[5], du: row[6], s: row[7],
+      c: clicks(row), g: row[8], tg: row[9] || '',
     })),
   };
 }
@@ -1911,6 +1941,8 @@ async function searchIndex(env, url, ctx, knownMeta) {
     return json({
       query, total: answer.total, library, discovered, videos: answer.videos,
       source: 'snapshot',
+      // The count is real matches, but only some of the words were found in them.
+      relaxed: answer.relaxed || undefined,
       discover_error: discoverError || undefined,
     });
   }

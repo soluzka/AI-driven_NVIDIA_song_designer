@@ -1434,6 +1434,7 @@
                 results: unique,
                 total: unique.length + Math.max(0, total - results.length),
                 discovered: first.discovered,
+                relaxed: first.relaxed,
                 // Only the first page asks the Worker to look for new videos, so only
                 // that answer knows whether they could be stored.
                 discoverError: first.discoverError,
@@ -1585,6 +1586,8 @@
                 results,
                 total,
                 discovered: Number(doc.discovered) || 0,
+                // The count is matches, but only some of the query's words were in them.
+                relaxed: Boolean(doc.relaxed),
                 // Why the Worker could not store what it found, when it could not.
                 discoverError: String(doc.discover_error || ''),
                 // A database that answers zeros is a database that could not be
@@ -1596,6 +1599,38 @@
                     total_clicks: Number(doc.library.total_clicks) || 0,
                 } : null,
             };
+        }
+
+        // How long the overlay can take to reach the edge that answers a search. Cloudflare
+        // documents up to sixty seconds for a KV write; measured on this library, about
+        // forty. The number in the matches line counts down from this.
+        const KV_PROPAGATION_SECONDS = 60;
+        let propagationTimer = null;
+        function startPropagationTimer(seconds) {
+            if (propagationTimer) {
+                clearInterval(propagationTimer);
+                propagationTimer = null;
+            }
+            const until = Date.now() + seconds * 1000;
+            const tick = () => {
+                const el = document.getElementById('kvCountdown');
+                // A new search replaces the summary, and with it this element: stop.
+                if (!el) {
+                    clearInterval(propagationTimer);
+                    propagationTimer = null;
+                    return;
+                }
+                const left = Math.ceil((until - Date.now()) / 1000);
+                if (left > 0) {
+                    el.textContent = `in ${left} s`;
+                } else {
+                    el.textContent = 'now';
+                    clearInterval(propagationTimer);
+                    propagationTimer = null;
+                }
+            };
+            tick();
+            propagationTimer = setInterval(tick, 1000);
         }
 
         // When the free daily allowance is spent, the only thing that changes it is the
@@ -1952,9 +1987,25 @@
                     // page's listing call posts what it found first, so the Worker finds
                     // those already in the table and honestly reports zero. Counting only
                     // its figure said "nothing was added" for videos that were.
-                    const addedNow = (Number(found.storedNow) || 0) + (Number(found.discovered) || 0);
+                    const storedNow = Number(found.storedNow) || 0;
+                    const addedNow = storedNow + (Number(found.discovered) || 0);
                     if (addedNow) {
                         extras.push(`discovery added ${addedNow} new video${addedNow === 1 ? '' : 's'}`);
+                    }
+                    // Stored is not the same as searchable. The row is in the table at once,
+                    // but a search answers from the edge cache, which takes about a minute
+                    // to see the overlay it was just written to - so a search right after
+                    // this one may still find none of them. Counting that wait down here,
+                    // beside the matches, is the difference between "it did not work" and
+                    // "it worked, give it a moment".
+                    if (storedNow) {
+                        extras.push(`searchable <span id="kvCountdown">in ${KV_PROPAGATION_SECONDS} s</span> while the edge cache propagates`);
+                    }
+                    // Every word together found nothing, so these are the best partial
+                    // matches. Saying so is the difference between "no such video" and
+                    // "these are the closest ones there are".
+                    if (found.relaxed) {
+                        extras.push('matched some of the words, not all of them');
                     }
                     if (found.seen) {
                         // A card found just now is not in the library, and there is a
@@ -1981,6 +2032,7 @@
                         });
                     }
                     aiStatus.innerHTML = renderSummary(query, found.total, indexStats ? indexStats.total_videos : 0, extras);
+                    if (storedNow) startPropagationTimer(KV_PROPAGATION_SECONDS);
                     if (indexStats) updateStats(indexStats);
 
                     // Fresh first: whatever this session has not shown yet goes to

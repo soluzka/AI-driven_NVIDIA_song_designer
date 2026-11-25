@@ -2275,6 +2275,67 @@
             resultsContainer.appendChild(card);
         }
 
+        // The library's own genres came from a model that has only ever seen a few
+        // hundred of its rows, and listings carry none, so most cards had nothing to
+        // show. This names a genre from the listing's own words, with the word it used
+        // as the evidence - beside a real genre it is never asked.
+        const GENRE_RULES = [
+            { genre: 'lo-fi', words: ['lofi', 'lo-fi', 'chillhop', 'study beats'] },
+            { genre: 'ambient / chill', words: ['ambient', 'chillout', 'chill out', 'meditation', 'sleep music', 'relaxing music'] },
+            // The bare words are too eager ("rock climbing", "soul food", "Monday blues"),
+            // so the risky ones only count when the listing puts them with music.
+            { genre: 'jazz / soul / funk', words: ['jazz', 'soul music', 'soul singer', 'neo soul', 'funk music', 'funk band', 'swing', 'bebop'] },
+            { genre: 'rock / metal', words: ['rock music', 'rock band', 'rock song', 'rock concert', 'classic rock', 'hard rock', 'indie rock', 'punk rock', 'heavy metal', 'metal band', 'death metal', 'grunge'] },
+            { genre: 'hip hop', words: ['hip hop', 'hip-hop', 'rap', 'freestyle'] },
+            { genre: 'trap', words: ['trap beat', 'trap music', 'trap remix'] },
+            { genre: 'dubstep', words: ['dubstep', 'riddim', 'brostep'] },
+            { genre: 'house', words: ['house music', 'deep house', 'tech house', 'afro house'] },
+            { genre: 'techno', words: ['techno'] },
+            { genre: 'classical', words: ['classical', 'orchestra', 'symphony', 'concerto', 'sonata', 'baroque', 'opera'] },
+            { genre: 'folk', words: ['folk', 'celtic', 'singer-songwriter', 'acoustic cover'] },
+            { genre: 'country', words: ['country music', 'bluegrass', 'country song'] },
+            { genre: 'pop', words: ['pop song', 'pop music', 'pop hit', 'top 40'] },
+            { genre: 'latin', words: ['latin music', 'musica latina', 'salsa', 'bachata', 'reggaeton', 'cumbia'] },
+            { genre: 'reggae', words: ['reggae', 'dancehall', 'ska'] },
+            { genre: 'blues', words: ['blues music', 'blues guitar', 'blues band', 'delta blues'] },
+            { genre: 'edm', words: ['edm', 'electro', 'dance music', 'dj set', 'festival set'] },
+            { genre: 'soundtrack / score', words: ['soundtrack', 'ost', 'film score', 'game music'] },
+            { genre: 'k-pop', words: ['kpop', 'k-pop'] },
+            { genre: 'experimental', words: ['experimental', 'avant-garde', 'noise music'] },
+        ];
+
+        // Whole words only: "rock" in "rock climbing" and "trap" in "mouse trap" are
+        // not genres, and the chip must not pretend to know more than the words do.
+        // An optional plural so "rock songs" and "pop hits" still count.
+        function says(text, word) {
+            const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            return new RegExp('(^|[^a-z0-9])' + escaped + '(e?s)?($|[^a-z0-9])').test(text);
+        }
+
+        function inferGenre(row) {
+            if (!row) return null;
+            const title = String(row.title || '').toLowerCase();
+            const hay = title + ' ' + String(row.description || '').toLowerCase()
+                + ' ' + String(row.tags || '').toLowerCase();
+            let best = null;
+            GENRE_RULES.forEach(rule => {
+                const hits = rule.words.filter(word => says(hay, word));
+                if (!hits.length) return;
+                // Named in the title is stronger evidence than mentioned in a description,
+                // and more matching words is stronger still.
+                const named = rule.words.some(word => says(title, word));
+                const confidence = (named ? 0.6 : 0.5) + Math.min(0.2, 0.1 * (hits.length - 1));
+                if (!best || confidence > best.confidence) best = { rule, hits, confidence };
+            });
+            if (!best) return null;
+            return {
+                genre: best.rule.genre,
+                confidence: Math.min(0.9, best.confidence),
+                evidence: [{ question: 'Does the listing name the genre?', answer: `mentions "${best.hits[0]}"` }],
+                alternatives: [],
+            };
+        }
+
         // The genre line: what the model concluded and how decisive the evidence
         // was. "why?" opens the answers it used, so the guess can be checked.
         function renderGenre(genre) {
@@ -7066,7 +7127,9 @@
             const scoreHtml = score > 0
                 ? `<div class="relevance-score">Relevance: ${(score * 100).toFixed(0)}%</div>` : '';
 
-            const genreHtml = renderGenre(result.genre);
+            // A genre the index already holds wins; otherwise the listing's own words
+            // name one, so the line is there on every card it can honestly fill.
+            const genreHtml = renderGenre(result.genre || inferGenre(result));
 
             // Built once per card and kept off the DOM until the panel is opened:
             // a few hundred documents are not worth rendering up front. A remix

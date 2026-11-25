@@ -195,6 +195,32 @@ export default {
       // asks for the second kind again, which is what new rules need to be able to reach.
       const redo = url.searchParams.get('redo') === '1';
       const marker = JSON.stringify({ n: null });
+      // ?count=1 answers how much of the library carries a genre at all, so a rule
+      // change can be measured instead of guessed at from a search page.
+      if (url.searchParams.get('count') === '1') {
+        try {
+          const one = await env.DB.prepare(
+            'SELECT COUNT(*) AS total, '
+            + 'SUM(CASE WHEN genre_json IS NULL THEN 1 ELSE 0 END) AS never_looked, '
+            + 'SUM(CASE WHEN genre_json = ? THEN 1 ELSE 0 END) AS looked_blank, '
+            + 'SUM(CASE WHEN genre_json IS NOT NULL AND genre_json <> ? THEN 1 ELSE 0 END) AS named '
+            + 'FROM videos WHERE ' + videoHostClause()
+          ).bind(marker, marker).first();
+          const total = Number(one && one.total) || 0;
+          const named = Number(one && one.named) || 0;
+          return json({
+            ok: true, total, named,
+            never_looked: Number(one && one.never_looked) || 0,
+            looked_blank: Number(one && one.looked_blank) || 0,
+            coverage: total ? Number((named / total).toFixed(4)) : 0,
+          });
+        } catch (err) {
+          return json({
+            error: 'The genres could not be counted.',
+            detail: String((err && err.message) || err).slice(0, 200),
+          }, 503);
+        }
+      }
       try {
         const statement = env.DB.prepare(
           'SELECT id, title, description, tags FROM videos '
@@ -2463,26 +2489,58 @@ async function recordClick(env, request) {
 // name that is decided once is stored in the index rather than guessed again on every
 // page load. Whole words only, with an optional plural: "rock climbing" is not rock.
 const GENRE_RULES = [
-  { genre: 'lo-fi', words: ['lofi', 'lo-fi', 'chillhop', 'study beats'] },
-  { genre: 'ambient / chill', words: ['ambient', 'chillout', 'chill out', 'meditation', 'sleep music', 'relaxing music'] },
-  { genre: 'jazz / soul / funk', words: ['jazz', 'soul music', 'soul singer', 'neo soul', 'funk music', 'funk band', 'swing', 'bebop'] },
-  { genre: 'rock / metal', words: ['rock music', 'rock band', 'rock song', 'rock concert', 'classic rock', 'hard rock', 'indie rock', 'punk rock', 'heavy metal', 'metal band', 'death metal', 'grunge'] },
-  { genre: 'hip hop', words: ['hip hop', 'hip-hop', 'rap', 'freestyle'] },
-  { genre: 'trap', words: ['trap beat', 'trap music', 'trap remix'] },
-  { genre: 'dubstep', words: ['dubstep', 'riddim', 'brostep'] },
-  { genre: 'house', words: ['house music', 'deep house', 'tech house', 'afro house'] },
-  { genre: 'techno', words: ['techno'] },
-  { genre: 'classical', words: ['classical', 'orchestra', 'symphony', 'concerto', 'sonata', 'baroque', 'opera'] },
-  { genre: 'folk', words: ['folk', 'celtic', 'singer-songwriter', 'acoustic cover'] },
-  { genre: 'country', words: ['country music', 'bluegrass', 'country song'] },
-  { genre: 'pop', words: ['pop song', 'pop music', 'pop hit', 'top 40'] },
-  { genre: 'latin', words: ['latin music', 'musica latina', 'salsa', 'bachata', 'reggaeton', 'cumbia'] },
-  { genre: 'reggae', words: ['reggae', 'dancehall', 'ska'] },
-  { genre: 'blues', words: ['blues music', 'blues guitar', 'blues band', 'delta blues'] },
-  { genre: 'edm', words: ['edm', 'electro', 'dance music', 'dj set', 'festival set'] },
-  { genre: 'soundtrack / score', words: ['soundtrack', 'ost', 'film score', 'game music'] },
+  // Music first: when a listing is about music, a music genre wins a tie against a
+  // content label.
+  { genre: 'lo-fi', words: ['lofi', 'lo-fi', 'chillhop', 'jazzhop', 'study beats', 'lofi hip hop'] },
+  { genre: 'ambient / chill', words: ['ambient', 'chillout', 'chill out', 'downtempo', 'new age', 'drone music', 'meditation', 'sleep music', 'relaxing music', 'rain sounds', 'white noise', 'asmr'] },
+  { genre: 'jazz / soul / funk', words: ['jazz', 'bebop', 'bossa nova', 'swing', 'soul music', 'soul singer', 'neo soul', 'motown', 'funk music', 'funk band', 'boogie'] },
+  { genre: 'blues', words: ['blues music', 'blues guitar', 'blues band', 'delta blues', 'chicago blues', 'boogie woogie'] },
+  { genre: 'rock / metal', words: ['rock music', 'rock band', 'rock song', 'rock concert', 'classic rock', 'hard rock', 'indie rock', 'punk rock', 'alternative rock', 'post-rock', 'shoegaze', 'grunge', 'emo', 'heavy metal', 'metal band', 'death metal', 'black metal', 'metalcore', 'djent'] },
+  { genre: 'punk', words: ['punk band', 'punk song', 'hardcore punk', 'pop punk'] },
+  { genre: 'hip hop', words: ['hip hop', 'hip-hop', 'rap', 'freestyle', 'boom bap', 'grime', 'rap beat'] },
+  { genre: 'trap', words: ['trap beat', 'trap music', 'trap remix', 'trap instrumental', 'drill beat'] },
+  { genre: 'r&b', words: ['r&b', 'rnb', 'rhythm and blues', 'slow jam'] },
+  { genre: 'gospel', words: ['gospel', 'worship music', 'choir', 'hymn'] },
+  { genre: 'dubstep', words: ['dubstep', 'riddim', 'brostep', 'bass music'] },
+  { genre: 'house', words: ['house music', 'deep house', 'tech house', 'afro house', 'progressive house', 'acid house', 'melodic house'] },
+  { genre: 'techno', words: ['techno', 'minimal techno', 'hard techno'] },
+  { genre: 'trance', words: ['trance', 'psytrance', 'uplifting trance'] },
+  { genre: 'drum and bass', words: ['drum and bass', 'drum & bass', 'dnb', 'jungle', 'liquid dnb'] },
+  { genre: 'edm', words: ['edm', 'electro', 'dance music', 'dj set', 'festival set', 'future bass', 'hardstyle', 'big room'] },
+  { genre: 'disco', words: ['disco', 'nu disco', 'italo disco'] },
+  { genre: 'afrobeat', words: ['afrobeat', 'afrobeats', 'amapiano', 'highlife', 'soukous', 'kizomba'] },
+  { genre: 'latin', words: ['latin music', 'musica latina', 'salsa', 'bachata', 'reggaeton', 'cumbia', 'merengue', 'tango', 'bolero'] },
+  { genre: 'reggae', words: ['reggae', 'dancehall', 'ska', 'roots reggae'] },
+  { genre: 'country', words: ['country music', 'country song', 'bluegrass', 'honky tonk', 'outlaw country'] },
+  { genre: 'folk', words: ['folk', 'celtic', 'singer-songwriter', 'acoustic cover', 'americana', 'irish trad'] },
+  { genre: 'classical', words: ['classical', 'orchestra', 'orchestral', 'symphony', 'concerto', 'sonata', 'baroque', 'opera', 'chamber music', 'string quartet', 'choral'] },
+  { genre: 'pop', words: ['pop song', 'pop music', 'pop hit', 'top 40', 'synth pop', 'city pop', 'indie pop', 'dance pop', 'j-pop'] },
   { genre: 'k-pop', words: ['kpop', 'k-pop'] },
-  { genre: 'experimental', words: ['experimental', 'avant-garde', 'noise music'] },
+  { genre: 'bollywood / desi', words: ['bollywood', 'hindi song', 'punjabi', 'bhangra', 'filmi'] },
+  { genre: 'arabic / oriental', words: ['arabic music', 'arabic song', 'oriental', 'maqam'] },
+  { genre: 'soundtrack / score', words: ['soundtrack', 'ost', 'film score', 'game music', 'cinematic', 'trailer music'] },
+  { genre: 'chiptune', words: ['chiptune', '8-bit music', 'retro game music'] },
+  { genre: 'vaporwave', words: ['vaporwave', 'synthwave', 'retrowave'] },
+  { genre: 'experimental', words: ['experimental', 'avant-garde', 'noise music', 'idm', 'glitch', 'breakcore', 'industrial music'] },
+  { genre: 'instrumental', words: ['instrumental', 'karaoke', 'backing track', 'piano cover', 'guitar cover', 'violin', 'cello', 'saxophone', 'flute', 'kalimba', 'ukulele', 'harmonica', 'accordion', 'sitar', 'tabla', 'fingerstyle', 'a cappella', 'acapella'] },
+  // A music listing with no genre in its words is still music.
+  { genre: 'music (unspecified)', words: ['music video', 'official video', 'lyric video', 'official audio', 'remix', 'album', 'single'] },
+  // Then what the video is, for the many rows that are not music at all. Naming the
+  // thing honestly is better than an empty chip, and better than calling a cooking
+  // video a music genre none of its words support.
+  { genre: 'tutorial / how-to', words: ['tutorial', 'how to', 'lesson', 'step by step', 'diy', 'repair', 'maintenance', 'restoration', 'guide'] },
+  { genre: 'documentary', words: ['documentary', 'the story of', 'history of', 'explained'] },
+  { genre: 'gameplay', words: ['gameplay', 'walkthrough', "let's play", 'speedrun', 'minecraft', 'fortnite', 'gta'] },
+  { genre: 'film / trailer', words: ['trailer', 'teaser', 'movie clip', 'behind the scenes', 'short film'] },
+  { genre: 'comedy', words: ['comedy', 'funny', 'prank', 'stand-up', 'meme', 'parody'] },
+  { genre: 'news / politics', words: ['news', 'breaking', 'press conference', 'debate', 'interview'] },
+  { genre: 'sports / fitness', words: ['highlights', 'goals', 'match', 'workout', 'fitness', 'gym', 'training'] },
+  { genre: 'cooking', words: ['recipe', 'cooking', 'baking', 'kitchen', 'food'] },
+  { genre: 'tech / review', words: ['review', 'unboxing', 'benchmark', 'gadget', 'smartphone', 'laptop', 'software'] },
+  { genre: 'education / science', words: ['science', 'physics', 'math', 'chemistry', 'lecture', 'biology', 'space'] },
+  { genre: 'travel / nature', words: ['travel', 'vlog', 'nature', 'drone footage', 'hiking', 'city tour'] },
+  { genre: 'automotive', words: ['car', 'engine', 'motorcycle', 'drift', 'tractor'] },
+  { genre: 'podcast / talk', words: ['podcast', 'talk show', 'q&a'] },
 ];
 
 function saysWord(text, word) {

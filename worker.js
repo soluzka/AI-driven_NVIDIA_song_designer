@@ -178,6 +178,47 @@ export default {
       }
     }
 
+    // Name a genre for rows that have none, one page at a time. The page can guess a
+    // genre from a card's words, but a guess that lives in a browser is not a library
+    // genre; this writes it into genre_json so the index leads. Guarded like the
+    // rebuild, and bounded so one call cannot run out of the daily write allowance.
+    if (url.pathname === '/api/index/genres' && request.method === 'POST') {
+      const expected = poolJoinKey(env);
+      const given = request.headers.get('x-join-key') || '';
+      if (expected && given !== expected) return json({ error: 'Wrong join key.' }, 403);
+      if (!env.DB) return json({ error: 'No video index is attached to this Worker.' }, 501);
+      const after = Number(url.searchParams.get('after')) || 0;
+      const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 200));
+      try {
+        const answer = await env.DB.prepare(
+          'SELECT id, title, description, tags FROM videos '
+          + 'WHERE id > ? AND genre_json IS NULL AND ' + videoHostClause()
+          + ' ORDER BY id LIMIT ' + limit
+        ).bind(after).all();
+        const rows = answer.results || [];
+        const statements = [];
+        let named = 0;
+        for (const row of rows) {
+          const genre = inferGenreFromText(row.title, row.description, row.tags);
+          if (genre) named += 1;
+          // Rows whose words name nothing are written as a genre with no name, so a
+          // later page does not scan them again and the chip stays empty.
+          statements.push(
+            env.DB.prepare('UPDATE videos SET genre_json = ? WHERE id = ?')
+              .bind(JSON.stringify(genre || { n: null }), row.id)
+          );
+        }
+        if (statements.length) await env.DB.batch(statements);
+        const next = rows.length ? Number(rows[rows.length - 1].id) : after;
+        return json({ ok: true, scanned: rows.length, named, unnamed: rows.length - named, next, done: rows.length < limit });
+      } catch (err) {
+        return json({
+          error: 'The genres could not be written.',
+          detail: String((err && err.message) || err).slice(0, 200),
+        }, 503);
+      }
+    }
+
     if (url.pathname === '/api/index/snapshot') {
       const doc = await loadIndexSnapshot(env);
       return json({
@@ -2097,21 +2138,24 @@ async function discoverVideos(env, query, limit = 20) {
       source: 'Dailymotion',
       click_count: 0,
       tags: '',
+      // Dailymotion does not say what genre a video is, so its words have to.
+      genre: inferGenreFromText(title, row.description, ''),
     };
     pending.push(stored);
     statements.push(
       env.DB.prepare(
         'INSERT OR IGNORE INTO videos '
         + '(url, title, description, thumbnail, duration, source, platform, discovered_at, '
-        + ' click_count, relevance_score, tags) '
-        + "VALUES (?, ?, ?, ?, ?, 'Dailymotion', 'Dailymotion', ?, 0, 0, '')"
+        + ' click_count, relevance_score, tags, genre_json) '
+        + "VALUES (?, ?, ?, ?, ?, 'Dailymotion', 'Dailymotion', ?, 0, 0, '', ?)"
       ).bind(
         stored.url,
         stored.title,
         stored.description,
         stored.thumbnail,
         stored.duration,
-        Date.now() / 1000
+        Date.now() / 1000,
+        stored.genre ? JSON.stringify(stored.genre) : null
       )
     );
   }
@@ -2267,7 +2311,10 @@ async function ingestVideos(env, request) {
     if (shipped.has(videoKey(link))) continue;
     seen.add(link);
     const source = String((video.source) || 'YouTube').slice(0, 40);
-    const genre = storedGenre(video.genre);
+    // A genre the listing states, or failing that one its words name - decided here so
+    // it is in the index, not left for the page to guess again on every card.
+    const genre = storedGenre(video.genre)
+      || inferGenreFromText(title, video.description, video.tags);
     pending.push({
       url: link,
       title: tidyText(title).slice(0, 300),
@@ -2399,6 +2446,63 @@ async function recordClick(env, request) {
   } catch (err) { /* the click is counted; the library catches up when D1 works */ }
 
   return json({ ok: true, duplicate: false, library: statsFromDoc(doc) });
+}
+
+// The same rules the page uses to name a genre from a card's own words, kept here so a
+// name that is decided once is stored in the index rather than guessed again on every
+// page load. Whole words only, with an optional plural: "rock climbing" is not rock.
+const GENRE_RULES = [
+  { genre: 'lo-fi', words: ['lofi', 'lo-fi', 'chillhop', 'study beats'] },
+  { genre: 'ambient / chill', words: ['ambient', 'chillout', 'chill out', 'meditation', 'sleep music', 'relaxing music'] },
+  { genre: 'jazz / soul / funk', words: ['jazz', 'soul music', 'soul singer', 'neo soul', 'funk music', 'funk band', 'swing', 'bebop'] },
+  { genre: 'rock / metal', words: ['rock music', 'rock band', 'rock song', 'rock concert', 'classic rock', 'hard rock', 'indie rock', 'punk rock', 'heavy metal', 'metal band', 'death metal', 'grunge'] },
+  { genre: 'hip hop', words: ['hip hop', 'hip-hop', 'rap', 'freestyle'] },
+  { genre: 'trap', words: ['trap beat', 'trap music', 'trap remix'] },
+  { genre: 'dubstep', words: ['dubstep', 'riddim', 'brostep'] },
+  { genre: 'house', words: ['house music', 'deep house', 'tech house', 'afro house'] },
+  { genre: 'techno', words: ['techno'] },
+  { genre: 'classical', words: ['classical', 'orchestra', 'symphony', 'concerto', 'sonata', 'baroque', 'opera'] },
+  { genre: 'folk', words: ['folk', 'celtic', 'singer-songwriter', 'acoustic cover'] },
+  { genre: 'country', words: ['country music', 'bluegrass', 'country song'] },
+  { genre: 'pop', words: ['pop song', 'pop music', 'pop hit', 'top 40'] },
+  { genre: 'latin', words: ['latin music', 'musica latina', 'salsa', 'bachata', 'reggaeton', 'cumbia'] },
+  { genre: 'reggae', words: ['reggae', 'dancehall', 'ska'] },
+  { genre: 'blues', words: ['blues music', 'blues guitar', 'blues band', 'delta blues'] },
+  { genre: 'edm', words: ['edm', 'electro', 'dance music', 'dj set', 'festival set'] },
+  { genre: 'soundtrack / score', words: ['soundtrack', 'ost', 'film score', 'game music'] },
+  { genre: 'k-pop', words: ['kpop', 'k-pop'] },
+  { genre: 'experimental', words: ['experimental', 'avant-garde', 'noise music'] },
+];
+
+function saysWord(text, word) {
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp('(^|[^a-z0-9])' + escaped + '(e?s)?($|[^a-z0-9])').test(text);
+}
+
+// Returns a genre in the shape the snapshot stores ("n", "c", "e"), or null when the
+// words name none - a guess with nothing behind it is worse than an empty chip.
+function inferGenreFromText(title, description, tags) {
+  const head = String(title || '').toLowerCase();
+  const hay = head + ' ' + String(description || '').toLowerCase()
+    + ' ' + String(tags || '').toLowerCase();
+  let best = null;
+  for (const rule of GENRE_RULES) {
+    const hits = rule.words.filter((word) => saysWord(hay, word));
+    if (!hits.length) continue;
+    // Named in the title is stronger evidence than mentioned in a description, and more
+    // matching words is stronger still.
+    const named = rule.words.some((word) => saysWord(head, word));
+    const confidence = (named ? 0.6 : 0.5) + Math.min(0.2, 0.1 * (hits.length - 1));
+    if (!best || confidence > best.confidence) {
+      best = { genre: rule.genre, confidence, hit: hits[0] };
+    }
+  }
+  if (!best) return null;
+  return {
+    n: best.genre,
+    c: Number(Math.min(0.9, best.confidence).toFixed(2)),
+    e: [['Does the listing name the genre?', 'mentions "' + best.hit + '"']],
+  };
 }
 
 // A genre a listing already carries, in the shape the snapshot stores it ("n", "c").

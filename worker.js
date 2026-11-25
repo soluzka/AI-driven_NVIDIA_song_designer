@@ -2267,6 +2267,7 @@ async function ingestVideos(env, request) {
     if (shipped.has(videoKey(link))) continue;
     seen.add(link);
     const source = String((video.source) || 'YouTube').slice(0, 40);
+    const genre = storedGenre(video.genre);
     pending.push({
       url: link,
       title: tidyText(title).slice(0, 300),
@@ -2276,12 +2277,13 @@ async function ingestVideos(env, request) {
       source,
       click_count: 0,
       tags: '',
+      genre,
     });
     statements.push(
       env.DB.prepare(
         'INSERT OR IGNORE INTO videos '
         + '(url, title, description, thumbnail, duration, source, platform, discovered_at, '
-        + ' click_count, relevance_score, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, \'\')'
+        + ' click_count, relevance_score, tags, genre_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, \'\', ?)'
       ).bind(
         link,
         tidyText(title).slice(0, 300),
@@ -2290,7 +2292,8 @@ async function ingestVideos(env, request) {
         String(video.duration || 'Unknown'),
         source,
         source,
-        Date.now() / 1000
+        Date.now() / 1000,
+        genre ? JSON.stringify(genre) : null
       )
     );
   }
@@ -2396,6 +2399,23 @@ async function recordClick(env, request) {
   } catch (err) { /* the click is counted; the library catches up when D1 works */ }
 
   return json({ ok: true, duplicate: false, library: statsFromDoc(doc) });
+}
+
+// A genre a listing already carries, in the shape the snapshot stores it ("n", "c").
+// Ingest used to write every row with no genre at all, so a find the machine had
+// already classified arrived in the library unclassified.
+function storedGenre(value) {
+  if (!value) return null;
+  if (typeof value === 'string') return { n: value.trim().slice(0, 60) || null };
+  if (typeof value === 'object') {
+    const name = String(value.genre || value.n || '').trim().slice(0, 60);
+    if (!name) return null;
+    const confidence = Number(value.confidence != null ? value.confidence : value.c) || 0;
+    const out = { n: name };
+    if (confidence) out.c = confidence;
+    return out;
+  }
+  return null;
 }
 
 function parseGenre(text) {

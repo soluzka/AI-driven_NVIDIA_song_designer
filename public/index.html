@@ -1734,8 +1734,9 @@
             if (!g || !g.n) return null;
             return {
                 genre: g.n,
-                // A row written before labels were marked still gets told apart by name.
-                kind: g.k === 'content' || CONTENT_GENRES.has(g.n) ? 'content' : 'music',
+                // The stored kind, not the label's name: renaming a label must not
+                // change what the chip or the remix lookup thinks it is.
+                kind: g.k === 'content' ? 'content' : 'music',
                 confidence: g.c || 0,
                 evidence: (g.e || []).map(pair => ({ question: pair[0], answer: pair[1] })),
                 alternatives: g.a ? [{ genre: g.a }] : [],
@@ -2324,7 +2325,12 @@
             { genre: 'experimental', words: ['experimental', 'avant-garde', 'noise music', 'idm', 'glitch', 'breakcore', 'industrial music'] },
             { genre: 'instrumental', words: ['instrumental', 'karaoke', 'backing track', 'piano cover', 'guitar cover', 'violin', 'cello', 'saxophone', 'flute', 'kalimba', 'ukulele', 'harmonica', 'accordion', 'sitar', 'tabla', 'fingerstyle', 'a cappella', 'acapella'] },
             { genre: 'music (unspecified)', words: ['music video', 'official video', 'lyric video', 'official audio', 'remix', 'album', 'single'] },
-            // Then what the video is, for the many rows that are not music at all.
+        ];
+
+        // What the video is, for the many rows that are not music at all. A separate
+        // list rather than a list of names checked later: the kind belongs to the rule,
+        // and is written into the row so no reader needs to know the vocabulary.
+        const CONTENT_RULES = [
             { genre: 'tutorial / how-to', words: ['tutorial', 'how to', 'lesson', 'step by step', 'diy', 'repair', 'maintenance', 'restoration', 'guide'] },
             { genre: 'documentary', words: ['documentary', 'the story of', 'history of', 'explained'] },
             { genre: 'gameplay', words: ['gameplay', 'walkthrough', "let's play", 'speedrun', 'minecraft', 'fortnite', 'gta'] },
@@ -2340,15 +2346,6 @@
             { genre: 'podcast / talk', words: ['podcast', 'talk show', 'q&a'] },
         ];
 
-        // Labels that say what a video is rather than what kind of music it is. They
-        // belong on the card, but never in a genre lookup: a cooking video is not a
-        // remix style, and a chip that calls it one is a lie about what was measured.
-        const CONTENT_GENRES = new Set([
-            'tutorial / how-to', 'documentary', 'gameplay', 'film / trailer', 'comedy',
-            'news / politics', 'sports / fitness', 'cooking', 'tech / review',
-            'education / science', 'travel / nature', 'automotive', 'podcast / talk',
-        ]);
-
         // Whole words only: "rock" in "rock climbing" and "trap" in "mouse trap" are
         // not genres, and the chip must not pretend to know more than the words do.
         // An optional plural so "rock songs" and "pop hits" still count.
@@ -2363,20 +2360,26 @@
             const hay = title + ' ' + String(row.description || '').toLowerCase()
                 + ' ' + String(row.tags || '').toLowerCase();
             let best = null;
-            GENRE_RULES.forEach(rule => {
-                const hits = rule.words.filter(word => says(hay, word));
-                if (!hits.length) return;
-                // Named in the title is stronger evidence than mentioned in a description,
-                // and more matching words is stronger still.
-                const named = rule.words.some(word => says(title, word));
-                const confidence = (named ? 0.6 : 0.5) + Math.min(0.2, 0.1 * (hits.length - 1));
-                if (!best || confidence > best.confidence) best = { rule, hits, confidence };
-            });
+            // Music first, so a listing that names both a scene and a format keeps the
+            // scene; the kind travels with the rule, never with its name.
+            const consider = (rules, kind) => {
+                rules.forEach(rule => {
+                    const hits = rule.words.filter(word => says(hay, word));
+                    if (!hits.length) return;
+                    // Named in the title is stronger evidence than mentioned in a
+                    // description, and more matching words is stronger still.
+                    const named = rule.words.some(word => says(title, word));
+                    const confidence = (named ? 0.6 : 0.5) + Math.min(0.2, 0.1 * (hits.length - 1));
+                    if (!best || confidence > best.confidence) best = { rule, hits, confidence, kind };
+                });
+            };
+            consider(GENRE_RULES, 'music');
+            consider(CONTENT_RULES, 'content');
             if (!best) return null;
-            const content = CONTENT_GENRES.has(best.rule.genre);
+            const content = best.kind === 'content';
             return {
                 genre: best.rule.genre,
-                kind: content ? 'content' : 'music',
+                kind: best.kind,
                 confidence: Math.min(0.9, best.confidence),
                 evidence: [{
                     question: content ? 'What does the listing say this is?' : 'Does the listing name the genre?',

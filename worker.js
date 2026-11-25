@@ -195,6 +195,40 @@ export default {
       // asks for the second kind again, which is what new rules need to be able to reach.
       const redo = url.searchParams.get('redo') === '1';
       const marker = JSON.stringify({ n: null });
+      // ?kinds=1 writes the kind (music or content) into rows that were given a genre
+      // before kinds existed. Readers trust the stored value, so this is the one place
+      // that ever has to know which label belongs to which list.
+      if (url.searchParams.get('kinds') === '1') {
+        try {
+          const answer = await env.DB.prepare(
+            'SELECT id, genre_json FROM videos '
+            + 'WHERE id > ? AND genre_json IS NOT NULL AND genre_json <> ? '
+            + "AND genre_json NOT LIKE '%\"k\":%' " + 'ORDER BY id LIMIT ' + limit
+          ).bind(after, marker).all();
+          const rows = answer.results || [];
+          const statements = [];
+          let rewritten = 0;
+          for (const row of rows) {
+            const parsed = parseGenre(row.genre_json);
+            if (!parsed) continue;
+            const kind = parsed.k || (CONTENT_LABELS.has(parsed.n) ? 'content' : 'music');
+            statements.push(
+              env.DB.prepare('UPDATE videos SET genre_json = ? WHERE id = ?')
+                .bind(JSON.stringify(Object.assign({}, parsed, { k: kind })), row.id)
+            );
+            rewritten += 1;
+          }
+          if (statements.length) await env.DB.batch(statements);
+          const next = rows.length ? Number(rows[rows.length - 1].id) : after;
+          return json({ ok: true, kinds: true, scanned: rows.length, written: rewritten, next, done: rows.length < limit });
+        } catch (err) {
+          return json({
+            error: 'The kinds could not be written.',
+            detail: String((err && err.message) || err).slice(0, 200),
+          }, 503);
+        }
+      }
+
       // ?count=1 answers how much of the library carries a genre at all, so a rule
       // change can be measured instead of guessed at from a search page.
       if (url.searchParams.get('count') === '1') {
@@ -2525,9 +2559,12 @@ const GENRE_RULES = [
   { genre: 'instrumental', words: ['instrumental', 'karaoke', 'backing track', 'piano cover', 'guitar cover', 'violin', 'cello', 'saxophone', 'flute', 'kalimba', 'ukulele', 'harmonica', 'accordion', 'sitar', 'tabla', 'fingerstyle', 'a cappella', 'acapella'] },
   // A music listing with no genre in its words is still music.
   { genre: 'music (unspecified)', words: ['music video', 'official video', 'lyric video', 'official audio', 'remix', 'album', 'single'] },
-  // Then what the video is, for the many rows that are not music at all. Naming the
-  // thing honestly is better than an empty chip, and better than calling a cooking
-  // video a music genre none of its words support.
+];
+
+// What the video is, for the many rows that are not music at all. A separate list, not
+// a list of names checked later: the kind of a label is decided where the label is, and
+// written into the row, so no reader has to know the vocabulary to tell them apart.
+const CONTENT_RULES = [
   { genre: 'tutorial / how-to', words: ['tutorial', 'how to', 'lesson', 'step by step', 'diy', 'repair', 'maintenance', 'restoration', 'guide'] },
   { genre: 'documentary', words: ['documentary', 'the story of', 'history of', 'explained'] },
   { genre: 'gameplay', words: ['gameplay', 'walkthrough', "let's play", 'speedrun', 'minecraft', 'fortnite', 'gta'] },
@@ -2543,13 +2580,10 @@ const GENRE_RULES = [
   { genre: 'podcast / talk', words: ['podcast', 'talk show', 'q&a'] },
 ];
 
-// Labels that say what a video is rather than what kind of music it is. They belong
-// on the card, but never in a genre lookup: a cooking video is not a remix style.
-const CONTENT_GENRES = new Set([
-  'tutorial / how-to', 'documentary', 'gameplay', 'film / trailer', 'comedy',
-  'news / politics', 'sports / fitness', 'cooking', 'tech / review',
-  'education / science', 'travel / nature', 'automotive', 'podcast / talk',
-]);
+// The labels that say what a video is rather than what kind of music it is. Used when a
+// stored genre has no kind (the migration writes one for every row); after that the row
+// itself says which it is.
+const CONTENT_LABELS = new Set(CONTENT_RULES.map((rule) => rule.genre));
 
 function saysWord(text, word) {
   const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -2563,27 +2597,32 @@ function inferGenreFromText(title, description, tags) {
   const hay = head + ' ' + String(description || '').toLowerCase()
     + ' ' + String(tags || '').toLowerCase();
   let best = null;
-  for (const rule of GENRE_RULES) {
-    const hits = rule.words.filter((word) => saysWord(hay, word));
-    if (!hits.length) continue;
-    // Named in the title is stronger evidence than mentioned in a description, and more
-    // matching words is stronger still.
-    const named = rule.words.some((word) => saysWord(head, word));
-    const confidence = (named ? 0.6 : 0.5) + Math.min(0.2, 0.1 * (hits.length - 1));
-    if (!best || confidence > best.confidence) {
-      best = { genre: rule.genre, confidence, hit: hits[0] };
+  // Music first, so a listing that names both a scene and a format keeps the scene.
+  const consider = (rules, kind) => {
+    for (const rule of rules) {
+      const hits = rule.words.filter((word) => saysWord(hay, word));
+      if (!hits.length) continue;
+      // Named in the title is stronger evidence than mentioned in a description, and
+      // more matching words is stronger still.
+      const named = rule.words.some((word) => saysWord(head, word));
+      const confidence = (named ? 0.6 : 0.5) + Math.min(0.2, 0.1 * (hits.length - 1));
+      if (!best || confidence > best.confidence) {
+        best = { genre: rule.genre, confidence, hit: hits[0], kind };
+      }
     }
-  }
+  };
+  consider(GENRE_RULES, 'music');
+  consider(CONTENT_RULES, 'content');
   if (!best) return null;
-  const out = {
+  return {
     n: best.genre,
     c: Number(Math.min(0.9, best.confidence).toFixed(2)),
-    e: [[CONTENT_GENRES.has(best.genre)
+    // Written every time: a reader looks at this, never at the label's name.
+    k: best.kind,
+    e: [[best.kind === 'content'
       ? 'What does the listing say this is?'
       : 'Does the listing name the genre?', 'mentions "' + best.hit + '"']],
   };
-  if (CONTENT_GENRES.has(best.genre)) out.k = 'content';
-  return out;
 }
 
 // A genre a listing already carries, in the shape the snapshot stores it ("n", "c").
@@ -2608,9 +2647,9 @@ function parseGenre(text) {
   try {
     const parsed = JSON.parse(text);
     if (!parsed || !parsed.n) return null;
-    // Rows written before content labels were marked still have to be told apart, or
-    // every stored "cooking" would be read as a music genre.
-    if (!parsed.k && CONTENT_GENRES.has(parsed.n)) parsed.k = 'content';
+    // The kind is part of the row. Guessing it from the label's name here is what made
+    // renaming a label dangerous, so a row without one is left exactly as it is - the
+    // migration writes one for every row that had a genre before kinds existed.
     return parsed;
   } catch (err) {
     return null;

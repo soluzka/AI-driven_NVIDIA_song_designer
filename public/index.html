@@ -1598,44 +1598,6 @@
             };
         }
 
-        // The name of the place a card came from: what the listing said, and failing
-        // that the host in its link, because the local service does not always label.
-        const SOURCE_NAMES = {
-            youtube: 'YouTube', 'you tube': 'YouTube', ytdlp: 'YouTube', 'yt-dlp': 'YouTube',
-            dailymotion: 'Dailymotion', 'dai.ly': 'Dailymotion', tiktok: 'TikTok', vimeo: 'Vimeo',
-            instagram: 'Instagram', facebook: 'Facebook', twitter: 'X', x: 'X',
-            soundcloud: 'SoundCloud', twitch: 'Twitch', rumble: 'Rumble', odysee: 'Odysee',
-        };
-
-        function sourceName(row) {
-            const given = String((row && row.source) || '').trim();
-            // The listings are not consistent about case ("Youtube" beside "Dailymotion"),
-            // and "Youtube and Dailymotion" reads like two different programs wrote it.
-            if (given && !/^(unknown|other)$/i.test(given)) {
-                return SOURCE_NAMES[given.toLowerCase()] || given;
-            }
-            const url = String((row && row.url) || '').toLowerCase();
-            if (/youtu\.?be/.test(url)) return 'YouTube';
-            if (/dailymotion/.test(url)) return 'Dailymotion';
-            if (/tiktok/.test(url)) return 'TikTok';
-            if (/vimeo/.test(url)) return 'Vimeo';
-            if (/instagram/.test(url)) return 'Instagram';
-            if (/facebook|fb\.watch/.test(url)) return 'Facebook';
-            try { return new URL(url).hostname.replace(/^www\./, ''); } catch (err) { return 'other sites'; }
-        }
-
-        // "YouTube", "YouTube and TikTok", "YouTube, TikTok and Vimeo".
-        function sourcePhrase(rows) {
-            const names = [];
-            (rows || []).forEach(row => {
-                const name = sourceName(row);
-                if (name && !names.some(known => known.toLowerCase() === name.toLowerCase())) names.push(name);
-            });
-            if (!names.length) return 'other sites';
-            if (names.length === 1) return names[0];
-            return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
-        }
-
         // When the free daily allowance is spent, the only thing that changes it is the
         // reset, so say when that is instead of leaving the number unexplained.
         function libraryResetNote() {
@@ -1994,14 +1956,12 @@
                         // reason that is worth saying rather than leaving the reader to
                         // wonder why searching again finds nothing: the database's daily
                         // allowance is spent, and only its own reset frees it.
-                        // The sites are read off the cards that were shown, not assumed:
-                        // this search asks the local yt-dlp service as well as Dailymotion,
-                        // so the finds are YouTube, TikTok and whatever else it reaches.
-                        const where = found.seenSources || 'other sites';
+                        // No site names: they came from the listings, several sites at
+                        // once, and naming one of them was wrong for the rest.
                         const blocked = /daily row|exceeded|limit/i.test(found.discoverError || '');
                         extras.push(blocked
-                            ? `${found.seen} found on ${where} just now, not in the library yet - ${libraryResetNote()}, so nothing can be stored until then`
-                            : `${found.seen} found on ${where} just now, not in the library yet`);
+                            ? `${found.seen} listing videos not in the library yet - ${libraryResetNote()}, so nothing can be stored until then`
+                            : `${found.seen} listing videos not in the library yet`);
                     }
                     if (found.total > results.length) {
                         extras.push(`showing the first ${results.length.toLocaleString()} of ${found.total.toLocaleString()}`);
@@ -2079,8 +2039,6 @@
                         // them discovery "added" said they were stored when they were
                         // only shown.
                         found.seen = merged.added;
-                        // Which sites those cards came from, as found rather than assumed.
-                        found.seenSources = sourcePhrase(merged.fresh);
                         // The library figure is what was stored, not what was seen on
                         // screen: the search's own answer carries the counts after its
                         // discoveries were inserted, so adding the cards here counted
@@ -2188,7 +2146,7 @@
         // screen. A link the index already has is skipped: the same video from two
         // searches is still one card.
         function mergeFound(results, extra) {
-            if (!extra.length) return { results: uniqueByVideo(results), added: 0, fresh: [] };
+            if (!extra.length) return { results: uniqueByVideo(results), added: 0 };
             const known = new Set(results.map(row => videoKey(row.url) || String(row.url || '').toLowerCase()));
             const fresh = [];
             extra.forEach(video => {
@@ -2208,7 +2166,7 @@
                     genre: video.genre || null,
                 });
             });
-            return { results: uniqueByVideo(fresh.concat(results)), added: fresh.length, fresh };
+            return { results: uniqueByVideo(fresh.concat(results)), added: fresh.length };
         }
 
         // --- Results ---

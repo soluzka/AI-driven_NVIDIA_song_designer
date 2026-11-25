@@ -189,20 +189,28 @@ export default {
       if (!env.DB) return json({ error: 'No video index is attached to this Worker.' }, 501);
       const after = Number(url.searchParams.get('after')) || 0;
       const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 200));
+      // Rows whose words named nothing were marked with a genre that has no name, so
+      // the first pass would not scan them again. That marker is the difference between
+      // "never looked" (no genre_json at all) and "looked, found nothing" - and ?redo=1
+      // asks for the second kind again, which is what new rules need to be able to reach.
+      const redo = url.searchParams.get('redo') === '1';
+      const marker = JSON.stringify({ n: null });
       try {
-        const answer = await env.DB.prepare(
+        const statement = env.DB.prepare(
           'SELECT id, title, description, tags FROM videos '
-          + 'WHERE id > ? AND genre_json IS NULL AND ' + videoHostClause()
+          + 'WHERE id > ? AND ' + (redo ? '(genre_json IS NULL OR genre_json = ?)' : 'genre_json IS NULL')
+          + ' AND ' + videoHostClause()
           + ' ORDER BY id LIMIT ' + limit
-        ).bind(after).all();
+        );
+        const answer = redo
+          ? await statement.bind(after, marker).all()
+          : await statement.bind(after).all();
         const rows = answer.results || [];
         const statements = [];
         let named = 0;
         for (const row of rows) {
           const genre = inferGenreFromText(row.title, row.description, row.tags);
           if (genre) named += 1;
-          // Rows whose words name nothing are written as a genre with no name, so a
-          // later page does not scan them again and the chip stays empty.
           statements.push(
             env.DB.prepare('UPDATE videos SET genre_json = ? WHERE id = ?')
               .bind(JSON.stringify(genre || { n: null }), row.id)
@@ -210,7 +218,10 @@ export default {
         }
         if (statements.length) await env.DB.batch(statements);
         const next = rows.length ? Number(rows[rows.length - 1].id) : after;
-        return json({ ok: true, scanned: rows.length, named, unnamed: rows.length - named, next, done: rows.length < limit });
+        return json({
+          ok: true, redo, scanned: rows.length, named, unnamed: rows.length - named, next,
+          done: rows.length < limit,
+        });
       } catch (err) {
         return json({
           error: 'The genres could not be written.',

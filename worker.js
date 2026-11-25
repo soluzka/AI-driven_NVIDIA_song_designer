@@ -214,7 +214,7 @@ export default {
             const kind = parsed.k || (CONTENT_LABELS.has(parsed.n) ? 'content' : 'music');
             statements.push(
               env.DB.prepare('UPDATE videos SET genre_json = ? WHERE id = ?')
-                .bind(JSON.stringify(Object.assign({}, parsed, { k: kind })), row.id)
+                .bind(genreJson(Object.assign({}, parsed, { k: kind })), row.id)
             );
             rewritten += 1;
           }
@@ -273,7 +273,7 @@ export default {
           if (genre) named += 1;
           statements.push(
             env.DB.prepare('UPDATE videos SET genre_json = ? WHERE id = ?')
-              .bind(JSON.stringify(genre || { n: null }), row.id)
+              .bind(genreJson(genre) || JSON.stringify({ n: null }), row.id)
           );
         }
         if (statements.length) await env.DB.batch(statements);
@@ -2226,7 +2226,7 @@ async function discoverVideos(env, query, limit = 20) {
         stored.thumbnail,
         stored.duration,
         Date.now() / 1000,
-        stored.genre ? JSON.stringify(stored.genre) : null
+        genreJson(stored.genre)
       )
     );
   }
@@ -2411,7 +2411,7 @@ async function ingestVideos(env, request) {
         source,
         source,
         Date.now() / 1000,
-        genre ? JSON.stringify(genre) : null
+        genreJson(genre)
       )
     );
   }
@@ -2628,18 +2628,43 @@ function inferGenreFromText(title, description, tags) {
 // A genre a listing already carries, in the shape the snapshot stores it ("n", "c").
 // Ingest used to write every row with no genre at all, so a find the machine had
 // already classified arrived in the library unclassified.
+// The kind of a name that came from outside this Worker. This is the only place a name
+// has to be looked up: nothing else about the row says what the label is, and a listing
+// that calls something "cooking" supplies a word, not a kind.
+function kindOfLabel(name) {
+  return CONTENT_LABELS.has(name) ? 'content' : 'music';
+}
+
+// Every genre that leaves this function carries its kind, so no reader ever has to
+// guess it from the label.
 function storedGenre(value) {
   if (!value) return null;
-  if (typeof value === 'string') return { n: value.trim().slice(0, 60) || null };
+  if (typeof value === 'string') {
+    const name = value.trim().slice(0, 60);
+    return name ? { n: name, k: kindOfLabel(name) } : null;
+  }
   if (typeof value === 'object') {
     const name = String(value.genre || value.n || '').trim().slice(0, 60);
     if (!name) return null;
     const confidence = Number(value.confidence != null ? value.confidence : value.c) || 0;
-    const out = { n: name };
+    const out = {
+      n: name,
+      k: value.k === 'content' || value.k === 'music' ? value.k : kindOfLabel(name),
+    };
     if (confidence) out.c = confidence;
     return out;
   }
   return null;
+}
+
+// The one way a genre reaches the database. A genre with no kind is given one here
+// rather than stored half-formed, whichever path wrote it.
+function genreJson(genre) {
+  if (!genre || !genre.n) return null;
+  const stamped = genre.k === 'content' || genre.k === 'music'
+    ? genre
+    : Object.assign({}, genre, { k: kindOfLabel(genre.n) });
+  return JSON.stringify(stamped);
 }
 
 function parseGenre(text) {
